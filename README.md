@@ -26,7 +26,8 @@ COILSHIELD_SIM=0 python3 main.py --real
    `sudo raspi-config nonint do_i2c 0` then reboot if needed.
 2. Install deps:  
    `sudo apt update && sudo apt install -y python3-pip i2c-tools`  
-   `sudo pip3 install -r requirements.txt --break-system-packages`
+   `sudo pip3 install -r requirements.txt --break-system-packages`  
+   (Same line as in the project plan; needed for `board` / `adafruit_ina219` / `RPi.GPIO` on the system Python.)
 3. Verify bus: `sudo i2cdetect -y 1` (expect `40` `41` `44` `45` when INA219s are wired).
 
 ## Fault latch
@@ -48,10 +49,24 @@ touch ~/coilshield/clear_fault
 
 ## Tests
 
+On Raspberry Pi OS (PEP 668), use a project venv for pytest:
+
 ```bash
-pip install pytest
-COILSHIELD_SIM=1 python3 -m pytest tests/ -q
+cd ~/coilshield
+python3 -m venv .venv
+.venv/bin/pip install pytest
+COILSHIELD_SIM=1 .venv/bin/python -m pytest tests/ -q
 ```
+
+## Optional: auto-rsync on save (Mac)
+
+If you use [fswatch](https://github.com/emcrisostomo/fswatch) on the Mac:
+
+```bash
+fswatch -o ~/coilshield | xargs -n1 -I{} rsync -avz ~/coilshield/ user@pi-ip:~/coilshield/
+```
+
+Throttle as needed; many editors also have “save & upload” extensions.
 
 ## Near-term product TODO
 
