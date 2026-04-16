@@ -27,12 +27,12 @@ COILSHIELD_SIM=0 python3 main.py --real
 2. Install deps:  
    `sudo apt update && sudo apt install -y python3-pip i2c-tools`  
    `sudo pip3 install -r requirements.txt --break-system-packages`  
-   (Same line as in the project plan; needed for `board` / `adafruit_ina219` / `RPi.GPIO` on the system Python.)
-3. Verify bus: `sudo i2cdetect -y 1` (expect `40` `41` `44` `45` when INA219s are wired).
+   (Same line as in the project plan; needed for `board` / `adafruit_ina3221` / `RPi.GPIO` on the system Python.)
+3. Verify bus: `sudo i2cdetect -y 1` (expect `40` and `41` when two INA3221 chips are wired for five channels).
 
 ## Fault latch
 
-When safety trips, output stays off until you clear the latch:
+When a channel trips (overcurrent, bus over/undervoltage), that channel stays off until you clear the latch:
 
 ```bash
 touch ~/coilshield/clear_fault

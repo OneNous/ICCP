@@ -36,25 +36,34 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _print_table(readings: dict, wet: bool, faults: list, duties: dict, latched: bool) -> None:
-    print("─" * 72)
+def _print_table(
+    readings: dict,
+    faults: list,
+    duties: dict,
+    latched: bool,
+    ch_status: dict[int, str],
+    any_wet: bool,
+) -> None:
+    print("─" * 88)
     print(
-        f"{'CH':<4} {'BusV':<8} {'mA':<12} {'Duty%':<8} {'Wet':<6} {'Latch':<6} {'Faults'}"
+        f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':<12} {'Duty%':<8} "
+        f"{'AnyWet':<8} {'Latch':<6} {'Faults'}"
     )
-    print("─" * 72)
+    print("─" * 88)
     for i in sorted(readings.keys()):
         r = readings[i]
+        st = ch_status.get(i, "?")
         if r.get("ok"):
             line = (
-                f"{i + 1:<4} {r['bus_v']:<8.3f} {r['current']:<12.4f} "
+                f"{i + 1:<4} {st:<12} {r['bus_v']:<8.3f} {r['current']:<12.4f} "
                 f"{duties.get(i, 0):<8.1f}"
             )
         else:
-            line = f"{i + 1:<4} {'--':<8} {'ERR':<12} {'0':<8}"
+            line = f"{i + 1:<4} {st:<12} {'--':<8} {'ERR':<12} {'0':<8}"
         if i == 0:
-            line += f" {int(wet):<6} {int(latched):<6} {';'.join(faults) or '-'}"
+            line += f" {int(any_wet):<8} {int(latched):<6} {';'.join(faults) or '-'}"
         print(line)
-    print("─" * 72)
+    print("─" * 88)
 
 
 def main() -> int:
@@ -67,12 +76,9 @@ def main() -> int:
 
     import config.settings as cfg
 
-    # Import sensors only after COILSHIELD_SIM is finalized
     import sensors
-    import safety
-    from control import PWMController
+    from control import Controller
     from logger import DataLogger
-    from wet_switch import WetSwitch
 
     from leds import StatusLEDs
 
@@ -89,16 +95,12 @@ def main() -> int:
             return 1
 
     sim_state = sensors.SimSensorState() if sim else None
-    wet = WetSwitch(use_hw_gpio, cfg.SIM_ASSUME_WET)
-    ctrl = PWMController(use_hw_gpio)
+    ctrl = Controller()
     leds = StatusLEDs(use_hw_gpio)
     log = DataLogger()
 
-    wet.setup()
-    ctrl.setup()
     leds.setup()
 
-    fault_latched = False
     print(
         f"CoilShield starting (sim={sim}, TARGET_MA={cfg.TARGET_MA}, "
         f"clear fault: touch {cfg.CLEAR_FAULT_FILE})"
@@ -106,33 +108,23 @@ def main() -> int:
 
     try:
         while True:
-            if cfg.CLEAR_FAULT_FILE.exists():
-                fault_latched = False
-                try:
-                    cfg.CLEAR_FAULT_FILE.unlink()
-                except OSError:
-                    pass
-
             if sim:
                 readings = sensors.read_all_sim(sim_state)  # type: ignore[arg-type]
             else:
                 readings = sensors.read_all_real()
 
-            wet_now = wet.read()
-            faults = safety.evaluate(readings, wet_now)
-            if not fault_latched and safety.should_latch(faults):
-                fault_latched = True
-
-            ctrl.update(readings, wet_now, fault_latched)
+            faults, fault_latched = ctrl.update(readings)
             duties = ctrl.duties()
+            ch_status = ctrl.channel_statuses()
+            any_wet = ctrl.any_wet()
 
-            log.record(readings, wet_now, faults, duties, fault_latched)
+            log.record(readings, any_wet, faults, duties, fault_latched, ch_status)
             log.maybe_flush()
 
             leds.set_running_ok(not fault_latched and len(faults) == 0)
 
             if args.verbose:
-                _print_table(readings, wet_now, faults, duties, fault_latched)
+                _print_table(readings, faults, duties, fault_latched, ch_status, any_wet)
             elif faults or fault_latched:
                 print(time.strftime("%H:%M:%S"), "FAULTS:", "; ".join(faults), "latched=", fault_latched)
 
@@ -143,8 +135,7 @@ def main() -> int:
     finally:
         log.close()
         leds.shutdown()
-        ctrl.shutdown()
-        wet.shutdown()
+        ctrl.cleanup()
         if use_hw_gpio:
             import RPi.GPIO as GPIO  # noqa: N814
 

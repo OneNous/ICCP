@@ -1,6 +1,6 @@
 import config.settings as cfg
-import safety
 import sensors
+from control import Controller
 
 
 def test_sim_readings_count_and_finite():
@@ -10,37 +10,39 @@ def test_sim_readings_count_and_finite():
     assert len(r) == cfg.NUM_CHANNELS
 
 
-def test_safety_overcurrent():
-    readings = {
-        0: {"ok": True, "current": cfg.MAX_MA + 0.5, "bus_v": 11.0, "error": ""},
-    }
-    f = safety.evaluate(readings, wet=False)
-    assert any("OVERCURRENT" in x for x in f)
-
-
-def test_safety_undervoltage_overvoltage():
-    low = {0: {"ok": True, "current": 0.1, "bus_v": cfg.MIN_BUS_V - 0.5, "error": ""}}
-    assert any("UNDERVOLTAGE" in x for x in safety.evaluate(low, wet=False))
-    high = {0: {"ok": True, "current": 0.1, "bus_v": cfg.MAX_BUS_V + 0.5, "error": ""}}
-    assert any("OVERVOLTAGE" in x for x in safety.evaluate(high, wet=False))
-
-
-def test_safety_bonding_when_wet():
-    readings = {
-        0: {"ok": True, "current": 0.01, "bus_v": 11.0, "error": ""},
-        1: {"ok": True, "current": 0.01, "bus_v": 11.0, "error": ""},
-    }
-    f = safety.evaluate(readings, wet=True)
-    assert any("BONDING" in x for x in f)
-
-
-def test_sim_injected_fault_triggers_safety():
+def test_controller_latches_sim_injected_overcurrent():
     prev = cfg.SIM_INJECT_FAULT_CH
     try:
-        cfg.SIM_INJECT_FAULT_CH = 1
+        cfg.SIM_INJECT_FAULT_CH = 0
         st = sensors.SimSensorState()
+        ctrl = Controller()
         r = sensors.read_all_sim(st)
-        f = safety.evaluate(r, wet=False)
-        assert any("OVERCURRENT" in x for x in f)
+        faults, latched = ctrl.update(r)
+        assert any("OVERCURRENT" in f for f in faults)
+        assert latched is True
     finally:
         cfg.SIM_INJECT_FAULT_CH = prev
+
+
+def test_controller_latches_undervoltage_reading():
+    ctrl = Controller()
+    r = {
+        0: {"ok": True, "current": 0.1, "bus_v": cfg.MIN_BUS_V - 0.5},
+    }
+    for i in range(1, cfg.NUM_CHANNELS):
+        r[i] = {"ok": True, "current": 0.1, "bus_v": 11.0}
+    faults, latched = ctrl.update(r)
+    assert any("UNDERVOLTAGE" in f for f in faults)
+    assert latched is True
+
+
+def test_controller_latches_overvoltage_reading():
+    ctrl = Controller()
+    r = {
+        0: {"ok": True, "current": 0.1, "bus_v": cfg.MAX_BUS_V + 0.5},
+    }
+    for i in range(1, cfg.NUM_CHANNELS):
+        r[i] = {"ok": True, "current": 0.1, "bus_v": 11.0}
+    faults, latched = ctrl.update(r)
+    assert any("OVERVOLTAGE" in f for f in faults)
+    assert latched is True

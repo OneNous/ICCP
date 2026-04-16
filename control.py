@@ -1,85 +1,237 @@
 """
-Incremental PWM only (v1) — no PID.
+CoilShield ICCP — per-channel control loop.
 
-Safe for electrochemical loads: worst case is slow convergence, not current spikes
-from badly tuned PID.
+Design principles:
+  - No master wet switch. Each channel self-detects wet/dry via current reading.
+  - Anodes touch the coil surface directly. Dry = no ionic path = no current.
+    Wet = condensate film = ionic path established = regulate to target.
+  - Same TARGET_MA on every channel — longer wet dwell at drain-prone spots
+    delivers more coulombs over time; no install-time position weighting.
+  - Dormant channels send a brief probe pulse every PROBE_INTERVAL_S to detect
+    re-wetting without waiting for the next commissioning cycle.
+  - Fault latch: per-channel over/under voltage and overcurrent latch that
+    channel off until clear_fault file is touched (config.settings.CLEAR_FAULT_FILE).
+  - Incremental PWM only — no PID. Slow steps prevent current spikes into
+    overprotection territory on aluminum-containing coils.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import os
+import time
 
 import config.settings as cfg
 
-try:
+_SIM = os.environ.get("COILSHIELD_SIM", "0") == "1"
+
+if not _SIM:
     import RPi.GPIO as GPIO  # noqa: N814
-except ImportError:
-    GPIO = None  # type: ignore[misc, assignment]
 
 
-class PWMController:
-    def __init__(self, use_hw: bool) -> None:
-        self._use_hw = use_hw and GPIO is not None
-        self._duty: dict[int, float] = {i: 0.0 for i in range(cfg.NUM_CHANNELS)}
-        self._pwm: dict[int, Any] = {}
-        self._gpio_ready = False
+class PWMBank:
+    """Owns all MOSFET PWM channels. Sim-safe (no GPIO)."""
 
-    def setup(self) -> None:
-        if not self._use_hw:
-            return
-        for i, pin in enumerate(cfg.PWM_GPIO_PINS):
-            GPIO.setup(pin, GPIO.OUT)
-            pwm = GPIO.PWM(pin, cfg.PWM_FREQUENCY_HZ)
-            pwm.start(0)
-            self._pwm[i] = pwm
-        self._gpio_ready = True
+    def __init__(self) -> None:
+        self._duties: dict[int, float] = {i: 0.0 for i in range(cfg.NUM_CHANNELS)}
+        self._pwm: list = []
 
-    def shutdown(self) -> None:
-        if not self._gpio_ready:
-            return
-        for i, pwm in self._pwm.items():
-            try:
-                pwm.ChangeDutyCycle(0)
-                pwm.stop()
-            except Exception:
-                pass
-        self._pwm.clear()
-        self._gpio_ready = False
+        if not _SIM:
+            GPIO.setmode(GPIO.BCM)
+            for pin in cfg.PWM_GPIO_PINS:
+                GPIO.setup(pin, GPIO.OUT)
+                p = GPIO.PWM(pin, cfg.PWM_FREQUENCY_HZ)
+                p.start(0.0)
+                self._pwm.append(p)
 
-    def _apply_hw(self) -> None:
-        if not self._gpio_ready:
-            return
-        for i, pwm in self._pwm.items():
-            pwm.ChangeDutyCycle(int(round(self._duty.get(i, 0.0))))
+    def set_duty(self, ch: int, duty: float) -> None:
+        duty = float(max(cfg.PWM_MIN_DUTY, min(cfg.PWM_MAX_DUTY, duty)))
+        self._duties[ch] = duty
+        if not _SIM:
+            self._pwm[ch].ChangeDutyCycle(int(round(duty)))
 
-    def update(
-        self,
-        readings: dict[int, dict],
-        wet: bool,
-        fault_latched: bool,
-    ) -> None:
-        """
-        Incremental duty toward TARGET_MA per channel.
-        If dry or latched, force duty to 0.
-        """
-        if fault_latched or not wet:
-            for i in self._duty:
-                self._duty[i] = 0.0
-            self._apply_hw()
-            return
+    def duty(self, ch: int) -> float:
+        return self._duties[ch]
 
-        for ch, reading in readings.items():
-            if ch >= cfg.NUM_CHANNELS or not reading.get("ok"):
+    def all_off(self) -> None:
+        for ch in range(cfg.NUM_CHANNELS):
+            self.set_duty(ch, 0.0)
+
+    def cleanup(self) -> None:
+        self.all_off()
+        if not _SIM:
+            for p in self._pwm:
+                try:
+                    p.stop()
+                except Exception:
+                    pass
+            self._pwm.clear()
+
+
+class ChannelState:
+    """Runtime state for one anode channel."""
+
+    DORMANT = "DORMANT"
+    PROBING = "PROBING"
+    PROTECTING = "PROTECTING"
+    FAULT = "FAULT"
+
+    def __init__(self, ch: int) -> None:
+        self.ch = ch
+        self.status = self.DORMANT
+        self.last_probe_time: float = 0.0
+        self.probe_since: float | None = None
+        self.latch_message: str = ""
+
+
+class Controller:
+    """
+    Main ICCP control loop.
+
+    Call update(readings) each SAMPLE_INTERVAL_S.
+    Returns (fault_strings_for_log, fault_latched_globally).
+    """
+
+    def __init__(self) -> None:
+        self._pwm = PWMBank()
+        self._states = [ChannelState(i) for i in range(cfg.NUM_CHANNELS)]
+        self._fault_latched = False
+        self._faults: list[str] = []
+
+    def update(self, readings: dict[int, dict]) -> tuple[list[str], bool]:
+        self._faults = []
+        self._check_clear_fault()
+
+        for ch, state in enumerate(self._states):
+            r = readings.get(ch, {})
+
+            if state.status == ChannelState.FAULT:
+                self._pwm.set_duty(ch, 0.0)
+                if state.latch_message:
+                    self._faults.append(state.latch_message)
                 continue
-            cur = float(reading["current"])
-            d = self._duty.get(ch, 0.0)
-            if cur < cfg.TARGET_MA:
-                d = min(d + cfg.PWM_STEP, cfg.PWM_MAX_DUTY)
-            elif cur > cfg.TARGET_MA:
-                d = max(d - cfg.PWM_STEP, cfg.PWM_MIN_DUTY)
-            self._duty[ch] = d
 
-        self._apply_hw()
+            if not r.get("ok"):
+                self._pwm.set_duty(ch, 0.0)
+                self._faults.append(f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}")
+                state.probe_since = None
+                if state.status == ChannelState.PROBING:
+                    state.status = ChannelState.DORMANT
+                    state.last_probe_time = time.monotonic()
+                elif state.status == ChannelState.PROTECTING:
+                    state.status = ChannelState.DORMANT
+                    state.last_probe_time = time.monotonic()
+                continue
+
+            current_ma = float(r["current"])
+            bus_v = float(r["bus_v"])
+
+            if current_ma > cfg.MAX_MA:
+                self._latch_fault(
+                    ch,
+                    f"CH{ch + 1} OVERCURRENT: {current_ma:.4f} mA (max {cfg.MAX_MA} mA)",
+                )
+                continue
+            if bus_v < cfg.MIN_BUS_V:
+                self._latch_fault(
+                    ch,
+                    f"CH{ch + 1} UNDERVOLTAGE: {bus_v:.2f} V (min {cfg.MIN_BUS_V} V)",
+                )
+                continue
+            if bus_v > cfg.MAX_BUS_V:
+                self._latch_fault(
+                    ch,
+                    f"CH{ch + 1} OVERVOLTAGE: {bus_v:.2f} V (max {cfg.MAX_BUS_V} V)",
+                )
+                continue
+
+            if state.status == ChannelState.PROBING:
+                if state.probe_since is None:
+                    state.probe_since = time.monotonic()
+                if time.monotonic() - state.probe_since < cfg.PROBE_DURATION_S:
+                    self._pwm.set_duty(ch, float(cfg.PROBE_DUTY_PCT))
+                    continue
+                state.probe_since = None
+                if current_ma >= cfg.CHANNEL_WET_THRESHOLD_MA:
+                    state.status = ChannelState.PROTECTING
+                else:
+                    state.status = ChannelState.DORMANT
+                    state.last_probe_time = time.monotonic()
+                    self._pwm.set_duty(ch, 0.0)
+                    continue
+
+            channel_is_wet = current_ma >= cfg.CHANNEL_WET_THRESHOLD_MA
+
+            if not channel_is_wet:
+                self._pwm.set_duty(ch, 0.0)
+                if state.status == ChannelState.PROBING:
+                    state.status = ChannelState.DORMANT
+                    state.last_probe_time = time.monotonic()
+                    state.probe_since = None
+                elif state.status == ChannelState.PROTECTING:
+                    state.status = ChannelState.DORMANT
+                    state.last_probe_time = time.monotonic()
+                elif state.status == ChannelState.DORMANT:
+                    elapsed = time.monotonic() - state.last_probe_time
+                    if elapsed >= cfg.PROBE_INTERVAL_S:
+                        state.status = ChannelState.PROBING
+                        state.probe_since = time.monotonic()
+                        self._pwm.set_duty(ch, float(cfg.PROBE_DUTY_PCT))
+                continue
+
+            state.status = ChannelState.PROTECTING
+            target_ma = self._channel_target(ch)
+            current_duty = self._pwm.duty(ch)
+
+            if current_ma < target_ma:
+                new_duty = current_duty + cfg.PWM_STEP
+            elif current_ma > target_ma * 1.05:
+                new_duty = current_duty - cfg.PWM_STEP
+            else:
+                new_duty = current_duty
+
+            self._pwm.set_duty(ch, new_duty)
+
+        self._fault_latched = any(s.status == ChannelState.FAULT for s in self._states)
+        return self._faults, self._fault_latched
 
     def duties(self) -> dict[int, float]:
-        return dict(self._duty)
+        return {i: self._pwm.duty(i) for i in range(cfg.NUM_CHANNELS)}
+
+    def channel_statuses(self) -> dict[int, str]:
+        return {i: self._states[i].status for i in range(cfg.NUM_CHANNELS)}
+
+    @property
+    def fault_latched(self) -> bool:
+        return self._fault_latched
+
+    def any_wet(self) -> bool:
+        return any(s.status == ChannelState.PROTECTING for s in self._states)
+
+    def cleanup(self) -> None:
+        self._pwm.cleanup()
+
+    def _channel_target(self, _ch: int) -> float:
+        """Uniform target per channel — condensate dwell sets effective protection."""
+        return float(cfg.TARGET_MA)
+
+    def _latch_fault(self, ch: int, msg: str) -> None:
+        self._pwm.set_duty(ch, 0.0)
+        self._states[ch].status = ChannelState.FAULT
+        self._states[ch].latch_message = msg
+        self._faults.append(msg)
+
+    def _check_clear_fault(self) -> None:
+        if not cfg.CLEAR_FAULT_FILE.exists():
+            return
+        try:
+            cfg.CLEAR_FAULT_FILE.unlink()
+        except OSError:
+            return
+        for state in self._states:
+            if state.status == ChannelState.FAULT:
+                state.status = ChannelState.DORMANT
+                state.latch_message = ""
+                state.last_probe_time = 0.0
+                state.probe_since = None
+        self._fault_latched = False
+        print("[control] Fault latch cleared.")
