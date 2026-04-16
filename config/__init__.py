@@ -1,0 +1,1 @@
+"""CoilShield configuration package."""
