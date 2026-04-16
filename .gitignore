@@ -6,4 +6,7 @@ venv/
 .DS_Store
 clear_fault
 logs/*.csv
+logs/*.db
+logs/latest.json
+logs/*.log
 .pytest_cache/

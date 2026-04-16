@@ -1,3 +1,4 @@
 adafruit-circuitpython-ina3221>=1.0.0
 RPi.GPIO>=0.7.0
+flask>=3.0.0
 pytest>=7.0

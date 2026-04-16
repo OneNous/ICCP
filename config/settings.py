@@ -49,15 +49,21 @@ MAX_BUS_V = 14.0
 SAMPLE_INTERVAL_S = 0.5
 LOG_INTERVAL_S = 60
 
-# --- Logging (daily CSV + append-only fault log; see logger.py) ---
+# --- Logging (daily CSV + fault log + SQLite + latest.json; see logger.py) ---
 LOG_BASE_NAME = "iccp"
 FAULT_LOG_NAME = "iccp_faults.log"
 LOG_MAX_BYTES = 1_000_000
 LOG_ROTATION_KEEP = 5
+SQLITE_DB_NAME = "coilshield.db"
+LATEST_JSON_NAME = "latest.json"
+# Telemetry retention and periodic purge (also runs once at logger startup).
+TELEMETRY_RETENTION_DAYS = 30
+SQLITE_PURGE_EVERY_N_INSERTS = 10_000
 
 # --- Simulator ---
+# Wet/dry schedule uses SIM_TIME_SCALE (real seconds per simulated hour); see sensors.py.
 SIM_NOMINAL_BUS_V = 11.8
 SIM_NOISE_MA = 0.05
-SIM_DRIFT_MA = 0.002
+SIM_DRIFT_MA = 0.002  # unused by cycle sim; kept for API stability
 SIM_INJECT_FAULT_CH = None  # 0..NUM_CHANNELS-1 to inject overcurrent on that channel
 SIM_INJECT_OVERCURRENT_MA = 3.0
