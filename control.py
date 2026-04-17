@@ -194,6 +194,24 @@ class Controller:
         self._fault_latched = any(s.status == ChannelState.FAULT for s in self._states)
         return self._faults, self._fault_latched
 
+    def update_potential_target(self, shift_mv: float | None) -> None:
+        """
+        Outer loop: nudge TARGET_MA to keep polarization in the safe window.
+        Call once per LOG_INTERVAL_S tick, not every SAMPLE_INTERVAL_S.
+        """
+        if shift_mv is None:
+            return
+
+        lo = float(cfg.TARGET_SHIFT_MV) * 0.8
+        hi = float(cfg.MAX_SHIFT_MV)
+        step = float(cfg.TARGET_MA_STEP)
+        max_target = float(cfg.MAX_MA) * 0.8
+
+        if shift_mv < lo:
+            cfg.TARGET_MA = round(min(cfg.TARGET_MA + step, max_target), 3)
+        elif shift_mv > hi:
+            cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, 0.05), 3)
+
     def duties(self) -> dict[int, float]:
         return {i: self._pwm.duty(i) for i in range(cfg.NUM_CHANNELS)}
 

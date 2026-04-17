@@ -3,9 +3,9 @@
 CoilShield ICCP controller — main loop.
 
 Set COILSHIELD_SIM=1 for simulator (default on macOS if unset).
-Clear fault latch: `touch ~/coilshield/clear_fault`
-Sim speed: SIM_TIME_SCALE=10 (real seconds per simulated hour, default 10), or
-  `python3 main.py --sim --sim-time-scale 60`
+Clear fault latch: `touch <PROJECT_ROOT>/clear_fault`
+Commissioning reset: `python3 -c "import commissioning; commissioning.reset()"`
+Sim speed: SIM_TIME_SCALE=10 or `python3 main.py --sim --sim-time-scale 60`
 """
 
 from __future__ import annotations
@@ -26,6 +26,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--sim", action="store_true", help="force simulator mode")
     p.add_argument("--real", action="store_true", help="force real hardware mode")
     p.add_argument(
+        "--skip-commission",
+        action="store_true",
+        help="skip commissioning even if commissioning.json is absent",
+    )
+    p.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -36,13 +41,12 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         metavar="N",
-        help="sim only: real seconds per simulated hour (sets SIM_TIME_SCALE before sensors load)",
+        help="sim only: real seconds per simulated hour",
     )
     return p.parse_args()
 
 
 def _print_sim_schedule(sensor_module: object) -> None:
-    """Print the 24-hour cycle schedule and per-anode wet profiles at startup."""
     scale = getattr(sensor_module, "SIM_REAL_S_PER_SIM_HOUR", 10.0)
     real_minutes = (86400.0 / (3600.0 / float(scale))) / 60.0
     print(
@@ -74,31 +78,47 @@ def _print_table(
     latched: bool,
     ch_status: dict[int, str],
     any_wet: bool,
+    ref_shift: float | None,
+    ref_status: str,
+    temp_f: float | None,
     sim_line: str = "",
 ) -> None:
     try:
         if sim_line:
             print(sim_line)
+        ref_str = (
+            f"{ref_shift:+.1f} mV [{ref_status}]"
+            if ref_shift is not None
+            else "— (no native baseline)"
+        )
+        temp_str = f"{temp_f:.1f}°F" if temp_f is not None else "—"
+        print(f"  Ref shift: {ref_str}    Temp: {temp_str}")
         print("─" * 90)
         print(
-            f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':<12} {'Duty%':<8} "
-            f"{'AnyWet':<8} {'Latch':<6} {'Faults'}"
+            f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':<10} {'Duty%':<8} "
+            f"{'Ω imp':<10} {'Vc':<8} {'Wet':<5}"
         )
         print("─" * 90)
         for i in sorted(readings.keys()):
             r = readings[i]
             st = ch_status.get(i, "?")
             if r.get("ok"):
-                line = (
-                    f"{i + 1:<4} {st:<12} {r['bus_v']:<8.3f} "
-                    f"{r['current']:<12.4f} {duties.get(i, 0):<8.1f}"
+                ma = float(r.get("current", 0))
+                bus_v = float(r.get("bus_v", 0))
+                duty = float(duties.get(i, 0))
+                imp = round(bus_v / max(ma / 1000, 0.00001)) if ma > 0 else 0
+                vc = round(bus_v * (duty / 100.0), 3)
+                print(
+                    f"{i + 1:<4} {st:<12} {bus_v:<8.3f} {ma:<10.4f} {duty:<8.1f} "
+                    f"{imp:<10,.0f} {vc:<8.3f} {int(st == 'PROTECTING'):<5}"
                 )
             else:
-                line = f"{i + 1:<4} {st:<12} {'--':<8} {'ERR':<12} {'0':<8}"
-            if i == 0:
-                line += f" {int(any_wet):<8} {int(latched):<6} {';'.join(faults) or '-'}"
-            print(line)
+                print(f"{i + 1:<4} {st:<12} {'--':<8} {'ERR':<10} {'0':<8} {'—':<10} {'—':<8}")
         print("─" * 90)
+        print(
+            f"  AnyWet={int(any_wet)}  Latch={int(latched)}  "
+            f"Faults: {'; '.join(faults) or '—'}"
+        )
     except BrokenPipeError:
         raise SystemExit(0) from None
 
@@ -115,9 +135,12 @@ def main() -> int:
 
     import config.settings as cfg
 
+    import commissioning
     import sensors
+    import temp as temp_mod
     from control import Controller
     from logger import DataLogger
+    from reference import ReferenceElectrode
 
     from leds import StatusLEDs
 
@@ -138,6 +161,7 @@ def main() -> int:
 
     sim_state = sensors.SimSensorState() if sim else None
     ctrl = Controller()
+    ref = ReferenceElectrode()
     leds = StatusLEDs(use_hw_gpio)
     log = DataLogger()
 
@@ -150,6 +174,35 @@ def main() -> int:
 
     if sim:
         _print_sim_schedule(sensors)
+
+    if not args.skip_commission:
+        if commissioning.needs_commissioning():
+            print("[main] No commissioning data. Starting commissioning sequence...")
+            print("[main] (use --skip-commission to bypass for bench testing)")
+            commissioned_target = commissioning.run(
+                ref, ctrl, sim_state=sim_state, verbose=True
+            )
+            cfg.TARGET_MA = commissioned_target
+        else:
+            ref.load_native()
+            cfg.TARGET_MA = commissioning.load_commissioned_target()
+            print(
+                f"[main] Commissioning loaded — native={ref.native_mv:.1f} mV  "
+                f"target={cfg.TARGET_MA:.3f} mA"
+            )
+    else:
+        ref.load_native()
+        if not commissioning.needs_commissioning():
+            cfg.TARGET_MA = commissioning.load_commissioned_target()
+        print(
+            f"[main] Commissioning skipped. native_mv="
+            f"{'set' if ref.native_mv is not None else 'not set'}"
+        )
+
+    outer_loop_counter = 0
+    outer_loop_interval = max(
+        1, int(cfg.LOG_INTERVAL_S / cfg.SAMPLE_INTERVAL_S)
+    )
 
     try:
         while True:
@@ -166,6 +219,15 @@ def main() -> int:
             if sim and sim_state is not None:
                 sim_state.duties = dict(duties)
 
+            ref_shift = ref.shift_mv(duties=duties, statuses=ch_status)
+            ref_prot_status = ref.protection_status(ref_shift)
+            temp_f = temp_mod.read_fahrenheit()
+
+            outer_loop_counter += 1
+            if outer_loop_counter >= outer_loop_interval:
+                ctrl.update_potential_target(ref_shift)
+                outer_loop_counter = 0
+
             sim_time_kw: str | None = None
             if sim and sim_state is not None:
                 sim_time_kw = sim_state.sim_hhmm()
@@ -177,6 +239,9 @@ def main() -> int:
                 fault_latched,
                 ch_status,
                 sim_time=sim_time_kw,
+                ref_shift_mv=ref_shift,
+                ref_status=ref_prot_status,
+                temp_f=temp_f,
             )
             log.maybe_flush()
 
@@ -202,6 +267,9 @@ def main() -> int:
                     fault_latched,
                     ch_status,
                     any_wet,
+                    ref_shift,
+                    ref_prot_status,
+                    temp_f,
                     sim_line,
                 )
 

@@ -43,9 +43,13 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     try:
         n = conn.execute("SELECT COUNT(*) FROM readings").fetchone()[0]
         assert n == 1
-        row = conn.execute("SELECT ch1_state, wet FROM readings LIMIT 1").fetchone()
+        row = conn.execute(
+            "SELECT ch1_state, wet, ch1_impedance_ohm, ch1_cell_voltage_v FROM readings LIMIT 1"
+        ).fetchone()
         assert row[0] == "DORMANT"
         assert row[1] == 0
+        assert row[2] is not None and float(row[2]) > 1000  # high Z when ~0.1 mA
+        assert row[3] is not None
     finally:
         conn.close()
 
@@ -74,3 +78,30 @@ def test_fault_log_signature_dedupe(tmp_path, monkeypatch: pytest.MonkeyPatch) -
 
     fault_text = (tmp_path / cfg.FAULT_LOG_NAME).read_text(encoding="utf-8")
     assert fault_text.count("FAULT") == 1
+
+
+def test_wet_session_row_on_protecting_cycle(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "SQLITE_PURGE_EVERY_N_INSERTS", 999_999_999)
+
+    from logger import DataLogger
+
+    readings = _sample_readings()
+    duties = {i: 10.0 for i in range(cfg.NUM_CHANNELS)}
+
+    log = DataLogger()
+    log.record(readings, False, [], duties, False, {i: "DORMANT" for i in range(5)})
+    log.record(readings, True, [], duties, False, {i: "PROTECTING" for i in range(5)})
+    log.record(readings, False, [], duties, False, {i: "DORMANT" for i in range(5)})
+    log.close()
+
+    conn = sqlite3.connect(str(tmp_path / cfg.SQLITE_DB_NAME))
+    try:
+        n_sess = conn.execute(
+            "SELECT COUNT(*) FROM wet_sessions WHERE ended_at IS NOT NULL"
+        ).fetchone()[0]
+        assert n_sess == cfg.NUM_CHANNELS
+    finally:
+        conn.close()

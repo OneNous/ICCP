@@ -12,6 +12,10 @@ Reads from:
     logs/latest.json   — live data (atomic writes from main.py)
     logs/coilshield.db — history (SQLite WAL, written from main.py)
 
+HTTP: /api/live, /api/history, /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
+
+SQL column names for `readings` / `wet_sessions` / `daily_totals` MUST stay in sync with logger.py _init_schema.
+
 Colors aligned with v77 coilshield-product-export.css .csp-exp — update both if brand shifts.
 
 Install Flask if needed:
@@ -85,6 +89,9 @@ def api_live():
 @app.route("/api/history")
 def api_history():
     minutes = int(request.args.get("minutes", 60))
+    metric = request.args.get("metric", "ma").lower()
+    if metric not in ("ma", "impedance"):
+        metric = "ma"
     since = time.time() - minutes * 60
 
     if minutes <= 15:
@@ -112,15 +119,25 @@ def api_history():
 
     for r in sampled:
         for i in range(cfg.NUM_CHANNELS):
-            channels[str(i)].append(r[f"ch{i + 1}_ma"])
+            if metric == "impedance":
+                key = f"ch{i + 1}_impedance_ohm"
+                try:
+                    val = r[key]
+                except (KeyError, IndexError):
+                    val = None
+                channels[str(i)].append(val)
+            else:
+                channels[str(i)].append(r[f"ch{i + 1}_ma"])
         total.append(r["total_ma"])
 
+    tgt = cfg.TARGET_MA if metric == "ma" else None
     return jsonify(
         {
             "labels": labels,
             "channels": channels,
             "total": total,
-            "target": cfg.TARGET_MA,
+            "target": tgt,
+            "metric": metric,
             "count": len(sampled),
             "minutes": minutes,
         }
@@ -141,6 +158,21 @@ def api_stats():
                 (midnight,),
             ).fetchone()[0]
 
+            env_row = conn.execute(
+                """
+                SELECT avg(ref_shift_mv) AS avg_ref, avg(temp_f) AS avg_temp
+                FROM readings
+                WHERE ts_unix >= ?
+                """,
+                (midnight,),
+            ).fetchone()
+            avg_ref_today = (
+                round(env_row["avg_ref"], 2) if env_row["avg_ref"] is not None else None
+            )
+            avg_temp_today = (
+                round(env_row["avg_temp"], 2) if env_row["avg_temp"] is not None else None
+            )
+
             for i in range(cfg.NUM_CHANNELS):
                 n = i + 1
                 row = conn.execute(
@@ -152,7 +184,9 @@ def api_stats():
                         avg(CASE WHEN ch{n}_state = 'PROTECTING' THEN ch{n}_ma END)
                             AS avg_ma,
                         avg(CASE WHEN ch{n}_state = 'PROTECTING' THEN ch{n}_bus_v END)
-                            AS avg_v
+                            AS avg_v,
+                        avg(CASE WHEN ch{n}_state = 'PROTECTING' THEN ch{n}_impedance_ohm END)
+                            AS avg_z
                     FROM readings WHERE ts_unix >= ?
                     """,
                     (midnight,),
@@ -164,6 +198,7 @@ def api_stats():
                 pct = round(pticks / total * 100, 1) if total else 0
                 avg_ma = round(row["avg_ma"] or 0, 3)
                 avg_v = round(row["avg_v"] or 0, 2)
+                avg_z = round(row["avg_z"] or 0, 1)
 
                 transitions = conn.execute(
                     f"""
@@ -184,7 +219,10 @@ def api_stats():
                         "protecting_pct": pct,
                         "avg_ma": avg_ma,
                         "avg_bus_v": avg_v,
+                        "avg_impedance_ohm": avg_z,
                         "wet_cycles": transitions,
+                        "ref_shift_mv": avg_ref_today,
+                        "temp_f": avg_temp_today,
                     }
                 )
     except Exception as e:
@@ -198,6 +236,60 @@ def api_stats():
             "target_ma": cfg.TARGET_MA,
         }
     )
+
+
+@app.route("/api/sessions")
+def api_sessions():
+    """Recent wet (PROTECTING) episodes for export / Excel workflows."""
+    try:
+        hours = max(1, min(int(request.args.get("hours", 168)), 24 * 365))
+        limit = max(1, min(int(request.args.get("limit", 2000)), 10_000))
+    except ValueError:
+        hours, limit = 168, 2000
+    since = time.time() - hours * 3600
+    try:
+        with _db() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, channel, started_at, ended_at, duration_s, total_ma_s,
+                       avg_ma, avg_impedance_ohm, peak_ma
+                FROM wet_sessions
+                WHERE started_at >= ?
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (since, limit),
+            ).fetchall()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    sessions = []
+    for row in rows:
+        sessions.append({k: row[k] for k in row.keys()})
+    return jsonify({"hours": hours, "limit": limit, "sessions": sessions})
+
+
+@app.route("/api/daily")
+def api_daily():
+    """Today's cumulative mA·s and wet seconds per channel (daily_totals)."""
+    today = time.strftime("%Y-%m-%d")
+    try:
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT * FROM daily_totals WHERE date = ?",
+                (today,),
+            ).fetchone()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    if not row:
+        return jsonify({"date": today, "channels": {}})
+    out: dict[str, dict[str, float]] = {}
+    for i in range(cfg.NUM_CHANNELS):
+        n = i + 1
+        out[str(i)] = {
+            "ma_s": float(row[f"ch{n}_ma_s"] or 0.0),
+            "wet_s": float(row[f"ch{n}_wet_s"] or 0.0),
+        }
+    return jsonify({"date": today, "channels": out})
 
 
 @app.route("/api/export")
@@ -437,6 +529,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <span id="hdr-supply"></span>
     <span id="hdr-total"></span>
     <span id="hdr-wet"></span>
+    <span id="hdr-ref"></span>
+    <span id="hdr-temp"></span>
     <span id="hdr-fault" class="header-fault" style="display:none">⚠ FAULT LATCHED</span>
   </div>
 </header>
@@ -446,7 +540,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div class="section">
     <div class="section-header">
-      <span class="section-title">Current history (mA)</span>
+      <span class="section-title" id="chart-section-title">Channel history</span>
+      <div class="time-btns">
+        <button type="button" onclick="setMetric('ma')" id="btn-metric-ma" class="active">mA</button>
+        <button type="button" onclick="setMetric('impedance')" id="btn-metric-z">Ω</button>
+      </div>
       <div class="time-btns">
         <button type="button" onclick="loadHistory(15)" id="btn-15">15m</button>
         <button type="button" onclick="loadHistory(60)" id="btn-60" class="active">1h</button>
@@ -456,6 +554,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="export-links">
         <a href="/api/export/csv" download>↓ CSV</a>
         <a href="/api/export" download>↓ SQLite</a>
+        <a href="/api/sessions?hours=720&amp;limit=5000" download="wet_sessions.json">↓ Wet sessions JSON</a>
       </div>
     </div>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
@@ -463,8 +562,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div class="section">
     <div class="section-header">
+      <span class="section-title">Today's cumulative protection</span>
+      <span style="font-size:12px;color:var(--csp-text-muted)">mA·s while PROTECTING; charge (C) = mA·s ÷ 1000</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Channel</th>
+          <th>Wet time today</th>
+          <th>mA·s (protecting)</th>
+          <th>Charge (C)</th>
+        </tr>
+      </thead>
+      <tbody id="daily-body"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
       <span class="section-title">Statistics — today</span>
       <span id="stats-since" style="font-size:12px;color:var(--csp-text-muted)"></span>
+      <span style="font-size:11px;color:var(--csp-text-muted)">† Ref Δ / temp: today’s average across all ticks (same value per row).</span>
     </div>
     <table>
       <thead>
@@ -476,6 +594,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <th>Coverage</th>
           <th>Wet cycles</th>
           <th>Bus V avg</th>
+          <th>Avg Z (Ω)</th>
+          <th>Ref Δ (mV)†</th>
+          <th>Temp (°F)†</th>
         </tr>
       </thead>
       <tbody id="stats-body"></tbody>
@@ -488,6 +609,7 @@ const CH_COLORS = ['var(--ch0)','var(--ch1)','var(--ch2)','var(--ch3)','var(--ch
 const NUM_CH = 5;
 let chart = null;
 let activeMinutes = 60;
+let chartMetric = 'ma';
 
 const grid = document.getElementById('ch-grid');
 for (let i = 0; i < NUM_CH; i++) {
@@ -501,6 +623,7 @@ for (let i = 0; i < NUM_CH; i++) {
       <div class="ch-meta">
         Duty: <span id="duty-${i}">—</span>%<br>
         Bus: <span id="busv-${i}">—</span> V<br>
+        Z: <span id="z-${i}">—</span> Ω · Vcell: <span id="vcell-${i}">—</span> V<br>
         Status: <span id="status-${i}">—</span>
       </div>
     </div>`;
@@ -530,7 +653,11 @@ chart = new Chart(ctx, {
     interaction: { mode: 'index', intersect: false },
     plugins: {
       legend: { position: 'top', labels: { boxWidth: 12, font: { size: 12 } } },
-      tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(3)} mA` } }
+      tooltip: { callbacks: { label: ctx => {
+        const u = chartMetric === 'impedance' ? 'Ω' : 'mA';
+        const y = ctx.parsed.y;
+        return ` ${ctx.dataset.label}: ${y != null ? y.toFixed(2) : '—'} ${u}`;
+      }}}
     },
     scales: {
       x: { ticks: { maxTicksLimit: 10, font: { size: 11 }, color: '#5c5c5c' }, grid: { color: 'rgba(43,43,43,0.08)' } },
@@ -553,6 +680,10 @@ async function fetchLive() {
     document.getElementById('hdr-supply').textContent = `Supply: ${d.supply_v_avg}V`;
     document.getElementById('hdr-total').textContent = `Total: ${d.total_ma}mA`;
     document.getElementById('hdr-wet').textContent = `Wet: ${d.wet_channels}/5`;
+    document.getElementById('hdr-ref').textContent =
+      `Shift: ${d.ref_shift_mv ?? '—'} mV [${d.ref_status ?? '—'}]`;
+    document.getElementById('hdr-temp').textContent =
+      d.temp_f != null && d.temp_f !== '' ? `${d.temp_f}°F` : '';
     const faultEl = document.getElementById('hdr-fault');
     faultEl.style.display = d.fault_latched ? '' : 'none';
     document.getElementById('dot').style.background = d.fault_latched ? '#f87171' : '#4ade80';
@@ -576,6 +707,12 @@ async function fetchLive() {
         `${ch.ma.toFixed(3)} <small>mA</small>`;
       document.getElementById(`duty-${i}`).textContent = ch.duty.toFixed(1);
       document.getElementById(`busv-${i}`).textContent = ch.bus_v.toFixed(3);
+      const z = ch.impedance_ohm;
+      document.getElementById(`z-${i}`).textContent =
+        (typeof z === 'number') ? z.toFixed(0) : '—';
+      const vc = ch.cell_voltage_v;
+      document.getElementById(`vcell-${i}`).textContent =
+        (typeof vc === 'number') ? vc.toFixed(3) : '—';
       const st = document.getElementById(`status-${i}`);
       st.textContent = ch.status;
       st.className = ch.status === 'OK' ? 'ok'
@@ -585,6 +722,16 @@ async function fetchLive() {
   } catch (e) {}
 }
 
+function setMetric(m) {
+  chartMetric = m;
+  document.getElementById('btn-metric-ma').className = m === 'ma' ? 'active' : '';
+  document.getElementById('btn-metric-z').className = m === 'impedance' ? 'active' : '';
+  document.getElementById('chart-section-title').textContent =
+    m === 'impedance' ? 'Channel history (impedance Ω)' : 'Channel history (current mA)';
+  chart.options.scales.y.title.text = m === 'impedance' ? 'Ω' : 'mA';
+  loadHistory(activeMinutes);
+}
+
 async function loadHistory(minutes) {
   activeMinutes = minutes;
   ['15','60','360','1440'].forEach(m => {
@@ -592,10 +739,12 @@ async function loadHistory(minutes) {
     if (b) b.className = String(m) === String(minutes) ? 'active' : '';
   });
   try {
-    const d = await fetch(`/api/history?minutes=${minutes}`).then(r => r.json());
+    const d = await fetch(`/api/history?minutes=${minutes}&metric=${chartMetric}`).then(r => r.json());
     if (d.error) return;
     chart.data.labels = d.labels;
-    chart.data.datasets[0].data = d.labels.map(() => d.target);
+    const tgt = d.target;
+    chart.data.datasets[0].hidden = tgt == null;
+    chart.data.datasets[0].data = d.labels.map(() => tgt);
     for (let i = 0; i < NUM_CH; i++) {
       chart.data.datasets[i + 1].data = d.channels[String(i)] || [];
     }
@@ -625,17 +774,44 @@ async function fetchStats() {
         <td>${s.protecting_pct}%</td>
         <td>${s.wet_cycles}</td>
         <td>${s.avg_bus_v.toFixed(2)} V</td>
+        <td>${Number(s.avg_impedance_ohm ?? 0).toFixed(0)}</td>
+        <td>${s.ref_shift_mv != null ? Number(s.ref_shift_mv).toFixed(1) : '—'}</td>
+        <td>${s.temp_f != null ? Number(s.temp_f).toFixed(1) : '—'}</td>
       </tr>
     `).join('');
+  } catch (e) {}
+}
+
+async function fetchDaily() {
+  try {
+    const d = await fetch('/api/daily').then(r => r.json());
+    if (d.error) return;
+    const tbody = document.getElementById('daily-body');
+    if (!d.channels || Object.keys(d.channels).length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4">No daily totals yet (controller running?)</td></tr>';
+      return;
+    }
+    tbody.innerHTML = [0,1,2,3,4].map(i => {
+      const c = d.channels[String(i)] || { ma_s: 0, wet_s: 0 };
+      const q = (c.ma_s || 0) / 1000;
+      return `<tr>
+        <td><span class="ch-dot" style="background:${CH_COLORS[i]}"></span>CH${i+1}</td>
+        <td>${fmtSecs(c.wet_s || 0)}</td>
+        <td>${(c.ma_s || 0).toFixed(0)}</td>
+        <td>${q.toFixed(4)}</td>
+      </tr>`;
+    }).join('');
   } catch (e) {}
 }
 
 setInterval(fetchLive, 500);
 setInterval(() => loadHistory(activeMinutes), 5000);
 setInterval(fetchStats, 15000);
+setInterval(fetchDaily, 30000);
 fetchLive();
 loadHistory(60);
 fetchStats();
+fetchDaily();
 </script>
 </body>
 </html>

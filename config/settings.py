@@ -60,6 +60,23 @@ LATEST_JSON_NAME = "latest.json"
 TELEMETRY_RETENTION_DAYS = 30
 SQLITE_PURGE_EVERY_N_INSERTS = 10_000
 
+# --- Zinc reference electrode (I2C ADC) ---
+# PCF8591 is common on Pi starter kits; ADS1115 for higher resolution.
+ADC_CHIP = "PCF8591"  # "PCF8591" | "ADS1115"
+ZINC_REF_ADC_CHANNEL = 0
+ADC_VREF_MV = 3300
+
+# Protection window from zinc shift (mV) — outer loop nudges TARGET_MA to stay in band
+TARGET_SHIFT_MV = 100
+MAX_SHIFT_MV = 200
+TARGET_MA_STEP = 0.02  # per outer-loop tick (see LOG_INTERVAL_S)
+
+# Commissioning (native potential + ramp); see commissioning.py
+COMMISSIONING_SETTLE_S = 60
+
+# Simulator native zinc baseline (mV)
+SIM_NATIVE_ZINC_MV = 200.0
+
 # --- Simulator ---
 # Wet/dry schedule uses SIM_TIME_SCALE (real seconds per simulated hour); see sensors.py.
 SIM_NOMINAL_BUS_V = 11.8
@@ -67,3 +84,6 @@ SIM_NOISE_MA = 0.05
 SIM_DRIFT_MA = 0.002  # unused by cycle sim; kept for API stability
 SIM_INJECT_FAULT_CH = None  # 0..NUM_CHANNELS-1 to inject overcurrent on that channel
 SIM_INJECT_OVERCURRENT_MA = 3.0
+
+# Temperature — DS18B20 auto-detected under /sys/bus/w1/devices/28-*
+# No GPIO setting in firmware; enable 1-Wire in raspi-config / boot config.

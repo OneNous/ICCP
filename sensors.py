@@ -17,6 +17,7 @@ Time scale : SIM_TIME_SCALE env var sets real-seconds per simulated hour
 
 from __future__ import annotations
 
+import math
 import os
 import random
 import time
@@ -138,6 +139,9 @@ class SimSensorState:
     duties: dict[int, float] = field(
         default_factory=lambda: {i: 0.0 for i in range(cfg.NUM_CHANNELS)}
     )
+    # Phase 7 — optional sim diagnostics (same physics as reference.py / temp.py sim)
+    sim_ref_mv: float | None = None
+    sim_temp_f: float | None = None
 
     def sim_seconds(self) -> float:
         """Elapsed simulated seconds since midnight, wrapping at 86400."""
@@ -205,5 +209,18 @@ def read_all_sim(state: SimSensorState) -> dict[int, ChannelReading]:
             "sim_wet": wet,
             "ok": True,
         }
+
+    native = getattr(cfg, "SIM_NATIVE_ZINC_MV", 200.0)
+    raw_mv = native
+    for ch in range(cfg.NUM_CHANNELS):
+        if state.channel_is_wet(ch, sim_s):
+            d = state.duties.get(ch, 0.0)
+            raw_mv += 25.0 * (d / max(cfg.PWM_MAX_DUTY, 1))
+    state.sim_ref_mv = round(raw_mv + random.gauss(0, 1.5), 2)
+    hour = sim_s / 3600.0
+    base_c = 22.0
+    amp_c = 4.0
+    temp_c = base_c + amp_c * math.sin((hour - 6.0) * math.pi / 9.0)
+    state.sim_temp_f = round((temp_c + random.gauss(0, 0.2)) * 9 / 5 + 32, 2)
 
     return results
