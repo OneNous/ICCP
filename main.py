@@ -194,12 +194,12 @@ def _print_table(
         print("─" * w)
         tpw = live_ch.get("total_power_w") if isinstance(live_ch, dict) else None
         tpw_s = f"{float(tpw):.4f}" if isinstance(tpw, (int, float)) else "—"
-        weak_mx = float(getattr(_cfg, "DUTY_WEAK_WET_MAX", 6.0))
-        cond_mx = float(getattr(_cfg, "DUTY_CONDUCTIVE_MAX", weak_mx))
+        pwm_mx = float(getattr(_cfg, "PWM_MAX_DUTY", 80.0))
+        probe = float(getattr(_cfg, "DUTY_PROBE", 3.0))
         vsoft = float(getattr(_cfg, "VCELL_SOFT_MAX_V", 0.0) or 0.0)
         print(
-            f"  Staging: WEAK≤{weak_mx:.0f}% PWM  CONDUCTIVE≤{cond_mx:.0f}%  "
-            f"Vc≈Bus×PWM/100  (soft Vcell ref {vsoft:.1f} V)"
+            f"  PWM: WEAK/CONDUCTIVE ramp {probe:.0f}%→{pwm_mx:.0f}% "
+            f"(no staging cap); Vc≈Bus×PWM/100  (soft Vcell ref {vsoft:.1f} V)"
         )
         print(
             f"  AnyWet={int(any_wet)}  Latch={int(latched)}  "

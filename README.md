@@ -95,7 +95,14 @@ COILSHIELD_SIM=1 python3 main.py --sim --verbose
 python3 dashboard.py --host 0.0.0.0 --port 8080
 ```
 
-Install Flask on the Pi if needed: `python3 -m pip install flask --break-system-packages` (see `requirements.txt`).
+**Terminal monitor (SSH, no browser):** the same `logs/latest.json` snapshot drives a Textual TUI:
+
+```bash
+python3 tui.py
+# optional: python3 tui.py --poll-interval 0.5
+```
+
+Install Flask on the Pi if needed: `python3 -m pip install flask --break-system-packages` (see `requirements.txt`). Install Textual for the TUI: `python3 -m pip install textual --break-system-packages` (also listed in `requirements.txt`).
 
 **Telemetry files** (under repo `logs/`):
 
@@ -141,7 +148,7 @@ On Raspberry Pi OS (PEP 668), use a project venv for pytest:
 ```bash
 cd ~/coilshield
 python3 -m venv .venv
-.venv/bin/pip install pytest
+.venv/bin/pip install pytest textual
 COILSHIELD_SIM=1 .venv/bin/python -m pytest tests/ -q
 ```
 

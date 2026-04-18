@@ -4,8 +4,8 @@ CoilShield ICCP — per-channel control loop.
 Design principles:
   - No master wet switch. Each channel classifies path quality (DRY / WEAK_WET /
     CONDUCTIVE / PROTECTING) from current and effective impedance (V/I).
-  - DRY: open path → duty 0. WEAK_WET: ramp duty from DUTY_PROBE up to DUTY_WEAK_WET_MAX.
-    CONDUCTIVE ramps up to DUTY_CONDUCTIVE_MAX (then PROTECTING toward TARGET_MA).
+  - DRY: open path → duty 0. WEAK_WET / CONDUCTIVE: ramp PWM from DUTY_PROBE up to
+    PWM_MAX_DUTY (no intermediate % cap); PROTECTING regulates toward TARGET_MA.
     CONDUCTIVE: stable path → ramp toward target. PROTECTING: regulate to TARGET_MA.
   - DRY hysteresis requires measurable I (> noise floor) so Z is finite; at I≈0 with no
     drive, classify WEAK_WET so probes run (avoids false DRY when submerged).
@@ -170,13 +170,8 @@ class Controller:
         protect_ceiling = min(
             float(cfg.DUTY_PROTECT_MAX), float(cfg.PWM_MAX_DUTY)
         )
-        weak_ceiling = min(float(cfg.DUTY_WEAK_WET_MAX), float(cfg.PWM_MAX_DUTY))
-        conductive_ceiling = min(
-            float(getattr(cfg, "DUTY_CONDUCTIVE_MAX", cfg.DUTY_WEAK_WET_MAX)),
-            float(cfg.PWM_MAX_DUTY),
-        )
-        conductive_ceiling = max(weak_ceiling, conductive_ceiling)
-        probe_duty = min(float(cfg.DUTY_PROBE), weak_ceiling)
+        staging_ceiling = float(cfg.PWM_MAX_DUTY)
+        probe_duty = min(float(cfg.DUTY_PROBE), staging_ceiling)
 
         for ch, state in enumerate(self._states):
             r = readings.get(ch, {})
@@ -245,8 +240,8 @@ class Controller:
             if status == ChannelState.DRY:
                 self._pwm.set_duty(ch, 0.0)
             elif status == ChannelState.WEAK_WET:
-                # Ramp Vcell between probe floor and weak ceiling (not stuck at DUTY_PROBE only).
-                lo, hi = probe_duty, weak_ceiling
+                # Ramp from probe floor toward hardware PWM max (no extra staging % cap).
+                lo, hi = probe_duty, staging_ceiling
                 step = float(cfg.PWM_STEP)
                 if current_duty > hi:
                     new_duty = max(hi, current_duty - step)
@@ -259,7 +254,7 @@ class Controller:
                 err = target_ma - current_ma
                 step = 0.5 if err > 0 else (-0.5 if err < 0 else 0.0)
                 self._pwm.set_duty(
-                    ch, clamp(current_duty + step, 0.0, conductive_ceiling)
+                    ch, clamp(current_duty + step, 0.0, staging_ceiling)
                 )
             elif status == ChannelState.PROTECTING:
                 if current_ma < target_ma:
