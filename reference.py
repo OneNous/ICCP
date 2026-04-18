@@ -90,7 +90,7 @@ def _ina219_scalar_mv(sensor: object, source: str) -> float:
 
 def _read_raw_mv_hw() -> float:
     if _ref_ina is None:
-        return 0.0
+        raise RuntimeError("[reference] INA219 unavailable — check I2C wiring and address")
     try:
         src = getattr(cfg, "REF_INA219_SOURCE", "bus_v")
         n = max(1, int(getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1)))
@@ -98,6 +98,8 @@ def _read_raw_mv_hw() -> float:
             return _ina219_scalar_mv(_ref_ina, src)
         samples = [_ina219_scalar_mv(_ref_ina, src) for _ in range(n)]
         return float(statistics.median(samples))
+    except RuntimeError:
+        raise
     except Exception as e:
         print(f"[reference] INA219 read failed: {e}")
         return 0.0
@@ -132,12 +134,12 @@ class ReferenceElectrode:
 
     def save_native(self, mv: float) -> None:
         self.native_mv = mv
-        _update_comm_file(
-            {
-                "native_mv": mv,
-                "native_measured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            }
+        ts = (
+            time.strftime("%Y-%m-%dT%H:%M:%S")
+            if time.time() > 1_000_000_000
+            else "CLOCK_UNSYNCED"
         )
+        _update_comm_file({"native_mv": mv, "native_measured_at": ts})
 
     def read(
         self,
@@ -167,7 +169,11 @@ class ReferenceElectrode:
         statuses: dict[int, str] | None = None,
     ) -> tuple[float, float | None]:
         """Single INA219 sample; shift vs native when baseline exists."""
-        raw = self.read(duties, statuses)
+        try:
+            raw = self.read(duties, statuses)
+        except RuntimeError as e:
+            print(e)
+            return 0.0, None
         if self.native_mv is None:
             return raw, None
         return raw, round(raw - self.native_mv, 2)

@@ -34,6 +34,11 @@ REF_INA219_SOURCE = "bus_v"
 # --- Current targets ---
 TARGET_MA = 1.2
 MAX_MA = 5.0
+# Per-channel overrides (0-indexed). Omit a channel key to use the global value.
+# Example: CHANNEL_TARGET_MA = {1: 1.8}  → CH2 targets 1.8 mA
+#          CHANNEL_MAX_MA    = {1: 3.5}  → CH2 faults above 3.5 mA
+CHANNEL_TARGET_MA: dict = {}
+CHANNEL_MAX_MA: dict = {}
 
 # --- Wet detection ---
 CHANNEL_WET_THRESHOLD_MA = 0.15
