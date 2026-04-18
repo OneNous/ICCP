@@ -61,8 +61,8 @@ STATE_RECHECK_INTERVAL_S = 10.0
 Z_COMPUTE_I_A_MIN = 1e-6
 
 # --- Duty limits per state (% duty cycle) ---
-DUTY_PROBE = 3.0  # WEAK_WET gentle probe
-DUTY_WEAK_WET_MAX = 6.0  # cap for WEAK_WET / CONDUCTIVE ramp
+DUTY_PROBE = 3.0  # WEAK_WET floor: start here, then ramp with PWM_STEP
+DUTY_WEAK_WET_MAX = 6.0  # WEAK_WET ceiling; CONDUCTIVE ramp continues up to this cap
 DUTY_PROTECT_MAX = 100.0  # ceiling in PROTECTING (clamped to PWM_MAX_DUTY in control)
 
 # Rolling window for median effective Ω logging (per channel).

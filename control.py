@@ -4,7 +4,8 @@ CoilShield ICCP — per-channel control loop.
 Design principles:
   - No master wet switch. Each channel classifies path quality (DRY / WEAK_WET /
     CONDUCTIVE / PROTECTING) from current and effective impedance (V/I).
-  - DRY: open path → duty 0. WEAK_WET: high-Z or low mA → capped probe duty only.
+  - DRY: open path → duty 0. WEAK_WET: ramp duty from DUTY_PROBE up to DUTY_WEAK_WET_MAX
+    (then CONDUCTIVE can ramp further toward target).
     CONDUCTIVE: stable path → ramp toward target. PROTECTING: regulate to TARGET_MA.
   - DRY hysteresis requires measurable I (> noise floor) so Z is finite; at I≈0 with no
     drive, classify WEAK_WET so probes run (avoids false DRY when submerged).
@@ -239,7 +240,16 @@ class Controller:
             if status == ChannelState.DRY:
                 self._pwm.set_duty(ch, 0.0)
             elif status == ChannelState.WEAK_WET:
-                self._pwm.set_duty(ch, probe_duty)
+                # Ramp Vcell between probe floor and weak ceiling (not stuck at DUTY_PROBE only).
+                lo, hi = probe_duty, weak_ceiling
+                step = float(cfg.PWM_STEP)
+                if current_duty > hi:
+                    new_duty = max(hi, current_duty - step)
+                elif current_duty < lo:
+                    new_duty = lo
+                else:
+                    new_duty = min(current_duty + step, hi)
+                self._pwm.set_duty(ch, new_duty)
             elif status == ChannelState.CONDUCTIVE:
                 err = target_ma - current_ma
                 step = 0.5 if err > 0 else (-0.5 if err < 0 else 0.0)
