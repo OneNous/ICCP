@@ -40,15 +40,37 @@ MAX_MA = 5.0
 CHANNEL_TARGET_MA: dict = {}
 CHANNEL_MAX_MA: dict = {}
 
-# --- Wet detection ---
+# --- Wet detection (legacy; superseded by CHANNEL_DRY_MA / CHANNEL_CONDUCTIVE_MA) ---
 CHANNEL_WET_THRESHOLD_MA = 0.15
 
-# --- Probe pulse ---
+# --- Wet / conduction thresholds (state machine in control.py) ---
+CHANNEL_DRY_MA = 0.05  # below this → DRY (with DRY_HOLD_TICKS hysteresis)
+CHANNEL_CONDUCTIVE_MA = 0.5  # sustained above this helps qualify → CONDUCTIVE
+
+# --- Impedance guardrails (ohms; V / I) ---
+MAX_EFFECTIVE_OHMS = 12000  # above this → WEAK_WET even if current reads “wet”
+MIN_EFFECTIVE_OHMS = 800  # below this → hold state (short / suspicious; use FAULT path)
+
+# --- Timing / hysteresis ---
+CONDUCTIVE_HOLD_TICKS = 5  # consecutive ticks above weak thresholds → CONDUCTIVE
+DRY_HOLD_TICKS = 5  # consecutive ticks below CHANNEL_DRY_MA → DRY
+
+# --- Duty limits per state (% duty cycle) ---
+DUTY_PROBE = 3.0  # WEAK_WET gentle probe
+DUTY_WEAK_WET_MAX = 6.0  # cap for WEAK_WET / CONDUCTIVE ramp
+DUTY_PROTECT_MAX = 100.0  # ceiling in PROTECTING (clamped to PWM_MAX_DUTY in control)
+
+# Rolling window for median effective Ω logging (per channel).
+IMPEDANCE_MEDIAN_WINDOW = 32
+# Rolling window for std(Z) — film stability / noise (DataLogger).
+Z_STATS_WINDOW = 16
+# EMA smoothing for conductance proxy I/V (Siemens-scale; DataLogger).
+FQI_EMA_ALPHA = 0.15
+
+# --- Probe pulse (deprecated: WEAK_WET uses DUTY_PROBE continuously) ---
 PROBE_DUTY_PCT = 3
 PROBE_DURATION_S = 2.0
 PROBE_INTERVAL_S = 60.0
-# During PROBING, current >= this (mA) means wet/low-Z — exit probe to PROTECTING
-# (omit to use 50% of MAX_MA in control.py).
 PROBE_MAX_MA = 2.0
 
 # --- Fault auto-recovery ---

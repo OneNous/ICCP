@@ -343,6 +343,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     --green-bg: #dcfce7;
     --amber: #b45309;
     --amber-bg: #fef3c7;
+    --blue: #1d4ed8;
+    --blue-bg: #dbeafe;
     --red: #b91c1c;
     --red-bg: #fee2e2;
     --gray-text: #475569;
@@ -426,6 +428,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-bottom: 10px;
   }
   .state-PROTECTING { background: var(--green-bg); color: var(--green); }
+  .state-CONDUCTIVE { background: var(--blue-bg); color: var(--blue); }
+  .state-WEAK_WET { background: var(--amber-bg); color: var(--amber); }
+  .state-DRY { background: var(--gray-bg); color: var(--gray-text); }
   .state-DORMANT { background: var(--gray-bg); color: var(--gray-text); }
   .state-PROBING { background: var(--amber-bg); color: var(--amber); }
   .state-FAULT { background: var(--red-bg); color: var(--red); }
@@ -635,7 +640,7 @@ for (let i = 0; i < NUM_CH; i++) {
       <div class="ch-label">
         <span class="ch-dot" style="background:${CH_COLORS[i]}"></span>Channel ${i+1}
       </div>
-      <div class="ch-state state-DORMANT" id="state-${i}">DORMANT</div>
+      <div class="ch-state state-DRY" id="state-${i}">DRY</div>
       <div class="ch-ma" id="ma-${i}">— <small>mA</small></div>
       <div class="ch-meta">
         Duty: <span id="duty-${i}">—</span>%<br>

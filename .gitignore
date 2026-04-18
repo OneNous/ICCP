@@ -7,6 +7,8 @@ venv/
 clear_fault
 logs/*.csv
 logs/*.db
+logs/*.db-shm
+logs/*.db-wal
 logs/latest.json
 logs/*.log
 .pytest_cache/

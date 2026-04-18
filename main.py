@@ -91,6 +91,7 @@ def _print_table(
     ref_hw_line: str,
     temp_f: float | None,
     sim_line: str = "",
+    z_median: dict[int, float | None] | None = None,
 ) -> None:
     try:
         if sim_line:
@@ -110,15 +111,17 @@ def _print_table(
             )
         else:
             print(f"  Temp: {temp_str}")
-        print("─" * 90)
+        print("─" * 102)
         print(
             f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':>8}  {'Duty%':<8} "
-            f"{'Ω imp':<10} {'Vc':<8} {'Wet':<5}"
+            f"{'Ω imp':<10} {'Ω med':<10} {'Vc':<8} {'Wet':<5}"
         )
-        print("─" * 90)
+        print("─" * 102)
         for i in sorted(readings.keys()):
             r = readings[i]
             st = ch_status.get(i, "?")
+            zm = z_median.get(i) if z_median else None
+            zmed_s = f"{zm:,.0f}" if zm is not None else "—"
             if r.get("ok"):
                 ma = float(r.get("current", 0))
                 bus_v = float(r.get("bus_v", 0))
@@ -127,11 +130,14 @@ def _print_table(
                 vc = round(bus_v * (duty / 100.0), 3)
                 print(
                     f"{i + 1:<4} {st:<12} {bus_v:<8.3f} {ma:>8.2f}  {duty:<8.1f} "
-                    f"{imp:<10,.0f} {vc:<8.3f} {int(st == 'PROTECTING'):<5}"
+                    f"{imp:<10,.0f} {zmed_s:<10} {vc:<8.3f} {int(st == 'PROTECTING'):<5}"
                 )
             else:
-                print(f"{i + 1:<4} {st:<12} {'--':<8} {'ERR':<10} {'0':<8} {'—':<10} {'—':<8}")
-        print("─" * 90)
+                print(
+                    f"{i + 1:<4} {st:<12} {'--':<8} {'--':>8}  {'--':<8} "
+                    f"{'—':<10} {'—':<10} {'—':<8} {'—':<5}"
+                )
+        print("─" * 102)
         print(
             f"  AnyWet={int(any_wet)}  Latch={int(latched)}  "
             f"Faults: {'; '.join(faults) or '—'}"
@@ -260,6 +266,13 @@ def main() -> int:
             temp_f = temp_mod.read_fahrenheit()
             if not temp_mod.in_operating_range(temp_f):
                 ctrl.thermal_off()
+                log.feed_cooling_cycle(
+                    in_band=False,
+                    ts_unix=time.time(),
+                    dt_s=cfg.SAMPLE_INTERVAL_S,
+                    ch_status=ctrl.channel_statuses(),
+                    temp_f=temp_f,
+                )
                 if not _thermal_paused:
                     reason = (
                         "too cold — possible freeze"
@@ -327,6 +340,13 @@ def main() -> int:
             )
             ref_hw_line = ref_hw_message()
             ref_baseline_set = ref.native_mv is not None
+            log.feed_cooling_cycle(
+                in_band=True,
+                ts_unix=time.time(),
+                dt_s=cfg.SAMPLE_INTERVAL_S,
+                ch_status=ch_status,
+                temp_f=temp_f,
+            )
             log.record(
                 readings,
                 any_wet,
@@ -383,6 +403,10 @@ def main() -> int:
                     ref_hw_message(),
                     temp_f,
                     sim_line,
+                    z_median={
+                        i: ctrl.median_impedance_ohm(i)
+                        for i in range(cfg.NUM_CHANNELS)
+                    },
                 )
 
             elif faults or fault_latched:

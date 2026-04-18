@@ -27,7 +27,7 @@ def test_logger_writes_sqlite_latest_json_and_csv(
 
     readings = _sample_readings()
     duties = {i: float(i * 5) for i in range(cfg.NUM_CHANNELS)}
-    ch_status = {i: "DORMANT" for i in range(cfg.NUM_CHANNELS)}
+    ch_status = {i: "DRY" for i in range(cfg.NUM_CHANNELS)}
 
     log = DataLogger()
     log.record(
@@ -59,6 +59,15 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     assert latest["ref_status"] == "N/A"
     assert latest["ref_baseline_set"] is False
     assert latest["ref_hw_message"] == "sim"
+    assert "total_power_w" in latest
+    ch0 = latest["channels"]["0"]
+    assert "power_w" in ch0 and "z_delta_ohm" in ch0
+    assert "coulombs_today_c" in ch0
+    assert "energy_today_j" in ch0
+    assert "surface_hint" in ch0
+    assert "sigma_proxy_s" in ch0
+    assert "fqi_smooth_s" in ch0
+    assert "cross" in latest and "i_cv" in latest["cross"]
 
     conn = sqlite3.connect(str(tmp_path / cfg.SQLITE_DB_NAME))
     try:
@@ -67,10 +76,20 @@ def test_logger_writes_sqlite_latest_json_and_csv(
         row = conn.execute(
             "SELECT ch1_state, wet, ch1_impedance_ohm, ch1_cell_voltage_v FROM readings LIMIT 1"
         ).fetchone()
-        assert row[0] == "DORMANT"
+        assert row[0] == "DRY"
         assert row[1] == 0
         assert row[2] is not None and float(row[2]) > 1000  # high Z when ~0.1 mA
         assert row[3] is not None
+        row_pw = conn.execute(
+            "SELECT total_power_w, ch1_power_w, ch1_z_delta_ohm FROM readings LIMIT 1"
+        ).fetchone()
+        assert row_pw is not None
+        assert row_pw[0] is not None and float(row_pw[0]) >= 0
+        assert row_pw[1] is not None
+        cr = conn.execute(
+            "SELECT cross_i_cv, cross_z_cv FROM readings LIMIT 1"
+        ).fetchone()
+        assert cr is not None
     finally:
         conn.close()
 
@@ -78,7 +97,43 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     assert len(csv_files) == 1
     text = csv_files[0].read_text(encoding="utf-8")
     assert "ch1_state" in text
-    assert "DORMANT" in text
+    assert "DRY" in text
+
+
+def test_cooling_cycle_row_on_band_exit(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "SQLITE_PURGE_EVERY_N_INSERTS", 999_999_999)
+
+    from logger import DataLogger
+
+    log = DataLogger()
+    t0 = 1_000_000.0
+    st = {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)}
+    log.feed_cooling_cycle(
+        in_band=True, ts_unix=t0, dt_s=0.5, ch_status=st, temp_f=72.0
+    )
+    log.feed_cooling_cycle(
+        in_band=True, ts_unix=t0 + 0.5, dt_s=0.5, ch_status=st, temp_f=71.0
+    )
+    log.feed_cooling_cycle(
+        in_band=False, ts_unix=t0 + 2.0, dt_s=0.5, ch_status=st, temp_f=85.0
+    )
+    log.close()
+
+    conn = sqlite3.connect(str(tmp_path / cfg.SQLITE_DB_NAME))
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM cooling_cycles").fetchone()[0]
+        assert n == 1
+        row = conn.execute(
+            "SELECT duration_s, ch1_protect_s, avg_temp_f FROM cooling_cycles LIMIT 1"
+        ).fetchone()
+        assert row[0] == pytest.approx(2.0, rel=0, abs=0.05)
+        assert float(row[1]) == pytest.approx(1.0, rel=0, abs=0.05)
+        assert row[2] is not None
+    finally:
+        conn.close()
 
 
 def test_fault_log_signature_dedupe(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,7 +170,7 @@ def test_wet_session_row_on_protecting_cycle(
     log = DataLogger()
     log.record(
         readings, False, [], duties, False,
-        {i: "DORMANT" for i in range(cfg.NUM_CHANNELS)},
+        {i: "DRY" for i in range(cfg.NUM_CHANNELS)},
         ref_raw_mv=1.0, ref_hw_ok=True,
     )
     log.record(
@@ -125,7 +180,7 @@ def test_wet_session_row_on_protecting_cycle(
     )
     log.record(
         readings, False, [], duties, False,
-        {i: "DORMANT" for i in range(cfg.NUM_CHANNELS)},
+        {i: "DRY" for i in range(cfg.NUM_CHANNELS)},
         ref_raw_mv=1.0, ref_hw_ok=True,
     )
     log.close()

@@ -115,9 +115,15 @@ def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> floa
     native = getattr(cfg, "SIM_NATIVE_ZINC_MV", 200.0)
     shift = 0.0
     for i in range(cfg.NUM_CHANNELS):
-        if statuses.get(i) == "PROTECTING":
-            d = duties.get(i, 0.0)
-            shift += 25.0 * (d / max(cfg.PWM_MAX_DUTY, 1))
+        st = statuses.get(i)
+        d = duties.get(i, 0.0)
+        norm = d / max(cfg.PWM_MAX_DUTY, 1)
+        if st == "PROTECTING":
+            shift += 25.0 * norm
+        elif st == "CONDUCTIVE":
+            shift += 18.0 * norm
+        elif st == "WEAK_WET":
+            shift += 8.0 * norm
     return round(native + shift + random.gauss(0, 1.5), 2)
 
 

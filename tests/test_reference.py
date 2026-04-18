@@ -28,7 +28,7 @@ def test_read_raw_and_shift_single_sample(monkeypatch: pytest.MonkeyPatch) -> No
     ref = ReferenceElectrode()
     ref.native_mv = 200.0
     duties = {0: 80.0, 1: 0.0}
-    statuses = {0: "PROTECTING", 1: "DORMANT"}
+    statuses = {0: "PROTECTING", 1: "DRY"}
     raw, shift = ref.read_raw_and_shift(duties=duties, statuses=statuses)
     assert raw == ref.last_raw_mv
     assert shift is not None
@@ -42,7 +42,7 @@ def test_shift_mv_sim(monkeypatch: pytest.MonkeyPatch) -> None:
     ref = ReferenceElectrode()
     ref.native_mv = 200.0
     duties = {0: 80.0, 1: 0.0}
-    statuses = {0: "PROTECTING", 1: "DORMANT"}
+    statuses = {0: "PROTECTING", 1: "DRY"}
     shift = ref.shift_mv(duties=duties, statuses=statuses)
     assert shift is not None
     assert 15 <= shift <= 40  # ~25 mV from one full-duty protecting channel + noise

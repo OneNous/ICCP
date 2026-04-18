@@ -2,13 +2,11 @@
 CoilShield ICCP — per-channel control loop.
 
 Design principles:
-  - No master wet switch. Each channel self-detects wet/dry via current reading.
-  - Anodes touch the coil surface directly. Dry = no ionic path = no current.
-    Wet = condensate film = ionic path established = regulate to target.
-  - Same TARGET_MA on every channel — longer wet dwell at drain-prone spots
-    delivers more coulombs over time; no install-time position weighting.
-  - Dormant channels send a brief probe pulse every PROBE_INTERVAL_S to detect
-    re-wetting without waiting for the next commissioning cycle.
+  - No master wet switch. Each channel classifies path quality (DRY / WEAK_WET /
+    CONDUCTIVE / PROTECTING) from current and effective impedance (V/I).
+  - DRY: open path → duty 0. WEAK_WET: high-Z or low mA → capped probe duty only.
+    CONDUCTIVE: stable path → ramp toward target. PROTECTING: regulate to TARGET_MA.
+  - FAULT is orthogonal (over/under-voltage, overcurrent, read errors).
   - Fault auto-recovery: channel retries after FAULT_RETRY_INTERVAL_S.
     After FAULT_RETRY_MAX failures → permanent latch (manual clear needed).
   - Incremental PWM only — no PID. Slow steps prevent current spikes into
@@ -18,7 +16,9 @@ Design principles:
 from __future__ import annotations
 
 import os
+import statistics
 import time
+from collections import deque
 
 import config.settings as cfg
 
@@ -26,6 +26,42 @@ _SIM = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 if not _SIM:
     import RPi.GPIO as GPIO  # noqa: N814
+
+
+def clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+def classify_channel(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
+    """
+    Classify conduction path once per tick (before actuation).
+    Does not return PROTECTING — promotion happens in Controller.update.
+    """
+    z_ohm = (v_bus / (i_ma / 1000.0)) if i_ma > 0.01 else float("inf")
+
+    if z_ohm < float(cfg.MIN_EFFECTIVE_OHMS):
+        return ch.status
+
+    if i_ma < float(cfg.CHANNEL_DRY_MA):
+        ch.dry_count += 1
+        ch.conductive_count = 0
+        if ch.dry_count >= int(cfg.DRY_HOLD_TICKS):
+            return ChannelState.DRY
+        return ch.status
+
+    ch.dry_count = 0
+
+    weak_by_impedance = z_ohm > float(cfg.MAX_EFFECTIVE_OHMS)
+    weak_by_current = i_ma < float(cfg.CHANNEL_CONDUCTIVE_MA)
+
+    if weak_by_impedance or weak_by_current:
+        ch.conductive_count = 0
+        return ChannelState.WEAK_WET
+
+    ch.conductive_count += 1
+    if ch.conductive_count >= int(cfg.CONDUCTIVE_HOLD_TICKS):
+        return ChannelState.CONDUCTIVE
+    return ChannelState.WEAK_WET
 
 
 class PWMBank:
@@ -44,7 +80,11 @@ class PWMBank:
                 self._pwm.append(p)
 
     def set_duty(self, ch: int, duty: float) -> None:
-        duty = float(max(cfg.PWM_MIN_DUTY, min(cfg.PWM_MAX_DUTY, duty)))
+        duty = float(duty)
+        if duty <= 0.0:
+            duty = 0.0
+        else:
+            duty = float(max(cfg.PWM_MIN_DUTY, min(cfg.PWM_MAX_DUTY, duty)))
         self._duties[ch] = duty
         if not _SIM:
             self._pwm[ch].ChangeDutyCycle(int(round(duty)))
@@ -70,19 +110,22 @@ class PWMBank:
 class ChannelState:
     """Runtime state for one anode channel."""
 
-    DORMANT    = "DORMANT"
-    PROBING    = "PROBING"
+    DRY = "DRY"
+    WEAK_WET = "WEAK_WET"
+    CONDUCTIVE = "CONDUCTIVE"
     PROTECTING = "PROTECTING"
-    FAULT      = "FAULT"
+    FAULT = "FAULT"
 
     def __init__(self, ch: int) -> None:
         self.ch = ch
-        self.status = self.DORMANT
-        self.last_probe_time: float = 0.0
-        self.probe_since: float | None = None
+        self.status = self.DRY
+        self.conductive_count: int = 0
+        self.dry_count: int = 0
         self.latch_message: str = ""
-        self.fault_time: float = 0.0       # when the fault was latched
-        self.fault_retry_count: int = 0    # consecutive failed retries
+        self.fault_time: float = 0.0  # when the fault was latched
+        self.fault_retry_count: int = 0  # consecutive failed retries
+        wlen = max(4, int(getattr(cfg, "IMPEDANCE_MEDIAN_WINDOW", 32)))
+        self._z_window: deque[float] = deque(maxlen=wlen)
 
 
 class Controller:
@@ -103,6 +146,12 @@ class Controller:
         self._faults = []
         self._check_clear_fault()
 
+        protect_ceiling = min(
+            float(cfg.DUTY_PROTECT_MAX), float(cfg.PWM_MAX_DUTY)
+        )
+        weak_ceiling = min(float(cfg.DUTY_WEAK_WET_MAX), float(cfg.PWM_MAX_DUTY))
+        probe_duty = min(float(cfg.DUTY_PROBE), weak_ceiling)
+
         for ch, state in enumerate(self._states):
             r = readings.get(ch, {})
 
@@ -110,7 +159,6 @@ class Controller:
                 self._pwm.set_duty(ch, 0.0)
                 if state.latch_message:
                     self._faults.append(state.latch_message)
-                # Auto-recovery check
                 self._maybe_auto_clear_fault(ch, state, r)
                 continue
 
@@ -119,27 +167,14 @@ class Controller:
                 self._faults.append(
                     f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}"
                 )
-                state.probe_since = None
-                if state.status in (ChannelState.PROBING, ChannelState.PROTECTING):
-                    state.status = ChannelState.DORMANT
-                    state.last_probe_time = time.monotonic()
+                if state.status != ChannelState.FAULT:
+                    state.status = ChannelState.DRY
                 continue
 
             current_ma = float(r["current"])
             bus_v = float(r["bus_v"])
-
-            # Probe early-exit: high current during a probe pulse means the channel
-            # is wet with low impedance. This is not a fault — abort the probe and
-            # hand off to the protection loop rather than hard-faulting.
-            # PROBE_MAX_MA defaults to 50% of MAX_MA, leaving plenty of headroom
-            # below the fault threshold while still being well above the wet threshold.
-            if state.status == ChannelState.PROBING:
-                probe_max_ma = getattr(cfg, "PROBE_MAX_MA", cfg.MAX_MA * 0.5)
-                if current_ma >= probe_max_ma:
-                    state.probe_since = None
-                    state.status = ChannelState.PROTECTING
-                    self._pwm.set_duty(ch, 0.0)
-                    continue  # protection loop takes over next tick from duty=0
+            z_log = bus_v / max(current_ma / 1000.0, 1e-6)
+            state._z_window.append(z_log)
 
             if current_ma > self._channel_max_ma(ch):
                 self._latch_fault(
@@ -160,52 +195,36 @@ class Controller:
                 )
                 continue
 
-            if state.status == ChannelState.PROBING:
-                if state.probe_since is None:
-                    state.probe_since = time.monotonic()
-                if time.monotonic() - state.probe_since < cfg.PROBE_DURATION_S:
-                    self._pwm.set_duty(ch, float(cfg.PROBE_DUTY_PCT))
-                    continue
-                state.probe_since = None
-                if current_ma >= cfg.CHANNEL_WET_THRESHOLD_MA:
-                    state.status = ChannelState.PROTECTING
-                else:
-                    state.status = ChannelState.DORMANT
-                    state.last_probe_time = time.monotonic()
-                    self._pwm.set_duty(ch, 0.0)
-                    continue
-
-            channel_is_wet = current_ma >= cfg.CHANNEL_WET_THRESHOLD_MA
-
-            if not channel_is_wet:
-                self._pwm.set_duty(ch, 0.0)
-                if state.status == ChannelState.PROBING:
-                    state.status = ChannelState.DORMANT
-                    state.last_probe_time = time.monotonic()
-                    state.probe_since = None
-                elif state.status == ChannelState.PROTECTING:
-                    state.status = ChannelState.DORMANT
-                    state.last_probe_time = time.monotonic()
-                elif state.status == ChannelState.DORMANT:
-                    elapsed = time.monotonic() - state.last_probe_time
-                    if elapsed >= cfg.PROBE_INTERVAL_S:
-                        state.status = ChannelState.PROBING
-                        state.probe_since = time.monotonic()
-                        self._pwm.set_duty(ch, float(cfg.PROBE_DUTY_PCT))
-                continue
-
-            state.status = ChannelState.PROTECTING
+            classified = classify_channel(state, current_ma, bus_v, cfg)
             target_ma = self._channel_target(ch)
+            status = classified
+            if (
+                classified == ChannelState.CONDUCTIVE
+                and abs(current_ma - target_ma) < 0.2
+            ):
+                status = ChannelState.PROTECTING
+            state.status = status
+
             current_duty = self._pwm.duty(ch)
 
-            if current_ma < target_ma:
-                new_duty = current_duty + cfg.PWM_STEP
-            elif current_ma > target_ma * 1.05:
-                new_duty = current_duty - cfg.PWM_STEP
-            else:
-                new_duty = current_duty
-
-            self._pwm.set_duty(ch, new_duty)
+            if status == ChannelState.DRY:
+                self._pwm.set_duty(ch, 0.0)
+            elif status == ChannelState.WEAK_WET:
+                self._pwm.set_duty(ch, probe_duty)
+            elif status == ChannelState.CONDUCTIVE:
+                err = target_ma - current_ma
+                step = 0.5 if err > 0 else (-0.5 if err < 0 else 0.0)
+                self._pwm.set_duty(
+                    ch, clamp(current_duty + step, 0.0, weak_ceiling)
+                )
+            elif status == ChannelState.PROTECTING:
+                if current_ma < target_ma:
+                    new_duty = current_duty + cfg.PWM_STEP
+                elif current_ma > target_ma * 1.05:
+                    new_duty = current_duty - cfg.PWM_STEP
+                else:
+                    new_duty = current_duty
+                self._pwm.set_duty(ch, clamp(new_duty, 0.0, protect_ceiling))
 
         self._fault_latched = any(s.status == ChannelState.FAULT for s in self._states)
         return self._faults, self._fault_latched
@@ -248,10 +267,8 @@ class Controller:
                     f"({current_ma:.4f} mA < {recovery_threshold:.2f} mA): "
                     f"clearing fault"
                 )
-                state.status = ChannelState.DORMANT
+                state.status = ChannelState.DRY
                 state.latch_message = ""
-                state.last_probe_time = time.monotonic()
-                state.probe_since = None
                 state.fault_retry_count += 1
                 return
             # Current still elevated — don't fall through to timed retry
@@ -262,15 +279,13 @@ class Controller:
         if elapsed < retry_interval:
             return
 
-        # Time to retry — clear fault and return to DORMANT for re-probe
+        # Time to retry — clear fault and return to DRY for re-classification
         print(
             f"[control] CH{ch + 1} auto-retry "
             f"({state.fault_retry_count + 1}/{max_retries}): clearing fault"
         )
-        state.status = ChannelState.DORMANT
+        state.status = ChannelState.DRY
         state.latch_message = ""
-        state.last_probe_time = time.monotonic()
-        state.probe_since = None
         state.fault_retry_count += 1
 
     def update_potential_target(self, shift_mv: float | None) -> None:
@@ -296,6 +311,13 @@ class Controller:
 
     def channel_statuses(self) -> dict[int, str]:
         return {i: self._states[i].status for i in range(cfg.NUM_CHANNELS)}
+
+    def median_impedance_ohm(self, ch: int) -> float | None:
+        """Median effective Ω over the rolling window (None until enough samples)."""
+        w = self._states[ch]._z_window
+        if len(w) < 3:
+            return None
+        return float(statistics.median(w))
 
     @property
     def fault_latched(self) -> bool:
@@ -334,10 +356,8 @@ class Controller:
             return
         for state in self._states:
             if state.status == ChannelState.FAULT:
-                state.status = ChannelState.DORMANT
+                state.status = ChannelState.DRY
                 state.latch_message = ""
-                state.last_probe_time = 0.0
-                state.probe_since = None
                 state.fault_retry_count = 0  # manual clear resets retry count
                 state.fault_time = 0.0
         self._fault_latched = False
