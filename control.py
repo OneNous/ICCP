@@ -11,7 +11,9 @@ Design principles:
     re-wetting without waiting for the next commissioning cycle.
   - Fault auto-recovery: channel retries after FAULT_RETRY_INTERVAL_S.
     After FAULT_RETRY_MAX failures → permanent latch (manual clear needed).
-  - Incremental PWM only — no PID. Slow steps prevent current spikes into
+  - Proportional PWM stepping: step size scales with |error| * PWM_KP,
+    clamped to [PWM_STEP, PWM_MAX_STEP]. Far from target = fast ramp,
+    near target = fine adjustment. Caps prevent current spikes into
     overprotection territory on aluminum-containing coils.
 """
 
@@ -198,10 +200,14 @@ class Controller:
             target_ma = self._channel_target(ch)
             current_duty = self._pwm.duty(ch)
 
+            kp = float(getattr(cfg, "PWM_KP", 10.0))
+            max_step = int(getattr(cfg, "PWM_MAX_STEP", cfg.PWM_STEP))
+            step = int(max(cfg.PWM_STEP, min(max_step, round(abs(current_ma - target_ma) * kp))))
+
             if current_ma < target_ma:
-                new_duty = current_duty + cfg.PWM_STEP
+                new_duty = current_duty + step
             elif current_ma > target_ma * 1.05:
-                new_duty = current_duty - cfg.PWM_STEP
+                new_duty = current_duty - step
             else:
                 new_duty = current_duty
 

@@ -58,7 +58,9 @@ FAULT_RETRY_MAX = 10
 
 # --- PWM ---
 PWM_FREQUENCY_HZ = 1000
-PWM_STEP = 1
+PWM_STEP = 1        # minimum duty step per tick (%)
+PWM_MAX_STEP = 5    # maximum duty step per tick; proportional ramp caps here
+PWM_KP = 10.0       # proportional gain: duty steps per mA of current error
 PWM_MIN_DUTY = 1
 PWM_MAX_DUTY = 80
 
