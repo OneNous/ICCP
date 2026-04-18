@@ -6,6 +6,11 @@ Design principles:
     CONDUCTIVE / PROTECTING) from current and effective impedance (V/I).
   - DRY: open path → duty 0. WEAK_WET: high-Z or low mA → capped probe duty only.
     CONDUCTIVE: stable path → ramp toward target. PROTECTING: regulate to TARGET_MA.
+  - DRY hysteresis requires measurable I (> noise floor) so Z is finite; at I≈0 with no
+    drive, classify WEAK_WET so probes run (avoids false DRY when submerged).
+  - Hysteresis counters reset every STATE_RECHECK_INTERVAL_S for fresh classification.
+  - Low-Z guard (Z < MIN_EFFECTIVE_OHMS): hold non-DRY status to avoid thrash; from DRY
+    return WEAK_WET so probe duty can run (avoids DRY+finite-I short latch at 0% PWM).
   - FAULT is orthogonal (over/under-voltage, overcurrent, read errors).
   - Fault auto-recovery: channel retries after FAULT_RETRY_INTERVAL_S.
     After FAULT_RETRY_MAX failures → permanent latch (manual clear needed).
@@ -36,20 +41,34 @@ def classify_channel(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
     """
     Classify conduction path once per tick (before actuation).
     Does not return PROTECTING — promotion happens in Controller.update.
+
+    DRY evidence needs finite Z (I above the same 0.01 mA floor as z_ohm); at the
+    noise floor we do not accumulate dry_count so WEAK_WET / probe can run in water.
+
+    If Z is below MIN_EFFECTIVE_OHMS (suspiciously low), hold prior status for non-DRY
+    channels to avoid thrash; from DRY, promote to WEAK_WET so probe duty can clarify.
     """
     z_ohm = (v_bus / (i_ma / 1000.0)) if i_ma > 0.01 else float("inf")
 
     if z_ohm < float(cfg.MIN_EFFECTIVE_OHMS):
+        if ch.status == ChannelState.DRY:
+            ch.dry_count = 0
+            ch.conductive_count = 0
+            return ChannelState.WEAK_WET
         return ch.status
 
-    if i_ma < float(cfg.CHANNEL_DRY_MA):
+    dry_ma = float(cfg.CHANNEL_DRY_MA)
+    if i_ma < dry_ma and i_ma > 0.01:
         ch.dry_count += 1
         ch.conductive_count = 0
         if ch.dry_count >= int(cfg.DRY_HOLD_TICKS):
             return ChannelState.DRY
         return ch.status
 
-    ch.dry_count = 0
+    if i_ma >= dry_ma:
+        ch.dry_count = 0
+    else:
+        ch.dry_count = 0
 
     weak_by_impedance = z_ohm > float(cfg.MAX_EFFECTIVE_OHMS)
     weak_by_current = i_ma < float(cfg.CHANNEL_CONDUCTIVE_MA)
@@ -124,6 +143,7 @@ class ChannelState:
         self.latch_message: str = ""
         self.fault_time: float = 0.0  # when the fault was latched
         self.fault_retry_count: int = 0  # consecutive failed retries
+        self.last_state_recheck_monotonic: float = time.monotonic()
         wlen = max(4, int(getattr(cfg, "IMPEDANCE_MEDIAN_WINDOW", 32)))
         self._z_window: deque[float] = deque(maxlen=wlen)
 
@@ -173,8 +193,6 @@ class Controller:
 
             current_ma = float(r["current"])
             bus_v = float(r["bus_v"])
-            z_log = bus_v / max(current_ma / 1000.0, 1e-6)
-            state._z_window.append(z_log)
 
             if current_ma > self._channel_max_ma(ch):
                 self._latch_fault(
@@ -194,6 +212,17 @@ class Controller:
                     f"CH{ch + 1} OVERVOLTAGE: {bus_v:.2f} V (max {cfg.MAX_BUS_V} V)",
                 )
                 continue
+
+            now = time.monotonic()
+            recheck_s = float(getattr(cfg, "STATE_RECHECK_INTERVAL_S", 10.0))
+            if now - state.last_state_recheck_monotonic >= recheck_s:
+                state.last_state_recheck_monotonic = now
+                state.dry_count = 0
+                state.conductive_count = 0
+
+            i_floor = float(getattr(cfg, "Z_COMPUTE_I_A_MIN", 1e-6))
+            z_log = bus_v / max(current_ma / 1000.0, i_floor)
+            state._z_window.append(z_log)
 
             classified = classify_channel(state, current_ma, bus_v, cfg)
             target_ma = self._channel_target(ch)

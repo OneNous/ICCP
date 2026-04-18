@@ -54,6 +54,11 @@ MIN_EFFECTIVE_OHMS = 800  # below this → hold state (short / suspicious; use F
 # --- Timing / hysteresis ---
 CONDUCTIVE_HOLD_TICKS = 5  # consecutive ticks above weak thresholds → CONDUCTIVE
 DRY_HOLD_TICKS = 5  # consecutive ticks below CHANNEL_DRY_MA → DRY
+# Reset dry_count / conductive_count on this wall-clock cadence so stages can move.
+STATE_RECHECK_INTERVAL_S = 10.0
+
+# Minimum I (A) when computing R = V/I for display and Z windows (noise floor).
+Z_COMPUTE_I_A_MIN = 1e-6
 
 # --- Duty limits per state (% duty cycle) ---
 DUTY_PROBE = 3.0  # WEAK_WET gentle probe

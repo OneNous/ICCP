@@ -646,7 +646,8 @@ for (let i = 0; i < NUM_CH; i++) {
         Duty: <span id="duty-${i}">—</span>%<br>
         Bus: <span id="busv-${i}">—</span> V<br>
         Z: <span id="z-${i}">—</span> Ω · Vcell: <span id="vcell-${i}">—</span> V<br>
-        Status: <span id="status-${i}">—</span>
+        P: <span id="pow-${i}">—</span> W · E: <span id="enj-${i}">—</span> J<br>
+        η: <span id="eff-${i}">—</span> mA/% · Status: <span id="status-${i}">—</span>
       </div>
     </div>`;
 }
@@ -700,7 +701,8 @@ async function fetchLive() {
 
     document.getElementById('ts').textContent = d.ts;
     document.getElementById('hdr-supply').textContent = `Supply: ${d.supply_v_avg}V`;
-    document.getElementById('hdr-total').textContent = `Total: ${d.total_ma}mA`;
+    document.getElementById('hdr-total').textContent =
+      `Total: ${d.total_ma}mA · ${(d.total_power_w != null && d.total_power_w !== '') ? Number(d.total_power_w).toFixed(3) + 'W' : '—'}`;
     document.getElementById('hdr-wet').textContent =
       `Wet: ${d.wet_channels}/__NUM_CH__`;
     const raw = (d.ref_raw_mv != null && d.ref_raw_mv !== '')
@@ -758,6 +760,15 @@ async function fetchLive() {
       st.className = ch.status === 'OK' ? 'ok'
         : ch.status === 'ERR' ? 'err'
         : ch.status === 'DRY' ? 'dry' : 'low';
+      const pw = ch.power_w;
+      document.getElementById(`pow-${i}`).textContent =
+        (typeof pw === 'number') ? pw.toFixed(4) : '—';
+      const ej = ch.energy_today_j;
+      document.getElementById(`enj-${i}`).textContent =
+        (typeof ej === 'number') ? ej.toFixed(2) : '—';
+      const ef = ch.efficiency_ma_per_pct;
+      document.getElementById(`eff-${i}`).textContent =
+        (typeof ef === 'number') ? ef.toFixed(3) : '—';
     }
   } catch (e) {}
 }

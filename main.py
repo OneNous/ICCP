@@ -92,6 +92,7 @@ def _print_table(
     temp_f: float | None,
     sim_line: str = "",
     z_median: dict[int, float | None] | None = None,
+    live_ch: dict[str, object] | None = None,
 ) -> None:
     try:
         if sim_line:
@@ -111,35 +112,66 @@ def _print_table(
             )
         else:
             print(f"  Temp: {temp_str}")
-        print("─" * 102)
+        import config.settings as _cfg
+
+        i_floor = float(getattr(_cfg, "Z_COMPUTE_I_A_MIN", 1e-6))
+        w = 132
+        print("─" * w)
         print(
             f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':>8}  {'Duty%':<8} "
-            f"{'Ω imp':<10} {'Ω med':<10} {'Vc':<8} {'Wet':<5}"
+            f"{'Ω imp':<10} {'Ω med':<10} {'Vc':<8} {'Wet':<5} "
+            f"{'P(W)':<9} {'E(J)':<10} {'η':<10}"
         )
-        print("─" * 102)
+        print("─" * w)
         for i in sorted(readings.keys()):
             r = readings[i]
             st = ch_status.get(i, "?")
             zm = z_median.get(i) if z_median else None
-            zmed_s = f"{zm:,.0f}" if zm is not None else "—"
+            ch_map = (
+                live_ch.get("channels", {})
+                if isinstance(live_ch, dict)
+                else {}
+            )
+            chd = ch_map.get(str(i), {}) if isinstance(ch_map, dict) else {}
             if r.get("ok"):
                 ma = float(r.get("current", 0))
                 bus_v = float(r.get("bus_v", 0))
                 duty = float(duties.get(i, 0))
-                imp = round(bus_v / max(ma / 1000, 0.00001)) if ma > 0 else 0
+                if ma > 0.01:
+                    z_inst = bus_v / max(ma / 1000.0, i_floor)
+                    imp_s = f"{z_inst:,.0f}"
+                    zmed_s = f"{zm:,.0f}" if zm is not None else "—"
+                else:
+                    imp_s = "open"
+                    zmed_s = "open" if zm is not None else "—"
                 vc = round(bus_v * (duty / 100.0), 3)
+                pw = chd.get("power_w")
+                ej = chd.get("energy_today_j")
+                eff = chd.get("efficiency_ma_per_pct")
+                p_s = f"{float(pw):.4f}" if isinstance(pw, (int, float)) else "—"
+                e_s = f"{float(ej):.2f}" if isinstance(ej, (int, float)) else "—"
+                n_s = (
+                    f"{float(eff):.3f}"
+                    if isinstance(eff, (int, float))
+                    else "—"
+                )
                 print(
                     f"{i + 1:<4} {st:<12} {bus_v:<8.3f} {ma:>8.2f}  {duty:<8.1f} "
-                    f"{imp:<10,.0f} {zmed_s:<10} {vc:<8.3f} {int(st == 'PROTECTING'):<5}"
+                    f"{imp_s:<10} {zmed_s:<10} {vc:<8.3f} {int(st == 'PROTECTING'):<5} "
+                    f"{p_s:<9} {e_s:<10} {n_s:<10}"
                 )
             else:
                 print(
                     f"{i + 1:<4} {st:<12} {'--':<8} {'--':>8}  {'--':<8} "
-                    f"{'—':<10} {'—':<10} {'—':<8} {'—':<5}"
+                    f"{'—':<10} {'—':<10} {'—':<8} {'—':<5} "
+                    f"{'—':<9} {'—':<10} {'—':<10}"
                 )
-        print("─" * 102)
+        print("─" * w)
+        tpw = live_ch.get("total_power_w") if isinstance(live_ch, dict) else None
+        tpw_s = f"{float(tpw):.4f}" if isinstance(tpw, (int, float)) else "—"
         print(
             f"  AnyWet={int(any_wet)}  Latch={int(latched)}  "
+            f"ΣP={tpw_s} W  "
             f"Faults: {'; '.join(faults) or '—'}"
         )
     except BrokenPipeError:
@@ -347,7 +379,7 @@ def main() -> int:
                 ch_status=ch_status,
                 temp_f=temp_f,
             )
-            log.record(
+            live_snap = log.record(
                 readings,
                 any_wet,
                 faults,
@@ -407,6 +439,7 @@ def main() -> int:
                         i: ctrl.median_impedance_ohm(i)
                         for i in range(cfg.NUM_CHANNELS)
                     },
+                    live_ch=live_snap,
                 )
 
             elif faults or fault_latched:

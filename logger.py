@@ -53,7 +53,10 @@ import config.settings as cfg
 
 def _cell_impedance_ohm(bus_v: float, current_ma: float) -> float:
     """DC-ish ratio: V / I(A). High Ω when dry / negligible current."""
-    i_a = max(current_ma / 1000.0, 1e-6)
+    i_a = max(
+        current_ma / 1000.0,
+        float(getattr(cfg, "Z_COMPUTE_I_A_MIN", 1e-6)),
+    )
     return round(bus_v / i_a, 2)
 
 
@@ -453,7 +456,7 @@ class DataLogger:
         ref_hint: str | None = None,
         ref_hw_message: str | None = None,
         ref_baseline_set: bool | None = None,
-    ) -> None:
+    ) -> dict[str, object]:
         wet = any_wet
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
         ts_unix = time.time()
@@ -616,6 +619,10 @@ class DataLogger:
         def _ch_public(d: dict) -> dict:
             return {k: v for k, v in d.items() if not k.startswith("_")}
 
+        public_channels: dict[str, dict] = {
+            str(i): _ch_public(d) for i, d in channels.items()
+        }
+
         payload: dict = {
             "ts": ts,
             "ts_unix": ts_unix,
@@ -623,7 +630,7 @@ class DataLogger:
             "wet_channels": wet_channels,
             "fault_latched": fault_latched,
             "faults": list(faults),
-            "channels": {str(i): _ch_public(d) for i, d in channels.items()},
+            "channels": public_channels,
             "total_ma": total_ma,
             "supply_v_avg": supply_v_avg,
             "total_power_w": total_power_w,
@@ -725,6 +732,11 @@ class DataLogger:
 
         for i in range(cfg.NUM_CHANNELS):
             self._prev_fsm[i] = channels[i]["state"]
+
+        return {
+            "channels": public_channels,
+            "total_power_w": total_power_w,
+        }
 
     def _update_wet_sessions(
         self,
