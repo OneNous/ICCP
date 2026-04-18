@@ -20,6 +20,11 @@ SIM_MODE = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 _W1_BASE = Path("/sys/bus/w1/devices")
 
+# DS18B20 known bogus values: 0°C = CRC failure, 85°C = power-on default.
+# Readings outside this band are discarded and treated as missing.
+_MIN_VALID_C = 4.0   # 40°F
+_MAX_VALID_C = 48.9  # 120°F
+
 
 def _find_device() -> Path | None:
     try:
@@ -45,7 +50,10 @@ def read_celsius() -> float | None:
         if idx == -1:
             return None
         raw = int(text[idx + 2 :].strip().split()[0])
-        return round(raw / 1000.0, 2)
+        c = round(raw / 1000.0, 2)
+        if not (_MIN_VALID_C <= c <= _MAX_VALID_C):
+            return None
+        return c
     except Exception:
         return None
 
