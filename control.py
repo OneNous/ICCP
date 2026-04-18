@@ -141,10 +141,10 @@ class Controller:
                     self._pwm.set_duty(ch, 0.0)
                     continue  # protection loop takes over next tick from duty=0
 
-            if current_ma > cfg.MAX_MA:
+            if current_ma > self._channel_max_ma(ch):
                 self._latch_fault(
                     ch,
-                    f"CH{ch + 1} OVERCURRENT: {current_ma:.4f} mA (max {cfg.MAX_MA} mA)",
+                    f"CH{ch + 1} OVERCURRENT: {current_ma:.4f} mA (max {self._channel_max_ma(ch)} mA)",
                 )
                 continue
             if bus_v < cfg.MIN_BUS_V:
@@ -240,7 +240,7 @@ class Controller:
         if "OVERCURRENT" in state.latch_message and r.get("ok"):
             current_ma = float(r["current"])
             recovery_threshold = getattr(
-                cfg, "OVERCURRENT_RECOVERY_THRESHOLD", cfg.MAX_MA * 0.90
+                cfg, "OVERCURRENT_RECOVERY_THRESHOLD", self._channel_max_ma(ch) * 0.90
             )
             if current_ma < recovery_threshold:
                 print(
@@ -307,8 +307,11 @@ class Controller:
     def cleanup(self) -> None:
         self._pwm.cleanup()
 
-    def _channel_target(self, _ch: int) -> float:
-        return float(cfg.TARGET_MA)
+    def _channel_target(self, ch: int) -> float:
+        return float(getattr(cfg, "CHANNEL_TARGET_MA", {}).get(ch, cfg.TARGET_MA))
+
+    def _channel_max_ma(self, ch: int) -> float:
+        return float(getattr(cfg, "CHANNEL_MAX_MA", {}).get(ch, cfg.MAX_MA))
 
     def _latch_fault(self, ch: int, msg: str) -> None:
         self._pwm.set_duty(ch, 0.0)

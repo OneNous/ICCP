@@ -43,6 +43,13 @@ def _parse_args() -> argparse.Namespace:
         metavar="N",
         help="sim only: real seconds per simulated hour",
     )
+    p.add_argument(
+        "--set-native",
+        type=float,
+        default=None,
+        metavar="MV",
+        help="write native_mv to commissioning.json and exit (e.g. --set-native -232.0)",
+    )
     return p.parse_args()
 
 
@@ -162,6 +169,16 @@ def main() -> int:
         os.environ["SIM_TIME_SCALE"] = str(args.sim_time_scale)
 
     import config.settings as cfg
+
+    if args.set_native is not None:
+        from reference import ReferenceElectrode
+        ref = ReferenceElectrode()
+        ref.save_native(args.set_native)
+        print(
+            f"[main] native_mv set to {args.set_native:.2f} mV "
+            f"→ {cfg.PROJECT_ROOT / 'commissioning.json'}"
+        )
+        return 0
 
     import commissioning
     import sensors
