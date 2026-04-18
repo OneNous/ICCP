@@ -102,11 +102,14 @@ def _print_table(
         )
         band_disp = ref_band if ref_shift is not None else "—"
         temp_str = f"{temp_f:.1f}°F" if temp_f is not None else "—"
-        print(f"  Ref sensor: {ref_hw_line}")
-        print(
-            f"    raw={ref_raw_mv:.1f} mV  |  polarization shift={shift_str}  "
-            f"|  shift_band={band_disp}    Temp: {temp_str}"
-        )
+        if ref_hw_line != "disabled":
+            print(f"  Ref sensor: {ref_hw_line}")
+            print(
+                f"    raw={ref_raw_mv:.1f} mV  |  polarization shift={shift_str}  "
+                f"|  shift_band={band_disp}    Temp: {temp_str}"
+            )
+        else:
+            print(f"  Temp: {temp_str}")
         print("─" * 90)
         print(
             f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':>8}  {'Duty%':<8} "
@@ -250,9 +253,31 @@ def main() -> int:
         1, int(cfg.LOG_INTERVAL_S / cfg.SAMPLE_INTERVAL_S)
     )
     _ux_tip_shown = False
+    _thermal_paused = False
 
     try:
         while True:
+            temp_f = temp_mod.read_fahrenheit()
+            if not temp_mod.in_operating_range(temp_f):
+                ctrl.thermal_off()
+                if not _thermal_paused:
+                    reason = (
+                        "too cold — possible freeze"
+                        if temp_f is not None and temp_f < temp_mod.TEMP_MIN_F
+                        else "too hot — heat mode?"
+                    )
+                    print(
+                        f"[main] THERMAL PAUSE {temp_f}°F outside "
+                        f"[{temp_mod.TEMP_MIN_F}–{temp_mod.TEMP_MAX_F}°F]: {reason}"
+                    )
+                    _thermal_paused = True
+                time.sleep(cfg.SAMPLE_INTERVAL_S)
+                continue
+
+            if _thermal_paused:
+                print(f"[main] Temp restored ({temp_f}°F) — resuming.")
+                _thermal_paused = False
+
             if sim:
                 readings = sensors.read_all_sim(sim_state)  # type: ignore[arg-type]
             else:
@@ -274,7 +299,6 @@ def main() -> int:
                 if ref_shift is not None
                 else "—"
             )
-            temp_f = temp_mod.read_fahrenheit()
 
             if not _ux_tip_shown:
                 tip = ref_ux_hint(

@@ -26,7 +26,9 @@ _ref_ina: object | None = None
 _REF_INIT_ERROR: str | None = None
 _REF_I2C_BUS: int = int(getattr(cfg, "REF_I2C_BUS", cfg.I2C_BUS))
 
-if not SIM_MODE:
+_REF_ENABLED: bool = bool(getattr(cfg, "REF_ENABLED", True))
+
+if not SIM_MODE and _REF_ENABLED:
     try:
         from ina219 import INA219
 
@@ -52,14 +54,16 @@ if not SIM_MODE:
 
 
 def ref_hw_ok() -> bool:
-    """True if simulator or reference INA219 initialized."""
-    if SIM_MODE:
+    """True if simulator, disabled, or reference INA219 initialized."""
+    if SIM_MODE or not _REF_ENABLED:
         return True
     return _ref_ina is not None
 
 
 def ref_hw_message() -> str:
     """One-line status for console / dashboard."""
+    if not _REF_ENABLED:
+        return "disabled"
     if SIM_MODE:
         return "sim (no ref INA219)"
     if _ref_ina is not None:
@@ -72,6 +76,8 @@ def ref_hw_message() -> str:
 
 def ref_ux_hint(*, baseline_set: bool, hw_ok: bool, skip_commission: bool) -> str:
     """Short banner text for dashboard / one-shot console tip."""
+    if not _REF_ENABLED:
+        return ""
     if not hw_ok and not SIM_MODE:
         return "Reference INA219 not reachable — check I2C address and wiring."
     if baseline_set:
