@@ -1,10 +1,11 @@
 """
-CoilShield — zinc reference electrode.
+CoilShield — reference electrode (zinc or similar).
 
-Reads zinc-rod-to-GND voltage via ESP32 ADC on IO12.
-Tracks native potential baseline and computes protection shift.
+Reads the reference node via a **dedicated INA219** on I2C (`REF_INA219_ADDRESS`),
+same driver stack as anode channels in `sensors.py`. Tracks native baseline and
+computes protection shift (mV) for the outer loop.
 
-SIM_MODE: COILSHIELD_SIM=1 uses simulated zinc readings (no hardware).
+SIM_MODE: COILSHIELD_SIM=1 uses simulated readings (no hardware).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import statistics
 import time
 
 import config.settings as cfg
@@ -20,24 +22,85 @@ SIM_MODE = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
 
+_ref_ina: object | None = None
+_REF_INIT_ERROR: str | None = None
+_REF_I2C_BUS: int = int(getattr(cfg, "REF_I2C_BUS", cfg.I2C_BUS))
+
 if not SIM_MODE:
     try:
-        from machine import ADC, Pin
-        _adc = ADC(Pin(12))
-        _adc.atten(ADC.ATTN_11DB)    # 0–3.3V range
-        _adc.width(ADC.WIDTH_12BIT)  # 12-bit resolution: 0–4095
+        from ina219 import INA219
+
+        _ref_ina = INA219(
+            cfg.REF_INA219_SHUNT_OHMS,
+            address=cfg.REF_INA219_ADDRESS,
+            busnum=_REF_I2C_BUS,
+        )
+        _ref_ina.configure(
+            voltage_range=INA219.RANGE_16V,
+            gain=INA219.GAIN_AUTO,
+            bus_adc=INA219.ADC_128SAMP,
+            shunt_adc=INA219.ADC_128SAMP,
+        )
+        print(
+            f"[reference] INA219 ref init OK at {hex(cfg.REF_INA219_ADDRESS)} "
+            f"on i2c-{_REF_I2C_BUS} (source={cfg.REF_INA219_SOURCE!r})"
+        )
     except Exception as _hw_err:
-        print(f"[reference] ADC init failed: {_hw_err}")
-        _adc = None
-else:
-    _adc = None
+        _REF_INIT_ERROR = str(_hw_err)
+        print(f"[reference] INA219 ref init failed: {_hw_err}")
+        _ref_ina = None
+
+
+def ref_hw_ok() -> bool:
+    """True if simulator or reference INA219 initialized."""
+    if SIM_MODE:
+        return True
+    return _ref_ina is not None
+
+
+def ref_hw_message() -> str:
+    """One-line status for console / dashboard."""
+    if SIM_MODE:
+        return "sim (no ref INA219)"
+    if _ref_ina is not None:
+        return f"INA219 OK {hex(cfg.REF_INA219_ADDRESS)} i2c-{_REF_I2C_BUS}"
+    err = (_REF_INIT_ERROR or "unknown").replace("\n", " ")
+    if len(err) > 72:
+        err = err[:69] + "..."
+    return f"INA219 fault: {err}"
+
+
+def ref_ux_hint(*, baseline_set: bool, hw_ok: bool, skip_commission: bool) -> str:
+    """Short banner text for dashboard / one-shot console tip."""
+    if not hw_ok and not SIM_MODE:
+        return "Reference INA219 not reachable — check I2C address and wiring."
+    if baseline_set:
+        return ""
+    if skip_commission:
+        return "Run without --skip-commission to record native_mv and enable polarization shift."
+    return ""
+
+
+def _ina219_scalar_mv(sensor: object, source: str) -> float:
+    """Map INA219 readings to the mV-like scalar used for native_mv / shift_mv."""
+    if source == "shunt_mv":
+        return float(sensor.shunt_voltage())
+    return float(sensor.voltage()) * 1000.0
 
 
 def _read_raw_mv_hw() -> float:
-    if _adc is None:
+    if _ref_ina is None:
         return 0.0
-    raw = _adc.read()
-    return (raw / 4095.0) * 3300.0
+    try:
+        src = getattr(cfg, "REF_INA219_SOURCE", "bus_v")
+        n = max(1, int(getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1)))
+        if n == 1:
+            return _ina219_scalar_mv(_ref_ina, src)
+        samples = [_ina219_scalar_mv(_ref_ina, src) for _ in range(n)]
+        return float(statistics.median(samples))
+    except Exception as e:
+        print(f"[reference] INA219 read failed: {e}")
+        return 0.0
 
 
 def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> float:
@@ -51,7 +114,7 @@ def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> floa
 
 
 class ReferenceElectrode:
-    """Zinc reference reader and shift tracker."""
+    """Reference electrode reader and shift tracker."""
 
     def __init__(self) -> None:
         self.native_mv: float | None = None
@@ -98,7 +161,19 @@ class ReferenceElectrode:
         raw = self.read(duties, statuses)
         return round(raw - self.native_mv, 2)
 
+    def read_raw_and_shift(
+        self,
+        duties: dict[int, float] | None = None,
+        statuses: dict[int, str] | None = None,
+    ) -> tuple[float, float | None]:
+        """Single INA219 sample; shift vs native when baseline exists."""
+        raw = self.read(duties, statuses)
+        if self.native_mv is None:
+            return raw, None
+        return raw, round(raw - self.native_mv, 2)
+
     def protection_status(self, shift_mv: float | None = None) -> str:
+        """Band vs TARGET_SHIFT_MV / MAX_SHIFT_MV (not an industry CP criterion)."""
         if shift_mv is None:
             return "UNKNOWN"
         lo = getattr(cfg, "TARGET_SHIFT_MV", 100)

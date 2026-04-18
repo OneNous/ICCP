@@ -78,24 +78,31 @@ def _print_table(
     latched: bool,
     ch_status: dict[int, str],
     any_wet: bool,
+    ref_raw_mv: float,
     ref_shift: float | None,
-    ref_status: str,
+    ref_band: str,
+    ref_hw_line: str,
     temp_f: float | None,
     sim_line: str = "",
 ) -> None:
     try:
         if sim_line:
             print(sim_line)
-        ref_str = (
-            f"{ref_shift:+.1f} mV [{ref_status}]"
+        shift_str = (
+            f"{ref_shift:+.1f} mV"
             if ref_shift is not None
-            else "— (no native baseline)"
+            else "— (commissioning needed for shift)"
         )
+        band_disp = ref_band if ref_shift is not None else "—"
         temp_str = f"{temp_f:.1f}°F" if temp_f is not None else "—"
-        print(f"  Ref shift: {ref_str}    Temp: {temp_str}")
+        print(f"  Ref sensor: {ref_hw_line}")
+        print(
+            f"    raw={ref_raw_mv:.1f} mV  |  polarization shift={shift_str}  "
+            f"|  shift_band={band_disp}    Temp: {temp_str}"
+        )
         print("─" * 90)
         print(
-            f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':<10} {'Duty%':<8} "
+            f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':>8}  {'Duty%':<8} "
             f"{'Ω imp':<10} {'Vc':<8} {'Wet':<5}"
         )
         print("─" * 90)
@@ -109,7 +116,7 @@ def _print_table(
                 imp = round(bus_v / max(ma / 1000, 0.00001)) if ma > 0 else 0
                 vc = round(bus_v * (duty / 100.0), 3)
                 print(
-                    f"{i + 1:<4} {st:<12} {bus_v:<8.3f} {ma:<10.4f} {duty:<8.1f} "
+                    f"{i + 1:<4} {st:<12} {bus_v:<8.3f} {ma:>8.2f}  {duty:<8.1f} "
                     f"{imp:<10,.0f} {vc:<8.3f} {int(st == 'PROTECTING'):<5}"
                 )
             else:
@@ -121,6 +128,27 @@ def _print_table(
         )
     except BrokenPipeError:
         raise SystemExit(0) from None
+
+
+def _print_ref_compact(
+    ref_hw_line: str,
+    ref_raw_mv: float,
+    ref_shift: float | None,
+    ref_band: str,
+    ref_hint: str,
+) -> None:
+    """Single-line ref summary for non-verbose mode (same cadence as LOG_INTERVAL_S)."""
+    shift_str = (
+        f"{ref_shift:+.1f} mV"
+        if ref_shift is not None
+        else "— (commissioning needed for shift)"
+    )
+    band_disp = ref_band if ref_shift is not None else "—"
+    hint = f"  |  {ref_hint}" if ref_hint else ""
+    print(
+        f"[ref] {ref_hw_line}  |  raw={ref_raw_mv:.1f} mV  |  shift={shift_str}  "
+        f"|  band={band_disp}{hint}"
+    )
 
 
 def main() -> int:
@@ -140,7 +168,7 @@ def main() -> int:
     import temp as temp_mod
     from control import Controller
     from logger import DataLogger
-    from reference import ReferenceElectrode
+    from reference import ReferenceElectrode, ref_hw_message, ref_hw_ok, ref_ux_hint
 
     from leds import StatusLEDs
 
@@ -171,6 +199,7 @@ def main() -> int:
         f"CoilShield starting (sim={sim}, TARGET_MA={cfg.TARGET_MA}, "
         f"clear fault: touch {cfg.CLEAR_FAULT_FILE})"
     )
+    print(f"[main] Reference path: {ref_hw_message()}")
 
     if sim:
         _print_sim_schedule(sensors)
@@ -203,6 +232,7 @@ def main() -> int:
     outer_loop_interval = max(
         1, int(cfg.LOG_INTERVAL_S / cfg.SAMPLE_INTERVAL_S)
     )
+    _ux_tip_shown = False
 
     try:
         while True:
@@ -219,18 +249,43 @@ def main() -> int:
             if sim and sim_state is not None:
                 sim_state.duties = dict(duties)
 
-            ref_shift = ref.shift_mv(duties=duties, statuses=ch_status)
-            ref_prot_status = ref.protection_status(ref_shift)
+            ref_raw_mv, ref_shift = ref.read_raw_and_shift(
+                duties=duties, statuses=ch_status
+            )
+            ref_band = (
+                ref.protection_status(ref_shift)
+                if ref_shift is not None
+                else "—"
+            )
             temp_f = temp_mod.read_fahrenheit()
 
+            if not _ux_tip_shown:
+                tip = ref_ux_hint(
+                    baseline_set=ref.native_mv is not None,
+                    hw_ok=ref_hw_ok(),
+                    skip_commission=args.skip_commission,
+                )
+                if tip:
+                    print(f"[main] {tip}")
+                _ux_tip_shown = True
+
             outer_loop_counter += 1
+            ref_log_tick = False
             if outer_loop_counter >= outer_loop_interval:
                 ctrl.update_potential_target(ref_shift)
                 outer_loop_counter = 0
+                ref_log_tick = True
 
             sim_time_kw: str | None = None
             if sim and sim_state is not None:
                 sim_time_kw = sim_state.sim_hhmm()
+            ref_hint = ref_ux_hint(
+                baseline_set=ref.native_mv is not None,
+                hw_ok=ref_hw_ok(),
+                skip_commission=args.skip_commission,
+            )
+            ref_hw_line = ref_hw_message()
+            ref_baseline_set = ref.native_mv is not None
             log.record(
                 readings,
                 any_wet,
@@ -240,10 +295,24 @@ def main() -> int:
                 ch_status,
                 sim_time=sim_time_kw,
                 ref_shift_mv=ref_shift,
-                ref_status=ref_prot_status,
+                ref_status=ref_band if ref_shift is not None else "N/A",
                 temp_f=temp_f,
+                ref_raw_mv=ref_raw_mv,
+                ref_hw_ok=ref_hw_ok(),
+                ref_hint=ref_hint or None,
+                ref_hw_message=ref_hw_line,
+                ref_baseline_set=ref_baseline_set,
             )
             log.maybe_flush()
+
+            if ref_log_tick and not args.verbose:
+                _print_ref_compact(
+                    ref_hw_line,
+                    ref_raw_mv,
+                    ref_shift,
+                    ref_band,
+                    ref_hint,
+                )
 
             leds.set_running_ok(not fault_latched and len(faults) == 0)
 
@@ -267,18 +336,27 @@ def main() -> int:
                     fault_latched,
                     ch_status,
                     any_wet,
+                    ref_raw_mv,
                     ref_shift,
-                    ref_prot_status,
+                    ref_band,
+                    ref_hw_message(),
                     temp_f,
                     sim_line,
                 )
 
             elif faults or fault_latched:
+                shift_str = (
+                    f"{ref_shift:+.1f} mV"
+                    if ref_shift is not None
+                    else "— (no shift baseline)"
+                )
+                band_disp = ref_band if ref_shift is not None else "—"
                 print(
                     time.strftime("%H:%M:%S"),
                     "FAULTS:",
                     "; ".join(faults),
                     f"latched={fault_latched}",
+                    f"| ref raw={ref_raw_mv:.1f} mV shift={shift_str} band={band_disp}",
                 )
 
             time.sleep(cfg.SAMPLE_INTERVAL_S)

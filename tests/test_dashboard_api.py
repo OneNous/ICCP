@@ -29,10 +29,15 @@ def log_and_dashboard_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
         [],
         duties,
         False,
-        {i: "DORMANT" for i in range(5)},
+        {i: "DORMANT" for i in range(cfg.NUM_CHANNELS)},
         ref_shift_mv=10.0,
         ref_status="OK",
         temp_f=72.5,
+        ref_raw_mv=200.0,
+        ref_hw_ok=True,
+        ref_hint="",
+        ref_hw_message="sim",
+        ref_baseline_set=True,
     )
     log.record(
         readings,
@@ -40,10 +45,15 @@ def log_and_dashboard_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
         [],
         duties,
         False,
-        {i: "PROTECTING" for i in range(5)},
+        {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)},
         ref_shift_mv=12.0,
         ref_status="OK",
         temp_f=73.0,
+        ref_raw_mv=205.0,
+        ref_hw_ok=True,
+        ref_hint="",
+        ref_hw_message="sim",
+        ref_baseline_set=True,
     )
     log.record(
         readings,
@@ -51,10 +61,15 @@ def log_and_dashboard_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
         [],
         duties,
         False,
-        {i: "DORMANT" for i in range(5)},
+        {i: "DORMANT" for i in range(cfg.NUM_CHANNELS)},
         ref_shift_mv=11.0,
         ref_status="UNDER",
         temp_f=72.0,
+        ref_raw_mv=203.0,
+        ref_hw_ok=True,
+        ref_hint="",
+        ref_hw_message="sim",
+        ref_baseline_set=True,
     )
     log.close()
 

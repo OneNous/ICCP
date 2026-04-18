@@ -128,6 +128,19 @@ class Controller:
             current_ma = float(r["current"])
             bus_v = float(r["bus_v"])
 
+            # Probe early-exit: high current during a probe pulse means the channel
+            # is wet with low impedance. This is not a fault — abort the probe and
+            # hand off to the protection loop rather than hard-faulting.
+            # PROBE_MAX_MA defaults to 50% of MAX_MA, leaving plenty of headroom
+            # below the fault threshold while still being well above the wet threshold.
+            if state.status == ChannelState.PROBING:
+                probe_max_ma = getattr(cfg, "PROBE_MAX_MA", cfg.MAX_MA * 0.5)
+                if current_ma >= probe_max_ma:
+                    state.probe_since = None
+                    state.status = ChannelState.PROTECTING
+                    self._pwm.set_duty(ch, 0.0)
+                    continue  # protection loop takes over next tick from duty=0
+
             if current_ma > cfg.MAX_MA:
                 self._latch_fault(
                     ch,

@@ -12,9 +12,24 @@ CLEAR_FAULT_FILE = PROJECT_ROOT / "clear_fault"
 
 # --- I2C ---
 I2C_BUS = 1
+# REF I2C: dedicated gpio bit-bang bus (dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=20,i2c_gpio_scl=12)
+REF_I2C_BUS = 3
 
 INA219_ADDRESSES = [0x40, 0x41, 0x44, 0x45]
 NUM_CHANNELS = 4
+
+# Dedicated INA219 for reference electrode.
+# On the SAME bus as anodes: address must not collide with INA219_ADDRESSES (e.g. 0x42,
+# 0x46, 0x47 per breakout straps).
+# On a DEDICATE gpio-only bus with only this module: 0x40 is fine (no anode conflict).
+REF_INA219_ADDRESS = 0x40
+REF_INA219_SHUNT_OHMS = 0.1
+# Optional: median of this many bus/shunt reads per reference sample (1 = single read).
+# Try 9 or 16 on long leads or gpio I2C if readings are noisy.
+REF_INA219_MEDIAN_SAMPLES = 1
+# "bus_v": use INA219 bus voltage (V) × 1000 as the scalar for shift math (typical ref-to-GND wiring).
+# "shunt_mv": use shunt voltage in mV from the chip (if your front-end puts signal across the shunt).
+REF_INA219_SOURCE = "bus_v"
 
 # --- Current targets ---
 TARGET_MA = 1.2
@@ -27,6 +42,9 @@ CHANNEL_WET_THRESHOLD_MA = 0.15
 PROBE_DUTY_PCT = 3
 PROBE_DURATION_S = 2.0
 PROBE_INTERVAL_S = 60.0
+# During PROBING, current >= this (mA) means wet/low-Z — exit probe to PROTECTING
+# (omit to use 50% of MAX_MA in control.py).
+PROBE_MAX_MA = 2.0
 
 # --- Fault auto-recovery ---
 FAULT_AUTO_CLEAR = True
@@ -61,10 +79,7 @@ LATEST_JSON_NAME = "latest.json"
 TELEMETRY_RETENTION_DAYS = 30
 SQLITE_PURGE_EVERY_N_INSERTS = 10_000
 
-# --- Zinc reference electrode ---
-ADC_CHIP = "PCF8591"
-ZINC_REF_ADC_CHANNEL = 0
-ADC_VREF_MV = 3300
+# --- Reference electrode (dedicated INA219; see REF_INA219_* above) ---
 TARGET_SHIFT_MV = 100
 MAX_SHIFT_MV = 200
 TARGET_MA_STEP = 0.02

@@ -30,7 +30,20 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     ch_status = {i: "DORMANT" for i in range(cfg.NUM_CHANNELS)}
 
     log = DataLogger()
-    log.record(readings, False, [], duties, False, ch_status, sim_time="12:00")
+    log.record(
+        readings,
+        False,
+        [],
+        duties,
+        False,
+        ch_status,
+        sim_time="12:00",
+        ref_raw_mv=200.0,
+        ref_hw_ok=True,
+        ref_hint="",
+        ref_hw_message="sim",
+        ref_baseline_set=False,
+    )
     log.maybe_flush(force=True)
     log.close()
 
@@ -38,6 +51,14 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     assert latest["sim_time"] == "12:00"
     assert len(latest["channels"]) == cfg.NUM_CHANNELS
     assert latest["wet_channels"] == 0
+    assert latest["ref_raw_mv"] == 200.0
+    assert latest["ref_hw_ok"] is True
+    assert "ref_hw_message" in latest
+    assert "ref_baseline_set" in latest
+    assert latest["ref_shift_mv"] is None
+    assert latest["ref_status"] == "N/A"
+    assert latest["ref_baseline_set"] is False
+    assert latest["ref_hw_message"] == "sim"
 
     conn = sqlite3.connect(str(tmp_path / cfg.SQLITE_DB_NAME))
     try:
@@ -92,9 +113,21 @@ def test_wet_session_row_on_protecting_cycle(
     duties = {i: 10.0 for i in range(cfg.NUM_CHANNELS)}
 
     log = DataLogger()
-    log.record(readings, False, [], duties, False, {i: "DORMANT" for i in range(5)})
-    log.record(readings, True, [], duties, False, {i: "PROTECTING" for i in range(5)})
-    log.record(readings, False, [], duties, False, {i: "DORMANT" for i in range(5)})
+    log.record(
+        readings, False, [], duties, False,
+        {i: "DORMANT" for i in range(cfg.NUM_CHANNELS)},
+        ref_raw_mv=1.0, ref_hw_ok=True,
+    )
+    log.record(
+        readings, True, [], duties, False,
+        {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)},
+        ref_raw_mv=1.0, ref_hw_ok=True,
+    )
+    log.record(
+        readings, False, [], duties, False,
+        {i: "DORMANT" for i in range(cfg.NUM_CHANNELS)},
+        ref_raw_mv=1.0, ref_hw_ok=True,
+    )
     log.close()
 
     conn = sqlite3.connect(str(tmp_path / cfg.SQLITE_DB_NAME))

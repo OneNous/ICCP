@@ -382,9 +382,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .header-stats {
     margin-left: auto;
     display: flex;
+    flex-wrap: wrap;
     gap: 16px;
     font-size: 13px;
     opacity: .92;
+  }
+  .hdr-ref-sub {
+    font-size: 11px;
+    opacity: 0.88;
+    max-width: 28rem;
+    line-height: 1.35;
   }
   .header-fault { color: #fca5a5; font-weight: 600; }
 
@@ -516,6 +523,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     padding: 2px 8px;
     border-radius: 999px;
   }
+  .ux-banner {
+    background: var(--amber-bg);
+    color: var(--amber);
+    padding: 10px 20px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--csp-border);
+  }
 </style>
 </head>
 <body>
@@ -530,10 +544,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <span id="hdr-total"></span>
     <span id="hdr-wet"></span>
     <span id="hdr-ref"></span>
+    <span id="hdr-ref-hw" class="hdr-ref-sub"></span>
     <span id="hdr-temp"></span>
     <span id="hdr-fault" class="header-fault" style="display:none">⚠ FAULT LATCHED</span>
   </div>
 </header>
+
+<div id="ux-banner" class="ux-banner" role="status" style="display:none"></div>
 
 <main>
   <div class="ch-grid" id="ch-grid"></div>
@@ -595,7 +612,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <th>Wet cycles</th>
           <th>Bus V avg</th>
           <th>Avg Z (Ω)</th>
-          <th>Ref Δ (mV)†</th>
+          <th>Ref shift (mV)†</th>
           <th>Temp (°F)†</th>
         </tr>
       </thead>
@@ -606,7 +623,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <script>
 const CH_COLORS = ['var(--ch0)','var(--ch1)','var(--ch2)','var(--ch3)','var(--ch4)'];
-const NUM_CH = 5;
+const NUM_CH = __NUM_CH__;
 let chart = null;
 let activeMinutes = 60;
 let chartMetric = 'ma';
@@ -679,9 +696,27 @@ async function fetchLive() {
     document.getElementById('ts').textContent = d.ts;
     document.getElementById('hdr-supply').textContent = `Supply: ${d.supply_v_avg}V`;
     document.getElementById('hdr-total').textContent = `Total: ${d.total_ma}mA`;
-    document.getElementById('hdr-wet').textContent = `Wet: ${d.wet_channels}/5`;
+    document.getElementById('hdr-wet').textContent =
+      `Wet: ${d.wet_channels}/__NUM_CH__`;
+    const raw = (d.ref_raw_mv != null && d.ref_raw_mv !== '')
+      ? `${Number(d.ref_raw_mv).toFixed(1)} mV` : '—';
+    const sh = (d.ref_shift_mv != null && d.ref_shift_mv !== '')
+      ? `${Number(d.ref_shift_mv).toFixed(1)} mV` : '—';
+    const bd = d.ref_status || '—';
     document.getElementById('hdr-ref').textContent =
-      `Shift: ${d.ref_shift_mv ?? '—'} mV [${d.ref_status ?? '—'}]`;
+      `Ref ${raw} · shift ${sh} · band ${bd}`;
+    const hwEl = document.getElementById('hdr-ref-hw');
+    const hw = d.ref_hw_message || '';
+    const bl = d.ref_baseline_set ? 'baseline: yes' : 'baseline: no';
+    hwEl.textContent = hw ? `${hw} · ${bl}` : bl;
+    const ban = document.getElementById('ux-banner');
+    if (d.ref_hint) {
+      ban.style.display = '';
+      ban.textContent = d.ref_hint;
+    } else {
+      ban.style.display = 'none';
+      ban.textContent = '';
+    }
     document.getElementById('hdr-temp').textContent =
       d.temp_f != null && d.temp_f !== '' ? `${d.temp_f}°F` : '';
     const faultEl = document.getElementById('hdr-fault');
@@ -791,7 +826,7 @@ async function fetchDaily() {
       tbody.innerHTML = '<tr><td colspan="4">No daily totals yet (controller running?)</td></tr>';
       return;
     }
-    tbody.innerHTML = [0,1,2,3,4].map(i => {
+    tbody.innerHTML = Array.from({length: NUM_CH}, (_, i) => i).map(i => {
       const c = d.channels[String(i)] || { ma_s: 0, wet_s: 0 };
       const q = (c.ma_s || 0) / 1000;
       return `<tr>
@@ -816,6 +851,8 @@ fetchDaily();
 </body>
 </html>
 """
+
+DASHBOARD_HTML = DASHBOARD_HTML.replace("__NUM_CH__", str(cfg.NUM_CHANNELS))
 
 
 @app.route("/")

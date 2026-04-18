@@ -9,6 +9,8 @@ Four sinks per record() call:
 
 readings: per-tick telemetry including chN_impedance_ohm and chN_cell_voltage_v
   (cell_impedance_ohm = bus_v / max(I_A, 1e-6); cell_voltage_v = bus_v * duty/100).
+  latest.json reference keys (every tick): ref_raw_mv, ref_shift_mv, ref_status, ref_hw_ok,
+  ref_hw_message, ref_hint, ref_baseline_set (SQLite/CSV also carry raw/hw_ok/hint; hw_message and baseline_set are CSV + JSON).
 
 wet_sessions: one row per PROTECTING episode (open until exit PROTECTING/FAULT).
   Session opens on any transition into PROTECTING (including PROBING→PROTECTING, not only DORMANT→PROTECTING).
@@ -150,7 +152,10 @@ class DataLogger:
                     supply_v_avg    REAL,
                     ref_shift_mv    REAL,
                     ref_status      TEXT,
-                    temp_f          REAL
+                    temp_f          REAL,
+                    ref_raw_mv      REAL,
+                    ref_hw_ok       INTEGER,
+                    ref_hint        TEXT
                 )
                 """
             )
@@ -206,6 +211,9 @@ class DataLogger:
             ("ref_shift_mv", "REAL"),
             ("ref_status", "TEXT"),
             ("temp_f", "REAL"),
+            ("ref_raw_mv", "REAL"),
+            ("ref_hw_ok", "INTEGER"),
+            ("ref_hint", "TEXT"),
         ):
             if name not in cols:
                 alters.append(f"ALTER TABLE readings ADD COLUMN {name} {decl}")
@@ -289,6 +297,11 @@ class DataLogger:
         ref_shift_mv: float | None = None,
         ref_status: str | None = None,
         temp_f: float | None = None,
+        ref_raw_mv: float | None = None,
+        ref_hw_ok: bool | None = None,
+        ref_hint: str | None = None,
+        ref_hw_message: str | None = None,
+        ref_baseline_set: bool | None = None,
     ) -> None:
         wet = any_wet
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -353,6 +366,9 @@ class DataLogger:
             ref_shift_mv,
             ref_status,
             temp_f,
+            ref_raw_mv,
+            ref_hw_ok,
+            ref_hint,
         )
         self._maybe_periodic_purge()
 
@@ -369,8 +385,16 @@ class DataLogger:
         }
         if sim_time is not None:
             payload["sim_time"] = sim_time
+        # Reference block: stable keys every tick for console parity / dashboard / scripts.
+        payload["ref_raw_mv"] = ref_raw_mv
         payload["ref_shift_mv"] = ref_shift_mv
-        payload["ref_status"] = ref_status
+        payload["ref_status"] = ref_status or "N/A"
+        payload["ref_hw_ok"] = bool(ref_hw_ok) if ref_hw_ok is not None else False
+        payload["ref_hw_message"] = (ref_hw_message or "").strip()
+        payload["ref_hint"] = (ref_hint or "").strip()
+        payload["ref_baseline_set"] = (
+            bool(ref_baseline_set) if ref_baseline_set is not None else False
+        )
         payload["temp_f"] = temp_f
         _atomic_write_same_dir(self._latest_path, json.dumps(payload))
 
@@ -405,6 +429,15 @@ class DataLogger:
         row["ref_shift_mv"] = ref_shift_mv if ref_shift_mv is not None else ""
         row["ref_status"] = ref_status or ""
         row["temp_f"] = temp_f if temp_f is not None else ""
+        row["ref_raw_mv"] = ref_raw_mv if ref_raw_mv is not None else ""
+        row["ref_hw_ok"] = (
+            int(ref_hw_ok) if ref_hw_ok is not None else ""
+        )
+        row["ref_hint"] = ref_hint or ""
+        row["ref_hw_message"] = (ref_hw_message or "").strip()
+        row["ref_baseline_set"] = (
+            int(bool(ref_baseline_set)) if ref_baseline_set is not None else 0
+        )
         self._csv_rows.append(row)
 
         if fault_log_written or (bool(faults) and sig != pre_sig):
@@ -504,6 +537,9 @@ class DataLogger:
         ref_shift_mv: float | None,
         ref_status: str | None,
         temp_f: float | None,
+        ref_raw_mv: float | None,
+        ref_hw_ok: bool | None,
+        ref_hint: str | None,
     ) -> None:
         ch_col_names = ", ".join(
             f"ch{i}_state, ch{i}_ma, ch{i}_duty, ch{i}_bus_v, ch{i}_status, "
@@ -527,10 +563,12 @@ class DataLogger:
 
         col_names = (
             f"ts,ts_unix,wet,fault_latched,faults,{ch_col_names},total_ma,"
-            f"supply_v_avg,ref_shift_mv,ref_status,temp_f"
+            f"supply_v_avg,ref_shift_mv,ref_status,temp_f,"
+            f"ref_raw_mv,ref_hw_ok,ref_hint"
         )
-        n_params = 5 + cfg.NUM_CHANNELS * 7 + 2 + 3
+        n_params = 5 + cfg.NUM_CHANNELS * 7 + 2 + 3 + 3
         placeholders = ",".join(["?"] * n_params)
+        ref_hw_sql = None if ref_hw_ok is None else (1 if ref_hw_ok else 0)
         with self._db_lock:
             self._db.execute(
                 f"INSERT INTO readings ({col_names}) VALUES ({placeholders})",
@@ -546,6 +584,9 @@ class DataLogger:
                     ref_shift_mv,
                     ref_status,
                     temp_f,
+                    ref_raw_mv,
+                    ref_hw_sql,
+                    ref_hint,
                 ),
             )
             self._db.commit()

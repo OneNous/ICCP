@@ -1,9 +1,9 @@
 # CoilShield (ICCP)
 
 Impressed-current cathodic protection monitor/controller for HVAC-style coils.  
-**Aluminum-safe default:** `TARGET_MA = 0.5` per channel (see `config/settings.py`).
+**Defaults:** see `TARGET_MA`, `CHANNEL_WET_THRESHOLD_MA`, and anode limits in `config/settings.py` (values ship tuned for the bench rig; commissioning writes `commissioned_target_ma`).
 
-**How this maps to “standard ICCP”:** this firmware regulates **shunt current** toward a fixed mA target; it does not measure structure potential vs a reference electrode (e.g. industry protection criteria like −0.85 V CSE). See [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md) for a full factual comparison.
+**How this maps to “standard ICCP”:** the inner loop regulates **shunt current** toward `TARGET_MA`; a **dedicated INA219** on the reference electrode provides **polarization shift** vs a commissioned baseline and **nudges** `TARGET_MA`—still not the same as holding structure potential to an industry criterion (e.g. −0.85 V CSE). See [docs/iccp-comparison.md](docs/iccp-comparison.md) for diagrams, **external standards links**, and [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md) for a line-by-line mapping to the code.
 
 ## Simulator (macOS / no hardware)
 
@@ -31,13 +31,31 @@ COILSHIELD_SIM=0 python3 main.py --real
 2. Install deps:  
    `sudo apt update && sudo apt install -y python3-pip i2c-tools`  
    `sudo pip3 install -r requirements.txt --break-system-packages`  
-   (Same line as in the project plan; needed for `board` / `adafruit_ina3221` / `RPi.GPIO` on the system Python.)
-3. Verify bus: `sudo i2cdetect -y 1` (expect `40` and `41` when two INA3221 chips are wired for five channels; expect `48` when a PCF8591 reference ADC is present).
-4. If the matrix is all `--`, run **`./scripts/diagnose_i2c.sh`** (lists adapters, scans the configured bus, prints expected addresses). First run **`sudo i2cdetect -l`** and scan the **`i2c-N`** that matches the **header** I2C (on many Pis this is **`bcm2835 (i2c@7e804000)` → bus `1`**). Bus **`2`** is often a different controller, not the pins on 3/5—an empty scan there is normal if nothing is wired to it. A full grid of `--` on the **correct** bus means no device acknowledged the bus: check **power**, **SDA/SCL/GND** to each breakout, and **3.3 V** I2C levels.
+   (Uses `pi-ina219`, `RPi.GPIO`, etc. from `requirements.txt`.)
+3. Verify bus: `sudo i2cdetect -y 1` (expect **four** anode INA219s at **`40` `41` `44` `45`** by default). The **reference** INA219 may be on the same bus (e.g. **`42`**) or on a **second** `i2c-gpio` bus — see `I2C_BUS`, `REF_I2C_BUS`, and `REF_INA219_ADDRESS` in `config/settings.py`; re-strap A0/A1 on breakouts if you use other addresses.
+4. If the matrix is all `--`, run **`./scripts/diagnose_i2c.sh`** (lists adapters, scans anode and optional ref buses). First run **`sudo i2cdetect -l`** and scan the **`i2c-N`** that matches the **header** I2C (on many Pis this is **`bcm2835 (i2c@7e804000)` → bus `1`**). Bus **`2`** is often a different controller, not the pins on 3/5—an empty scan there is normal if nothing is wired to it. A full grid of `--` on the **correct** bus means no device acknowledged the bus: check **power**, **SDA/SCL/GND** to each breakout, and **3.3 V** I2C levels.
 
-### Reference electrode (zinc + PCF8591)
+### Reference electrode (dedicated INA219)
 
-The firmware reads **zinc-rod to circuit ground** potential through an **I2C ADC** (default **PCF8591** at `0x48`, channel **AIN0** — see `config/settings.py`: `ADC_CHIP`, `ZINC_REF_ADC_CHANNEL`). Wire the zinc reference rod to **AIN0**, share **SDA/SCL** and **GND** with the Pi, and use the ADC **VREF** wiring per your breakout (typically 3.3 V). The outer loop compares polarization **shift (mV)** against `TARGET_SHIFT_MV` / `MAX_SHIFT_MV` and nudges `TARGET_MA` over time.
+The firmware reads the reference node through a **fifth [INA219](https://www.ti.com/product/INA219)** (`REF_INA219_ADDRESS`, `REF_INA219_SHUNT_OHMS`, `REF_INA219_SOURCE`, **`REF_I2C_BUS`** in `config/settings.py`). By default **`REF_I2C_BUS`** matches **`I2C_BUS`** (one shared header I2C). Default **`REF_INA219_SOURCE = "bus_v"`** uses bus voltage in volts × 1000 as the scalar stored in commissioning as **`native_mv`** / shift — match this to your front-end wiring, or use **`"shunt_mv"`** if the useful signal appears across the shunt sense.
+
+**Zinc / reference as bus voltage (no separate ADC):** You can scale a biased zinc node into the INA219 **bus voltage** inputs so the chip acts as a voltmeter (no shunt-based current path required for that use). Example divider: zinc sense node through **10 kΩ** to **VIN+**; **100 kΩ** from that node to **3.3 V**; **VIN−** and **GND** to common ground; **VCC** / I2C as on the breakout datasheet. Re-commission after resistor or topology changes so **`native_mv`** matches the new scale.
+
+**Optional second I2C (`i2c-gpio`, kernel):** To move only the reference module off the header bus, add a bit-banged adapter in `/boot/firmware/config.txt` (Bookworm) or `/boot/config.txt`, reboot, set **`REF_I2C_BUS`** to the new adapter number (see `sudo i2cdetect -l` → `/dev/i2c-N`). **Adopted CoilShield gpio pins:** **SDA = BCM 20**, **SCL = BCM 12** (they do not overlap PWM pins `17, 27, 22, 23` or status LED **25** in `config/settings.py`):
+
+```text
+dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=20,i2c_gpio_scl=12
+```
+
+Pick **`bus=3`** (or another free index) so it does not collide with existing adapters. After reboot, `sudo i2cdetect -y 3` should show the reference INA219. On a **gpio-only** bus with no anode boards, **`REF_INA219_ADDRESS = 0x40`** is allowed; on a **shared** bus with anodes at `0x40`–`0x45`, use a free strap such as **`0x46`** or **`0x47`**.
+
+**Do not** use random web examples that put SDA on **BCM 23** — on this firmware **BCM 23 is PWM** for channel 4.
+
+**Adafruit Blinka alternative:** You can use `busio.I2C(board.D12, board.D20)` (**SCL**, **SDA**) with `adafruit_ina219` instead of the kernel overlay **on the same pins** — pick **one** approach per wire pair (overlay **or** Blinka bitbang, not both).
+
+**Noise:** For long leads or gpio I2C, increase **`REF_INA219_MEDIAN_SAMPLES`** (e.g. `9` or `16`) so each reference read uses the median of several samples.
+
+The outer loop compares **shift (mV)** against `TARGET_SHIFT_MV` / `MAX_SHIFT_MV` and nudges `TARGET_MA` over time.
 
 ### DS18B20 temperature
 
@@ -45,7 +63,7 @@ The firmware reads **zinc-rod to circuit ground** potential through an **I2C ADC
 
 ### Commissioning
 
-On first start (no `commissioning.json` in the project root), `main.py` runs **self-commissioning**: **Phase 1** turns all channels off, waits `COMMISSIONING_SETTLE_S`, averages zinc ADC samples → saves **`native_mv`**. **Phase 2** ramps per-channel target current until the zinc shift reaches `TARGET_SHIFT_MV` **five** consecutive confirmations, then writes **`commissioned_target_ma`** and timestamps into `commissioning.json`.
+On first start (no `commissioning.json` in the project root), `main.py` runs **self-commissioning**: **Phase 1** turns all channels off, waits `COMMISSIONING_SETTLE_S`, averages reference INA219 samples → saves **`native_mv`**. **Phase 2** ramps per-channel target current until the reference shift reaches `TARGET_SHIFT_MV` **five** consecutive confirmations, then writes **`commissioned_target_ma`** and timestamps into `commissioning.json`.
 
 **Bench / dev without waiting on hardware:** run with **`--skip-commission`** so the controller starts immediately (native baseline will not be set until you commission for real).
 
@@ -61,7 +79,7 @@ python3 -c "import commissioning; commissioning.reset()"
 
 On a **bench rig** with a fixed supply, no feedback, and no PWM, a **series resistor** is often the only current limiter: it trades voltage for safety and cannot adapt when cell impedance changes.
 
-**This controller does not need that resistor in the electrochemical path.** The INA3221 measures real channel current; the Pi adjusts **PWM duty** every sample toward `TARGET_MA` in `config/settings.py`. Changing condensate impedance is handled by the loop (more or less duty), not by burning headroom in a fixed ballast. Software still enforces `MAX_MA` and bus voltage limits per channel.
+**This controller does not need that resistor in the electrochemical path.** The **INA219** on each anode channel measures real shunt current; the Pi adjusts **PWM duty** every sample toward `TARGET_MA` in `config/settings.py`. Changing condensate impedance is handled by the loop (more or less duty), not by burning headroom in a fixed ballast. Software still enforces `MAX_MA` and bus voltage limits per channel.
 
 **Do keep a small gate resistor** (order ~100 Ω) from each GPIO to its MOSFET gate to protect the driver output—that is standard practice and is **not** the same as series cell current limiting.
 
@@ -97,7 +115,7 @@ Install Flask on the Pi if needed: `python3 -m pip install flask --break-system-
 - **Cumulative charge:** `daily_totals.chN_ma_s` is mA·s while PROTECTING; **coulombs** = `ma_s / 1000`.
 - **Wet sessions:** `wet_sessions` table — duration, total mA·s, avg mA, avg impedance, peak mA per episode; export JSON from `GET /api/sessions?hours=720&limit=5000` or download the whole DB.
 
-Telemetry includes **reference shift (mV)**, **protection status**, and **temperature (°F)** in `latest.json`, SQLite, CSV, and the web dashboard when the sensors are present (sim mode fills realistic placeholders).
+Telemetry includes **`logs/latest.json`** fields every tick: **`ref_raw_mv`**, **`ref_shift_mv`** (JSON `null` until baseline exists), **`ref_status`** (shift band or `N/A`), **`ref_hw_ok`**, **`ref_hw_message`**, **`ref_hint`**, **`ref_baseline_set`**, plus **temperature (°F)**. The web dashboard header mirrors raw / shift / band, hardware line, and banner. **Console:** `--verbose` prints the full table with a two-line ref block; **without `--verbose`**, a **`[ref] …`** summary prints on each **`LOG_INTERVAL_S`** tick (same cadence as the outer loop), and fault lines append a short ref summary.
 
 ## Fault latch
 

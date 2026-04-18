@@ -93,7 +93,7 @@ def run(
     log(f"Channels off. Settling {COMMISSIONING_SETTLE_S}s ...")
     _pump_control(controller, sim_state, float(COMMISSIONING_SETTLE_S))
 
-    log("Averaging 30 zinc samples ...")
+    log("Averaging 30 reference (INA219) samples ...")
     samples: list[float] = []
     for _ in range(30):
         readings = _sensor_readings(sim_state)
@@ -110,10 +110,10 @@ def run(
 
     native_mv = round(sum(samples) / len(samples), 2)
     reference.save_native(native_mv)
-    log(f"Native potential: {native_mv:.1f} mV")
+    log(f"Native reference scalar: {native_mv:.1f} mV")
     log(
         f"Target shift: +{cfg.TARGET_SHIFT_MV} mV  →  lock at "
-        f"{native_mv + cfg.TARGET_SHIFT_MV:.1f} mV (zinc reading)"
+        f"{native_mv + cfg.TARGET_SHIFT_MV:.1f} mV (reference reading)"
     )
 
     # Phase 2 — ramp until target shift
@@ -136,7 +136,7 @@ def run(
         raw = reference.last_raw_mv
         shift_str = f"{shift:.1f}" if shift is not None else "N/A"
         log(
-            f"  zinc: {raw:.1f} mV  shift: {shift_str} / "
+            f"  ref: {raw:.1f} mV  shift: {shift_str} / "
             f"{cfg.TARGET_SHIFT_MV} mV"
         )
 

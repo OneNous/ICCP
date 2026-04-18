@@ -1,14 +1,14 @@
 # CoilShield implementation vs. “standard ICCP” write-up
 
-This document maps a typical industry ICCP description to what this repository actually implements.
+This document maps a typical industry ICCP description to what this repository actually implements. For **diagrams** (industry vs CoilShield data paths), see [iccp-comparison.md](iccp-comparison.md).
 
 ## What the code actually implements
 
-**Signal chain (hardware path):** Two [INA3221](https://www.ti.com/product/INA3221) boards on I2C read **bus voltage** and **shunt-derived current** per channel ([`sensors.py`](../sensors.py) `read_all_real`). There is **no** reference electrode, no analog front-end for metal/electrolyte potential, and no reference/potential semantics in the Python sources.
+**Signal chain (hardware path):** Four **[INA219](https://www.ti.com/product/INA219)** modules on I2C read **bus voltage** and **shunt-derived current** per anode channel ([`sensors.py`](../sensors.py) `read_all_real`, addresses in [`config/settings.py`](../config/settings.py) `INA219_ADDRESSES`). A **fifth INA219** at **`REF_INA219_ADDRESS`** reads the **reference electrode** ([`reference.py`](../reference.py)); by default **`REF_INA219_SOURCE = "bus_v"`** uses bus voltage (V) × 1000 as the mV-like scalar for commissioning and shift — confirm this matches your analog front end (INA219 is a shunt monitor, not a laboratory high-Z voltmeter). That yields a **shift from a commissioned native baseline**—not the same as a survey-grade “structure vs Ag/AgCl in bulk electrolyte” channel, but it does provide **slow-loop feedback** used to nudge `TARGET_MA` ([`control.py`](../control.py) `update_potential_target`).
 
-**Control objective:** When a channel is “wet,” PWM duty is stepped so measured **current (mA)** tracks a fixed **`TARGET_MA`** (default **0.5 mA** in [`config/settings.py`](../config/settings.py)). This is explicitly documented as incremental PWM, not PID, in the [`control.py`](../control.py) module docstring.
+**Control objective:** When a channel is “wet,” PWM duty is stepped so measured **current (mA)** tracks **`TARGET_MA`** (see `TARGET_MA` in [`config/settings.py`](../config/settings.py); commissioning may replace it with **`commissioned_target_ma`** in `commissioning.json`). This is explicitly documented as incremental PWM, not PID, in the [`control.py`](../control.py) module docstring.
 
-**Wet vs dry:** “Wet” is inferred when **current ≥ `CHANNEL_WET_THRESHOLD_MA`** (0.02 mA)—i.e. enough conduction to suggest a film/ionic path—not when a potential criterion is met.
+**Wet vs dry:** “Wet” is inferred when **current ≥ `CHANNEL_WET_THRESHOLD_MA`** in settings (not a fixed 0.02 mA unless you set it there)—enough conduction to suggest a film/ionic path—not when a potential criterion is met.
 
 **Safety:** Per-channel **overcurrent** (`MAX_MA`) and **bus voltage** window (`MIN_BUS_V` / `MAX_BUS_V`) can **latch** the channel off (`Controller.update` in [`control.py`](../control.py)). So current is both a **setpoint** and a **ceiling**, unlike industry ICCP where current is mainly an output limited by equipment/protection design.
 
@@ -27,7 +27,7 @@ flowchart LR
   end
 
   subgraph coilshield [CoilShield as implemented]
-    ina[INA3221 current per channel]
+    ina[INA219 current per anode channel]
     tgt[Compare to TARGET_MA]
     ctrl2[Incremental PWM]
     ina --> tgt
@@ -39,26 +39,26 @@ flowchart LR
 
 | Theme (typical write-up) | In this codebase |
 | ------------------------ | ---------------- |
-| **Primary control variable** | **Current (mA)** toward `TARGET_MA`, not a protection potential (e.g. −0.8 V vs Ag/AgCl). |
-| **Feedback sensor** | **Shunt current** (and bus V for limits), not a reference electrode. |
-| **Current role** | **Regulated setpoint** when protecting; varies with PWM only as needed to hit the mA target, not as the free output of a potential loop. |
+| **Primary control variable** | **Current (mA)** toward `TARGET_MA` in the inner loop; `TARGET_MA` can be **nudged** from **reference shift** (`TARGET_SHIFT_MV` / `MAX_SHIFT_MV`) via `update_potential_target`, not a fixed industry protection potential. |
+| **Feedback sensor** | **Shunt current** (and bus V for limits) on each tick; **dedicated INA219** on the reference for **slow** shift vs commissioned baseline. |
+| **Current role** | **Regulated setpoint** when protecting; outer loop adjusts that setpoint from polarization shift—not the same as current as only a **limit** while servoing potential. |
 | **Environment adaptation** | **Partial:** wet/dry and dwell time change how long regulation runs; **no** automatic response to salinity/coating via electrochemical feedback (only fixed thresholds/targets in settings). |
-| **Multi-zone** | **Yes:** five independent channels, each with its own duty and FSM state (`NUM_CHANNELS` in [`config/settings.py`](../config/settings.py), `ChannelState` in [`control.py`](../control.py)). |
+| **Multi-zone** | **Yes:** `NUM_CHANNELS` independent anode channels (default **4**), each with its own duty and FSM state in [`control.py`](../control.py), plus one **non-anode** INA219 for reference. |
 | **“Coverage validation” via probes** | **No** potential mapping; you have **probe pulses** on dry channels to detect wetting (`PROBE_*` in settings), not corrosion-relevant potential surveys. |
 
 ## Where a standard write-up matches line-for-line
 
-- **“INA3221 → current → compare to fixed 0.5 mA → PWM”** — Accurate: `TARGET_MA = 0.5` in [`config/settings.py`](../config/settings.py); regulation in `Controller.update` in [`control.py`](../control.py) (step up if `current_ma < target_ma`, step down if `> target_ma * 1.05`).
+- **“INA219 → current → compare to TARGET_MA → PWM”** — Accurate: anode channels use INA219; `TARGET_MA` may be replaced by **`commissioned_target_ma`** from `commissioning.json`; regulation in `Controller.update` in [`control.py`](../control.py) (step up if `current_ma < target_ma`, step down if `> target_ma * 1.05`).
 - **“Only when condensate present”** — Accurate: protection state requires wet inference (`current_ma >= CHANNEL_WET_THRESHOLD_MA`); otherwise dormant/probing behavior.
-- **“Per-channel independence”** — Accurate: separate `ChannelState` and duty per channel.
+- **“Per-channel independence”** — Accurate: separate `ChannelState` and duty per anode channel.
 - **“Current as safety ceiling”** — **Partially** accurate: `MAX_MA` latches faults, but the **normal loop still targets current**, not potential; industry ICCP would use current as a **limit** while **servoing potential**.
 
 ## Nuances worth stating clearly
 
-1. **Branding vs physics:** The project is framed as ICCP-style architecture (anodes, controller), but the **closed-loop physics** is **current regulation**, matching a “current regulator vs potential-controlled ICCP” distinction.
+1. **Branding vs physics:** The project is framed as ICCP-style architecture (anodes, controller). The **fast inner loop** is **current regulation**; the optional **reference shift outer loop** nudges `TARGET_MA` and is still not the same as **servoing structure potential** to an industry criterion.
 2. **Bus voltage limits** are **power-supply health**, not cathodic protection criterion voltage.
-3. **Simulator** (`read_all_sim` in [`sensors.py`](../sensors.py)) models wet/dry schedules and duty→current behavior for testing; it does not model reference potential.
+3. **Simulator** (`read_all_sim` in [`sensors.py`](../sensors.py)) models wet/dry schedules and duty→current behavior for testing; reference shift in sim is handled in [`reference.py`](../reference.py), not a full electrochemical field model.
 
 ## If you later align with classical ICCP (conceptual only)
 
-A minimal industry-style upgrade path (reference measurement → compare to target potential → adjust PWM/current with **current as limit**) is **not present** in code today; it would require new sensing (e.g. high-impedance potential measurement vs a reference) and a second control loop or retuned primary loop. **This repository currently implements only the shunt-current path described above.**
+Full industry-style behavior (structure/coupon potential vs a portable reference → hold criterion band → **current as limit**) would still require sensing and placement beyond reference shift on an INA219. **Today’s code** combines **shunt-current inner loop** with **optional reference-based outer trimming** and **commissioning**; it does not implement criterion-grade potential control.
