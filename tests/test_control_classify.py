@@ -113,6 +113,14 @@ def test_conductive_requires_hold(monkeypatch: pytest.MonkeyPatch) -> None:
     assert classify_channel(ch, 2.0, 5.0, cfg) == ChannelState.CONDUCTIVE
 
 
+def test_channel_target_ma_matches_cfg(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "TARGET_MA", 1.25)
+    monkeypatch.setattr(cfg, "CHANNEL_TARGET_MA", {1: 1.9})
+    ctrl = Controller()
+    assert ctrl.channel_target_ma(0) == 1.25
+    assert ctrl.channel_target_ma(1) == 1.9
+
+
 def test_state_recheck_resets_hysteresis_counters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

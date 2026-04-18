@@ -93,6 +93,8 @@ def _print_table(
     sim_line: str = "",
     z_median: dict[int, float | None] | None = None,
     live_ch: dict[str, object] | None = None,
+    ctrl: object | None = None,
+    tick_dt_s: float | None = None,
 ) -> None:
     try:
         if sim_line:
@@ -114,11 +116,34 @@ def _print_table(
             print(f"  Temp: {temp_str}")
         import config.settings as _cfg
 
+        ts_disp: str | None = None
+        if isinstance(live_ch, dict):
+            raw_ts = live_ch.get("ts")
+            if raw_ts is not None and str(raw_ts).strip():
+                ts_disp = str(raw_ts).replace("T", " ")
+        if not ts_disp:
+            ts_disp = time.strftime("%Y-%m-%d %H:%M:%S")
+        dt_suf = (
+            f"  Δt={float(tick_dt_s):.3f}s"
+            if tick_dt_s is not None and tick_dt_s >= 0
+            else ""
+        )
+        print(f"[tick] {ts_disp}{dt_suf}")
+
         i_floor = float(getattr(_cfg, "Z_COMPUTE_I_A_MIN", 1e-6))
         w = 132
+        if ctrl is not None and hasattr(ctrl, "channel_target_ma"):
+            parts = [
+                f"CH{i + 1}={ctrl.channel_target_ma(i):.3f}"
+                for i in range(int(_cfg.NUM_CHANNELS))
+            ]
+            print(
+                "  I_target (mA) — setpoint in PROTECTING; "
+                "PWM% is actuator only: " + "  ".join(parts)
+            )
         print("─" * w)
         print(
-            f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':>8}  {'Duty%':<8} "
+            f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':>8}  {'PWM%':<8} "
             f"{'Ω imp':<10} {'Ω med':<10} {'Vc':<8} {'Wet':<5} "
             f"{'P(W)':<9} {'E(J)':<10} {'η':<10}"
         )
@@ -169,6 +194,13 @@ def _print_table(
         print("─" * w)
         tpw = live_ch.get("total_power_w") if isinstance(live_ch, dict) else None
         tpw_s = f"{float(tpw):.4f}" if isinstance(tpw, (int, float)) else "—"
+        weak_mx = float(getattr(_cfg, "DUTY_WEAK_WET_MAX", 6.0))
+        cond_mx = float(getattr(_cfg, "DUTY_CONDUCTIVE_MAX", weak_mx))
+        vsoft = float(getattr(_cfg, "VCELL_SOFT_MAX_V", 0.0) or 0.0)
+        print(
+            f"  Staging: WEAK≤{weak_mx:.0f}% PWM  CONDUCTIVE≤{cond_mx:.0f}%  "
+            f"Vc≈Bus×PWM/100  (soft Vcell ref {vsoft:.1f} V)"
+        )
         print(
             f"  AnyWet={int(any_wet)}  Latch={int(latched)}  "
             f"ΣP={tpw_s} W  "
@@ -292,6 +324,7 @@ def main() -> int:
     )
     _ux_tip_shown = False
     _thermal_paused = False
+    _prev_verbose_mono: float | None = None
 
     try:
         while True:
@@ -422,6 +455,13 @@ def main() -> int:
                         f"[sim {sim_state.sim_hhmm()}] {cycle_str:<24} "
                         f"anodes: {wet_map}  (W=wet  .=dry)"
                     )
+                now_v = time.monotonic()
+                v_dt = (
+                    None
+                    if _prev_verbose_mono is None
+                    else (now_v - _prev_verbose_mono)
+                )
+                _prev_verbose_mono = now_v
                 _print_table(
                     readings,
                     faults,
@@ -440,6 +480,8 @@ def main() -> int:
                         for i in range(cfg.NUM_CHANNELS)
                     },
                     live_ch=live_snap,
+                    ctrl=ctrl,
+                    tick_dt_s=v_dt,
                 )
 
             elif faults or fault_latched:

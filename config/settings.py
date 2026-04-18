@@ -62,8 +62,13 @@ Z_COMPUTE_I_A_MIN = 1e-6
 
 # --- Duty limits per state (% duty cycle) ---
 DUTY_PROBE = 3.0  # WEAK_WET floor: start here, then ramp with PWM_STEP
-DUTY_WEAK_WET_MAX = 6.0  # WEAK_WET ceiling; CONDUCTIVE ramp continues up to this cap
+DUTY_WEAK_WET_MAX = 6.0  # WEAK_WET ceiling only (gentle probe path)
+# CONDUCTIVE may ramp higher than WEAK before PROTECTING (~33% ≈ 1.6 Vcell @ 4.85 V bus).
+DUTY_CONDUCTIVE_MAX = 40.0
 DUTY_PROTECT_MAX = 100.0  # ceiling in PROTECTING (clamped to PWM_MAX_DUTY in control)
+
+# Documentary: operator-acceptable Vcell for staging discussions (Vc ≈ bus_v * PWM/100).
+VCELL_SOFT_MAX_V = 1.6
 
 # Rolling window for median effective Ω logging (per channel).
 IMPEDANCE_MEDIAN_WINDOW = 32

@@ -4,8 +4,8 @@ CoilShield ICCP — per-channel control loop.
 Design principles:
   - No master wet switch. Each channel classifies path quality (DRY / WEAK_WET /
     CONDUCTIVE / PROTECTING) from current and effective impedance (V/I).
-  - DRY: open path → duty 0. WEAK_WET: ramp duty from DUTY_PROBE up to DUTY_WEAK_WET_MAX
-    (then CONDUCTIVE can ramp further toward target).
+  - DRY: open path → duty 0. WEAK_WET: ramp duty from DUTY_PROBE up to DUTY_WEAK_WET_MAX.
+    CONDUCTIVE ramps up to DUTY_CONDUCTIVE_MAX (then PROTECTING toward TARGET_MA).
     CONDUCTIVE: stable path → ramp toward target. PROTECTING: regulate to TARGET_MA.
   - DRY hysteresis requires measurable I (> noise floor) so Z is finite; at I≈0 with no
     drive, classify WEAK_WET so probes run (avoids false DRY when submerged).
@@ -171,6 +171,11 @@ class Controller:
             float(cfg.DUTY_PROTECT_MAX), float(cfg.PWM_MAX_DUTY)
         )
         weak_ceiling = min(float(cfg.DUTY_WEAK_WET_MAX), float(cfg.PWM_MAX_DUTY))
+        conductive_ceiling = min(
+            float(getattr(cfg, "DUTY_CONDUCTIVE_MAX", cfg.DUTY_WEAK_WET_MAX)),
+            float(cfg.PWM_MAX_DUTY),
+        )
+        conductive_ceiling = max(weak_ceiling, conductive_ceiling)
         probe_duty = min(float(cfg.DUTY_PROBE), weak_ceiling)
 
         for ch, state in enumerate(self._states):
@@ -254,7 +259,7 @@ class Controller:
                 err = target_ma - current_ma
                 step = 0.5 if err > 0 else (-0.5 if err < 0 else 0.0)
                 self._pwm.set_duty(
-                    ch, clamp(current_duty + step, 0.0, weak_ceiling)
+                    ch, clamp(current_duty + step, 0.0, conductive_ceiling)
                 )
             elif status == ChannelState.PROTECTING:
                 if current_ma < target_ma:
@@ -371,6 +376,10 @@ class Controller:
 
     def cleanup(self) -> None:
         self._pwm.cleanup()
+
+    def channel_target_ma(self, ch: int) -> float:
+        """Per-channel protection current setpoint (mA); same rule as internal classify."""
+        return self._channel_target(ch)
 
     def _channel_target(self, ch: int) -> float:
         return float(getattr(cfg, "CHANNEL_TARGET_MA", {}).get(ch, cfg.TARGET_MA))

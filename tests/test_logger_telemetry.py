@@ -30,7 +30,7 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     ch_status = {i: "DRY" for i in range(cfg.NUM_CHANNELS)}
 
     log = DataLogger()
-    log.record(
+    snap = log.record(
         readings,
         False,
         [],
@@ -44,6 +44,9 @@ def test_logger_writes_sqlite_latest_json_and_csv(
         ref_hw_message="sim",
         ref_baseline_set=False,
     )
+    assert "channels" in snap and "total_power_w" in snap
+    assert "ts" in snap and isinstance(snap["ts"], str)
+    assert "ts_unix" in snap and isinstance(snap["ts_unix"], (int, float))
     log.maybe_flush(force=True)
     log.close()
 

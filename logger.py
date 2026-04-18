@@ -736,6 +736,8 @@ class DataLogger:
         return {
             "channels": public_channels,
             "total_power_w": total_power_w,
+            "ts": ts,
+            "ts_unix": ts_unix,
         }
 
     def _update_wet_sessions(
