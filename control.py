@@ -9,8 +9,8 @@ Design principles:
     delivers more coulombs over time; no install-time position weighting.
   - Dormant channels send a brief probe pulse every PROBE_INTERVAL_S to detect
     re-wetting without waiting for the next commissioning cycle.
-  - Fault latch: per-channel over/under voltage and overcurrent latch that
-    channel off until clear_fault file is touched (config.settings.CLEAR_FAULT_FILE).
+  - Fault auto-recovery: channel retries after FAULT_RETRY_INTERVAL_S.
+    After FAULT_RETRY_MAX failures → permanent latch (manual clear needed).
   - Incremental PWM only — no PID. Slow steps prevent current spikes into
     overprotection territory on aluminum-containing coils.
 """
@@ -70,10 +70,10 @@ class PWMBank:
 class ChannelState:
     """Runtime state for one anode channel."""
 
-    DORMANT = "DORMANT"
-    PROBING = "PROBING"
+    DORMANT    = "DORMANT"
+    PROBING    = "PROBING"
     PROTECTING = "PROTECTING"
-    FAULT = "FAULT"
+    FAULT      = "FAULT"
 
     def __init__(self, ch: int) -> None:
         self.ch = ch
@@ -81,6 +81,8 @@ class ChannelState:
         self.last_probe_time: float = 0.0
         self.probe_since: float | None = None
         self.latch_message: str = ""
+        self.fault_time: float = 0.0       # when the fault was latched
+        self.fault_retry_count: int = 0    # consecutive failed retries
 
 
 class Controller:
@@ -108,16 +110,17 @@ class Controller:
                 self._pwm.set_duty(ch, 0.0)
                 if state.latch_message:
                     self._faults.append(state.latch_message)
+                # Auto-recovery check
+                self._maybe_auto_clear_fault(ch, state, r)
                 continue
 
             if not r.get("ok"):
                 self._pwm.set_duty(ch, 0.0)
-                self._faults.append(f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}")
+                self._faults.append(
+                    f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}"
+                )
                 state.probe_since = None
-                if state.status == ChannelState.PROBING:
-                    state.status = ChannelState.DORMANT
-                    state.last_probe_time = time.monotonic()
-                elif state.status == ChannelState.PROTECTING:
+                if state.status in (ChannelState.PROBING, ChannelState.PROTECTING):
                     state.status = ChannelState.DORMANT
                     state.last_probe_time = time.monotonic()
                 continue
@@ -194,6 +197,69 @@ class Controller:
         self._fault_latched = any(s.status == ChannelState.FAULT for s in self._states)
         return self._faults, self._fault_latched
 
+    def _maybe_auto_clear_fault(
+        self, ch: int, state: ChannelState, r: dict
+    ) -> None:
+        """
+        Auto-recovery logic. Runs every tick while a channel is in FAULT.
+
+        - If FAULT_AUTO_CLEAR is False → never auto-clear (legacy behavior).
+        - If retry count >= FAULT_RETRY_MAX → permanent latch, don't retry.
+        - OVERCURRENT: clears immediately once current drops below
+          OVERCURRENT_RECOVERY_THRESHOLD (75% of MAX_MA by default).
+          Hysteresis prevents chattering when current hovers at the limit.
+        - Other faults: cleared after FAULT_RETRY_INTERVAL_S for re-probe.
+        """
+        if not getattr(cfg, "FAULT_AUTO_CLEAR", False):
+            return
+
+        max_retries = getattr(cfg, "FAULT_RETRY_MAX", 1000)
+        if state.fault_retry_count >= max_retries:
+            # Permanent latch — update message to indicate manual clear needed
+            if "PERMANENT" not in state.latch_message:
+                state.latch_message = (
+                    f"{state.latch_message} [PERMANENT — touch clear_fault to reset]"
+                )
+            return
+
+        # Immediate hysteresis recovery for overcurrent faults.
+        # Only attempt if the sensor read succeeded this tick.
+        if "OVERCURRENT" in state.latch_message and r.get("ok"):
+            current_ma = float(r["current"])
+            recovery_threshold = getattr(
+                cfg, "OVERCURRENT_RECOVERY_THRESHOLD", cfg.MAX_MA * 0.90
+            )
+            if current_ma < recovery_threshold:
+                print(
+                    f"[control] CH{ch + 1} OVERCURRENT recovered "
+                    f"({current_ma:.4f} mA < {recovery_threshold:.2f} mA): "
+                    f"clearing fault"
+                )
+                state.status = ChannelState.DORMANT
+                state.latch_message = ""
+                state.last_probe_time = time.monotonic()
+                state.probe_since = None
+                state.fault_retry_count += 1
+                return
+            # Current still elevated — don't fall through to timed retry
+            return
+
+        retry_interval = getattr(cfg, "FAULT_RETRY_INTERVAL_S", 60.0)
+        elapsed = time.monotonic() - state.fault_time
+        if elapsed < retry_interval:
+            return
+
+        # Time to retry — clear fault and return to DORMANT for re-probe
+        print(
+            f"[control] CH{ch + 1} auto-retry "
+            f"({state.fault_retry_count + 1}/{max_retries}): clearing fault"
+        )
+        state.status = ChannelState.DORMANT
+        state.latch_message = ""
+        state.last_probe_time = time.monotonic()
+        state.probe_since = None
+        state.fault_retry_count += 1
+
     def update_potential_target(self, shift_mv: float | None) -> None:
         """
         Outer loop: nudge TARGET_MA to keep polarization in the safe window.
@@ -229,13 +295,14 @@ class Controller:
         self._pwm.cleanup()
 
     def _channel_target(self, _ch: int) -> float:
-        """Uniform target per channel — condensate dwell sets effective protection."""
         return float(cfg.TARGET_MA)
 
     def _latch_fault(self, ch: int, msg: str) -> None:
         self._pwm.set_duty(ch, 0.0)
         self._states[ch].status = ChannelState.FAULT
         self._states[ch].latch_message = msg
+        self._states[ch].fault_time = time.monotonic()
+        # Don't reset retry count here — it accumulates across latch cycles
         self._faults.append(msg)
 
     def _check_clear_fault(self) -> None:
@@ -251,5 +318,7 @@ class Controller:
                 state.latch_message = ""
                 state.last_probe_time = 0.0
                 state.probe_since = None
+                state.fault_retry_count = 0  # manual clear resets retry count
+                state.fault_time = 0.0
         self._fault_latched = False
         print("[control] Fault latch cleared.")

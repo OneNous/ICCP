@@ -33,6 +33,7 @@ COILSHIELD_SIM=0 python3 main.py --real
    `sudo pip3 install -r requirements.txt --break-system-packages`  
    (Same line as in the project plan; needed for `board` / `adafruit_ina3221` / `RPi.GPIO` on the system Python.)
 3. Verify bus: `sudo i2cdetect -y 1` (expect `40` and `41` when two INA3221 chips are wired for five channels; expect `48` when a PCF8591 reference ADC is present).
+4. If the matrix is all `--`, run **`./scripts/diagnose_i2c.sh`** (lists adapters, scans the configured bus, prints expected addresses). First run **`sudo i2cdetect -l`** and scan the **`i2c-N`** that matches the **header** I2C (on many Pis this is **`bcm2835 (i2c@7e804000)` → bus `1`**). Bus **`2`** is often a different controller, not the pins on 3/5—an empty scan there is normal if nothing is wired to it. A full grid of `--` on the **correct** bus means no device acknowledged the bus: check **power**, **SDA/SCL/GND** to each breakout, and **3.3 V** I2C levels.
 
 ### Reference electrode (zinc + PCF8591)
 

@@ -11,79 +11,69 @@ LOG_DIR = PROJECT_ROOT / "logs"
 CLEAR_FAULT_FILE = PROJECT_ROOT / "clear_fault"
 
 # --- I2C ---
-I2C_BUS = 1  # Pi 3/4/5: bus 1 (SCL/SDA). Try i2cdetect -y 0 on very old boards.
+I2C_BUS = 1
 
-# INA3221 I2C addresses — two chips, 3 channels each
-# Chip 1 (0x40): CH1–CH3   Chip 2 (0x41): CH4–CH5 (third channel unused)
-INA3221_ADDRESSES = (0x40, 0x41)
-NUM_CHANNELS = 5
+INA219_ADDRESSES = [0x40, 0x41, 0x44, 0x45]
+NUM_CHANNELS = 4
 
-# --- Current targets (aluminum-safe HVAC) ---
-# Same target every channel — wet dwell time per anode does the “weighting.”
-TARGET_MA = 0.5  # mA per channel when wet and regulating
-MAX_MA = 2.0  # mA — hard safety cutoff per channel; latches that channel
+# --- Current targets ---
+TARGET_MA = 1.2
+MAX_MA = 5.0
 
-# --- Per-channel wet detection (replaces master wet switch) ---
-CHANNEL_WET_THRESHOLD_MA = 0.02  # mA — at or above = film bridging anode→coil
+# --- Wet detection ---
+CHANNEL_WET_THRESHOLD_MA = 0.15
 
-# Probe pulse for dormant (dry) channels
-PROBE_DUTY_PCT = 3  # %
-PROBE_DURATION_S = 2.0  # s — settle before evaluating probe current
-PROBE_INTERVAL_S = 60.0  # s — between probes on a dormant channel
+# --- Probe pulse ---
+PROBE_DUTY_PCT = 3
+PROBE_DURATION_S = 2.0
+PROBE_INTERVAL_S = 60.0
+
+# --- Fault auto-recovery ---
+FAULT_AUTO_CLEAR = True
+FAULT_RETRY_INTERVAL_S = 60.0
+FAULT_RETRY_MAX = 10
 
 # --- PWM ---
 PWM_FREQUENCY_HZ = 1000
 PWM_STEP = 1
-PWM_MIN_DUTY = 0
+PWM_MIN_DUTY = 1
 PWM_MAX_DUTY = 80
 
-# --- GPIO (BCM) — CH1=top-left … CH5=center ---
-PWM_GPIO_PINS = (17, 27, 22, 23, 12)
-LED_STATUS_GPIO = 25  # None to disable
+# --- GPIO (BCM) ---
+PWM_GPIO_PINS = (17, 27, 22, 23)
+LED_STATUS_GPIO = 25
 
 # --- Bus voltage limits ---
-MIN_BUS_V = 9.0
-MAX_BUS_V = 14.0
+MIN_BUS_V = 3.0
+MAX_BUS_V = 6.0
 
 # --- Timing ---
 SAMPLE_INTERVAL_S = 0.5
 LOG_INTERVAL_S = 60
 
-# --- Logging (daily CSV + fault log + SQLite + latest.json; see logger.py) ---
+# --- Logging ---
 LOG_BASE_NAME = "iccp"
 FAULT_LOG_NAME = "iccp_faults.log"
 LOG_MAX_BYTES = 1_000_000
 LOG_ROTATION_KEEP = 5
 SQLITE_DB_NAME = "coilshield.db"
 LATEST_JSON_NAME = "latest.json"
-# Telemetry retention and periodic purge (also runs once at logger startup).
 TELEMETRY_RETENTION_DAYS = 30
 SQLITE_PURGE_EVERY_N_INSERTS = 10_000
 
-# --- Zinc reference electrode (I2C ADC) ---
-# PCF8591 is common on Pi starter kits; ADS1115 for higher resolution.
-ADC_CHIP = "PCF8591"  # "PCF8591" | "ADS1115"
+# --- Zinc reference electrode ---
+ADC_CHIP = "PCF8591"
 ZINC_REF_ADC_CHANNEL = 0
 ADC_VREF_MV = 3300
-
-# Protection window from zinc shift (mV) — outer loop nudges TARGET_MA to stay in band
 TARGET_SHIFT_MV = 100
 MAX_SHIFT_MV = 200
-TARGET_MA_STEP = 0.02  # per outer-loop tick (see LOG_INTERVAL_S)
-
-# Commissioning (native potential + ramp); see commissioning.py
+TARGET_MA_STEP = 0.02
 COMMISSIONING_SETTLE_S = 60
-
-# Simulator native zinc baseline (mV)
 SIM_NATIVE_ZINC_MV = 200.0
 
 # --- Simulator ---
-# Wet/dry schedule uses SIM_TIME_SCALE (real seconds per simulated hour); see sensors.py.
 SIM_NOMINAL_BUS_V = 11.8
 SIM_NOISE_MA = 0.05
-SIM_DRIFT_MA = 0.002  # unused by cycle sim; kept for API stability
-SIM_INJECT_FAULT_CH = None  # 0..NUM_CHANNELS-1 to inject overcurrent on that channel
+SIM_DRIFT_MA = 0.002
+SIM_INJECT_FAULT_CH = None
 SIM_INJECT_OVERCURRENT_MA = 3.0
-
-# Temperature — DS18B20 auto-detected under /sys/bus/w1/devices/28-*
-# No GPIO setting in firmware; enable 1-Wire in raspi-config / boot config.

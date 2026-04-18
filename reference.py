@@ -1,8 +1,8 @@
 """
 CoilShield — zinc reference electrode.
 
-Reads zinc-rod-to-GND voltage via I2C ADC. Tracks native potential baseline and
-computes protection shift (see config/settings: TARGET_SHIFT_MV).
+Reads zinc-rod-to-GND voltage via ESP32 ADC on IO12.
+Tracks native potential baseline and computes protection shift.
 
 SIM_MODE: COILSHIELD_SIM=1 uses simulated zinc readings (no hardware).
 """
@@ -20,49 +20,24 @@ SIM_MODE = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
 
-_bus = None
-_ads = None
-_chan = None
-
 if not SIM_MODE:
     try:
-        chip = getattr(cfg, "ADC_CHIP", "PCF8591")
-        if chip == "PCF8591":
-            import smbus2 as _smbus
-
-            _bus = _smbus.SMBus(cfg.I2C_BUS)
-        elif chip == "ADS1115":
-            import adafruit_ads1x15.ads1115 as _ADS
-            import adafruit_ads1x15.analog_in as _AnalogIn
-            import board as _board
-            import busio as _busio
-
-            _i2c_ads = _busio.I2C(_board.SCL, _board.SDA)
-            _ads = _ADS.ADS1115(_i2c_ads)
-            _ads.gain = 2
-            _chan = _AnalogIn.AnalogIn(_ads, _ADS.P0)
+        from machine import ADC, Pin
+        _adc = ADC(Pin(12))
+        _adc.atten(ADC.ATTN_11DB)    # 0–3.3V range
+        _adc.width(ADC.WIDTH_12BIT)  # 12-bit resolution: 0–4095
     except Exception as _hw_err:
         print(f"[reference] ADC init failed: {_hw_err}")
-        _bus = None
-        _ads = None
-        _chan = None
+        _adc = None
+else:
+    _adc = None
 
 
 def _read_raw_mv_hw() -> float:
-    chip = getattr(cfg, "ADC_CHIP", "PCF8591")
-    vref = getattr(cfg, "ADC_VREF_MV", 3300)
-    ch = getattr(cfg, "ZINC_REF_ADC_CHANNEL", 0)
-
-    if chip == "PCF8591" and _bus is not None:
-        _bus.write_byte(0x48, ch)
-        _bus.read_byte(0x48)
-        raw = _bus.read_byte(0x48)
-        return (raw / 255.0) * vref
-
-    if chip == "ADS1115" and _chan is not None:
-        return _chan.voltage * 1000.0
-
-    return 0.0
+    if _adc is None:
+        return 0.0
+    raw = _adc.read()
+    return (raw / 4095.0) * 3300.0
 
 
 def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> float:
