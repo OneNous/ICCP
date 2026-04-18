@@ -102,11 +102,14 @@ def _print_table(
         )
         band_disp = ref_band if ref_shift is not None else "—"
         temp_str = f"{temp_f:.1f}°F" if temp_f is not None else "—"
-        print(f"  Ref sensor: {ref_hw_line}")
-        print(
-            f"    raw={ref_raw_mv:.1f} mV  |  polarization shift={shift_str}  "
-            f"|  shift_band={band_disp}    Temp: {temp_str}"
-        )
+        if ref_hw_line != "disabled":
+            print(f"  Ref sensor: {ref_hw_line}")
+            print(
+                f"    raw={ref_raw_mv:.1f} mV  |  polarization shift={shift_str}  "
+                f"|  shift_band={band_disp}    Temp: {temp_str}"
+            )
+        else:
+            print(f"  Temp: {temp_str}")
         print("─" * 90)
         print(
             f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':>8}  {'Duty%':<8} "

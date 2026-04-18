@@ -85,6 +85,8 @@ TELEMETRY_RETENTION_DAYS = 30
 SQLITE_PURGE_EVERY_N_INSERTS = 10_000
 
 # --- Reference electrode (dedicated INA219; see REF_INA219_* above) ---
+# Set False to skip INA219 init and suppress ref output until hardware is wired.
+REF_ENABLED = False
 TARGET_SHIFT_MV = 100
 MAX_SHIFT_MV = 200
 TARGET_MA_STEP = 0.02
