@@ -20,10 +20,14 @@ SIM_MODE = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 _W1_BASE = Path("/sys/bus/w1/devices")
 
-# DS18B20 known bogus values: 0°C = CRC failure, 85°C = power-on default.
-# Readings outside this band are discarded and treated as missing.
-_MIN_VALID_C = 4.0   # 40°F
-_MAX_VALID_C = 48.9  # 120°F
+# DS18B20 hardware error values — always discard regardless of operating range.
+_DS18B20_ERROR_C = {0.0, 85.0}  # CRC failure, power-on default
+
+# Operating window: outside this range the controller shuts all channels off.
+# Below 35°F = potential freeze / no condensate cycle.
+# Above 80°F = heat mode running, not a cooling cycle.
+TEMP_MIN_F: float = 35.0
+TEMP_MAX_F: float = 80.0
 
 
 def _find_device() -> Path | None:
@@ -51,7 +55,7 @@ def read_celsius() -> float | None:
             return None
         raw = int(text[idx + 2 :].strip().split()[0])
         c = round(raw / 1000.0, 2)
-        if not (_MIN_VALID_C <= c <= _MAX_VALID_C):
+        if c in _DS18B20_ERROR_C:
             return None
         return c
     except Exception:
@@ -61,6 +65,14 @@ def read_celsius() -> float | None:
 def read_fahrenheit() -> float | None:
     c = read_celsius()
     return None if c is None else round(c * 9 / 5 + 32, 2)
+
+
+def in_operating_range(temp_f: float | None) -> bool:
+    """False only when a valid reading falls outside [TEMP_MIN_F, TEMP_MAX_F].
+    None (sensor absent) returns True — don't block when sensor is missing."""
+    if temp_f is None:
+        return True
+    return TEMP_MIN_F <= temp_f <= TEMP_MAX_F
 
 
 def _sim_celsius() -> float:

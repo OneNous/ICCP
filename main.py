@@ -250,9 +250,31 @@ def main() -> int:
         1, int(cfg.LOG_INTERVAL_S / cfg.SAMPLE_INTERVAL_S)
     )
     _ux_tip_shown = False
+    _thermal_paused = False
 
     try:
         while True:
+            temp_f = temp_mod.read_fahrenheit()
+            if not temp_mod.in_operating_range(temp_f):
+                ctrl.thermal_off()
+                if not _thermal_paused:
+                    reason = (
+                        "too cold — possible freeze"
+                        if temp_f is not None and temp_f < temp_mod.TEMP_MIN_F
+                        else "too hot — heat mode?"
+                    )
+                    print(
+                        f"[main] THERMAL PAUSE {temp_f}°F outside "
+                        f"[{temp_mod.TEMP_MIN_F}–{temp_mod.TEMP_MAX_F}°F]: {reason}"
+                    )
+                    _thermal_paused = True
+                time.sleep(cfg.SAMPLE_INTERVAL_S)
+                continue
+
+            if _thermal_paused:
+                print(f"[main] Temp restored ({temp_f}°F) — resuming.")
+                _thermal_paused = False
+
             if sim:
                 readings = sensors.read_all_sim(sim_state)  # type: ignore[arg-type]
             else:
@@ -274,7 +296,6 @@ def main() -> int:
                 if ref_shift is not None
                 else "—"
             )
-            temp_f = temp_mod.read_fahrenheit()
 
             if not _ux_tip_shown:
                 tip = ref_ux_hint(

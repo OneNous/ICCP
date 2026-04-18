@@ -304,6 +304,10 @@ class Controller:
     def any_wet(self) -> bool:
         return any(s.status == ChannelState.PROTECTING for s in self._states)
 
+    def thermal_off(self) -> None:
+        """Zero all PWM outputs without touching channel states (temp-range pause)."""
+        self._pwm.all_off()
+
     def cleanup(self) -> None:
         self._pwm.cleanup()
 
