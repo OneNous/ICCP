@@ -132,6 +132,55 @@ touch ~/coilshield/clear_fault
 
 (Uses `config/settings.CLEAR_FAULT_FILE`.)
 
+## ICCP command on the Raspberry Pi (`~/coilshield`)
+
+The `iccp` entry point is declared in `pyproject.toml` (`[project.scripts]`). It only exists **after** `pip install -e .` into an environment whose `bin` directory is on your `PATH` (or when you call the script by full path).
+
+**Why `iccp: command not found`:** the console script is installed as `.venv/bin/iccp` (or `~/.local/bin/iccp` with `--user`). A plain shell does not see it until you **activate** that venv or **prefix** the path.
+
+**Recommended (venv on the Pi):**
+
+```bash
+cd ~/coilshield
+python3 -m venv .venv
+.venv/bin/pip install -U pip
+.venv/bin/pip install -e .
+```
+
+On a Mac or other non-Pi machine, `pip install -e .` may fail while building **RPi.GPIO** — that is expected. Use a Raspberry Pi for the full install, or run `PYTHONPATH=~/coilshield python3 iccp_cli.py --help` from the repo root to sanity-check the CLI without installing GPIO wheels.
+
+Verify:
+
+```bash
+.venv/bin/iccp --help
+```
+
+Use every session either:
+
+```bash
+source .venv/bin/activate
+iccp -start
+```
+
+or without activating:
+
+```bash
+~/coilshield/.venv/bin/iccp probe
+```
+
+**PEP 668 / “externally managed”:** avoid `sudo pip install` into system Python; keep using the venv commands above (same idea as the Tests section).
+
+**If `pip install -e .` fails:** try `.venv/bin/pip install -U pip setuptools wheel` first. Hardware deps (`RPi.GPIO`, `smbus2`, etc.) install into the same venv as `iccp`.
+
+**Optional — user install without a venv:**
+
+```bash
+cd ~/coilshield
+python3 -m pip install --user -e .
+```
+
+Ensure `~/.local/bin` is on your `PATH` for login shells (many Pi images already include it). Then run `~/.local/bin/iccp --help` to confirm.
+
 ## Development workflow (Mac → Pi)
 
 - **Git:** commit on Mac, `git push`; on Pi `cd ~/coilshield && git pull`.
