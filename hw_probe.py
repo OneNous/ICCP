@@ -93,6 +93,23 @@ def _safe_gpio_cleanup() -> None:
         pass
 
 
+def _mux_select_anode_for_probe(sm: object, ch_index: int) -> None:
+    """TCA9548A: match sensors.py — per-channel port or one legacy port before INA219 I/O."""
+    if cfg is None:
+        return
+    mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+    if mux_addr is None:
+        return
+    from i2c_bench import mux_select_on_bus
+
+    per = getattr(cfg, "I2C_MUX_CHANNELS_INA219", None)
+    leg = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
+    if per is not None and ch_index < len(per):
+        mux_select_on_bus(sm, int(mux_addr), int(per[ch_index]))
+    elif leg is not None:
+        mux_select_on_bus(sm, int(mux_addr), int(leg))
+
+
 def _i2c_diagnostic(e: BaseException, bus: int) -> None:
     print("\n  [!] I2C diagnostic:")
     print(f"      Error: {e!r}")
@@ -180,7 +197,7 @@ def run_i2c_scan(bus: int) -> None:
 
 
 def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
-    from i2c_bench import ina219_read, ina219_write_config
+    from i2c_bench import INA219_DEFAULT_CONFIG_WORD, ina219_read, ina219_write_config
 
     section("STEP 2 — Raw INA219 reads (smbus2)")
     print(f"""
@@ -204,14 +221,19 @@ def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
     readings: dict[int, dict] = {}
     try:
         if force_init:
-            print("  (--init) writing INA219 CONFIG 0x2197 on each channel …")
-            for addr in INA219_ADDRESSES:
+            print(
+                f"  (--init) writing INA219 CONFIG 0x{INA219_DEFAULT_CONFIG_WORD:04X} "
+                "(pi-ina219 RANGE_16V / PGA÷1 / 128×ADC) on each channel …"
+            )
+            for ch, addr in enumerate(INA219_ADDRESSES):
+                _mux_select_anode_for_probe(sm, ch)
                 try:
-                    ina219_write_config(sm, addr, 0x2197)
+                    ina219_write_config(sm, addr, INA219_DEFAULT_CONFIG_WORD)
                     time.sleep(0.015)
                 except OSError as e:
                     print(f"  [!] init 0x{addr:02X}: {e}")
-        for addr in INA219_ADDRESSES:
+        for ch, addr in enumerate(INA219_ADDRESSES):
+            _mux_select_anode_for_probe(sm, ch)
             readings[addr] = ina219_read(sm, addr, shunt_ohms)
     finally:
         sm.close()
@@ -235,7 +257,12 @@ def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
 
 
 def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: bool) -> None:
-    from i2c_bench import ads1115_read_single_ended, ina219_read, ina219_write_config
+    from i2c_bench import (
+        INA219_DEFAULT_CONFIG_WORD,
+        ads1115_read_single_ended,
+        ina219_read,
+        ina219_write_config,
+    )
 
     section("CONTINUOUS MODE — Ctrl+C to stop")
     print("  INA219 four channels + ADS1115 AIN0 once per tick (unless --skip-ads).\n")
@@ -260,10 +287,14 @@ def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: b
             ads_bus = None
 
     if force_init:
-        print("  (--init) writing INA219 CONFIG 0x2197 on each channel …")
-        for addr in INA219_ADDRESSES:
+        print(
+            f"  (--init) writing INA219 CONFIG 0x{INA219_DEFAULT_CONFIG_WORD:04X} "
+            "(pi-ina219 parity) on each channel …"
+        )
+        for ch, addr in enumerate(INA219_ADDRESSES):
+            _mux_select_anode_for_probe(sm, ch)
             try:
-                ina219_write_config(sm, addr, 0x2197)
+                ina219_write_config(sm, addr, INA219_DEFAULT_CONFIG_WORD)
                 time.sleep(0.015)
             except OSError as e:
                 print(f"  [!] init 0x{addr:02X}: {e}")
@@ -278,6 +309,7 @@ def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: b
             print("  " + "─" * 52)
             for ch, addr in enumerate(INA219_ADDRESSES):
                 label = f"CH{ch + 1}"
+                _mux_select_anode_for_probe(sm, ch)
                 r = ina219_read(sm, addr, shunt_ohms)
                 if r.get("ok"):
                     print(
@@ -491,7 +523,7 @@ def main() -> int:
     ap.add_argument(
         "--init",
         action="store_true",
-        help="Force INA219 CONFIG write (0x2197) on each channel before reads",
+        help="Force INA219 CONFIG write (same word as pi-ina219 RANGE_16V defaults) on each channel",
     )
     args = ap.parse_args()
     ads_bus = args.ads_bus if args.ads_bus is not None else ADS1115_BUS

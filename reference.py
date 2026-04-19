@@ -50,6 +50,7 @@ def _init_ref_ina219() -> None:
             address=cfg.REF_INA219_ADDRESS,
             busnum=_REF_I2C_BUS,
         )
+        # Same CONFIG tuple as sensors.py; matches i2c_bench.INA219_DEFAULT_CONFIG_WORD.
         _ref_ina.configure(
             voltage_range=INA219.RANGE_16V,
             gain=INA219.GAIN_AUTO,

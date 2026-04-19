@@ -33,10 +33,23 @@ REF_ADC_BACKEND = "ads1115"
 # Bench: copper wire; field: ag_agcl after swap — informational for logs/docs.
 REF_ELECTRODE_KIND = "copper_bench"
 
-# TCA9548A multiplexer (optional). When None, mux_select is a no-op.
+# TCA9548A multiplexer (optional). When I2C_MUX_ADDRESS is None, mux_select is a no-op.
+# Control byte = 1 << channel (datasheet): ch0=0x01 … ch3=0x08, ch4=0x10, etc.
+#
+# Example (one INA219 per mux branch, ref ADC on ch4):
+#   I2C_MUX_ADDRESS = 0x70   # set per ADDR0..2 straps on the TCA9548A
+#   I2C_MUX_CHANNELS_INA219 = (0, 1, 2, 3)   # CH0..CH3 → bytes 0x01,0x02,0x04,0x08
+#   I2C_MUX_CHANNEL_ADS1115 = 4               # ADS1115 @ 0x48 → byte 0x10
+#   I2C_MUX_CHANNEL_INA219 = None            # omit when using I2C_MUX_CHANNELS_INA219
+#
+# Legacy: all four INA219s on one downstream bus (different straps 0x40..0x45) uses
+#   I2C_MUX_CHANNEL_INA219 = <single port>; leave I2C_MUX_CHANNELS_INA219 = None.
 I2C_MUX_ADDRESS: int | None = None
 I2C_MUX_CHANNEL_ADS1115: int | None = None
+# Single downstream port shared by every anode INA219 (ignored if I2C_MUX_CHANNELS_INA219 set).
 I2C_MUX_CHANNEL_INA219: int | None = None
+# Per anode index 0..NUM_CHANNELS-1: TCA9548A port to select before that INA219 (1<<N).
+I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = None
 
 # Dedicated INA219 for reference electrode.
 # On the SAME bus as anodes: address must not collide with INA219_ADDRESSES (e.g. 0x42,

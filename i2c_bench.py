@@ -20,6 +20,31 @@ def word_out(value: int) -> int:
     return ((value & 0xFF) << 8) | ((value >> 8) & 0xFF)
 
 
+# ---------------------------------------------------------------------------
+# INA219 — CONFIG word aligned with pi-ina219 + TI INA219 register map
+# ---------------------------------------------------------------------------
+# Bitfield (TI INA219 CONFIG register): RST[15], BRNG[13], PG[12:11], BADC[10:7],
+# SADC[6:3], MODE[2:0].  Shunt LSB vs PGA: TI Table 7-1 (same as _INA219_PGA_LSB_V).
+#
+# pi-ina219 INA219._configure (chrisb2/pi_ina219) builds:
+#   (voltage_range << 13) | (gain << 11) | (bus_adc << 7) | (shunt_adc << 3) | 7
+# with MODE=7 = continuous shunt and bus.  This matches sensors.py / reference.py:
+#   RANGE_16V (0), GAIN_1_40MV (0), ADC_128SAMP (15), ADC_128SAMP (15).
+INA219_BRNG_16V = 0  # 0–16 V bus full-scale (TI: BRNG=0)
+INA219_BRNG_32V = 1
+INA219_PGA_DIV1 = 0  # ±40 mV shunt → 10 µV/LSB on register 01h
+INA219_ADC_128SAMP = 15  # pi-ina219 ADC_128SAMP
+INA219_MODE_CONT_SHUNT_BUS = 7  # continuous shunt + bus
+
+INA219_DEFAULT_CONFIG_WORD: int = (
+    (INA219_BRNG_16V << 13)
+    | (INA219_PGA_DIV1 << 11)
+    | (INA219_ADC_128SAMP << 7)
+    | (INA219_ADC_128SAMP << 3)
+    | INA219_MODE_CONT_SHUNT_BUS
+)  # 0x07FF — same CONFIG as pi-ina219 for the CoilShield configure() tuple
+
+
 def mux_select_on_bus(bus: Any, mux_addr: int | None, mux_ch: int | None) -> None:
     """TCA9548A: select downstream port (0–7). No-op if mux_addr or mux_ch is None."""
     if mux_addr is None or mux_ch is None:
@@ -95,22 +120,19 @@ def ina219_parse(
 
 
 def ina219_ensure_converting(bus: Any, addr: int) -> None:
-    """If bus voltage looks stale, write a sane CONFIG (16 V range, /1 PGA, continuous)."""
+    """If bus voltage looks stale, write CONFIG matching sensors.py (pi-ina219 defaults)."""
     try:
         raw_cfg = word_in(bus.read_word_data(addr, 0))
     except OSError:
         return
     if raw_cfg == 0:
-        # 0x2197-style: 16 V bus, PGA x1, 12-bit, shunt+bus continuous (matches common breakouts).
-        ina219_write_config(bus, addr, 0x2197)
+        ina219_write_config(bus, addr, INA219_DEFAULT_CONFIG_WORD)
         time.sleep(0.02)
         return
     _, raw_b = ina219_read_registers(bus, addr)
     bus_adc = (raw_b >> 3) & 0x1FFF
     if bus_adc == 0:
-        # Use same CONFIG as cold-init so PGA stays /1 (10µV LSB); 0x399F uses PGA/8
-        # in many strap defaults and would mismatch a fixed 10µV parse.
-        ina219_write_config(bus, addr, 0x2197)
+        ina219_write_config(bus, addr, INA219_DEFAULT_CONFIG_WORD)
         time.sleep(0.02)
 
 
@@ -125,16 +147,24 @@ def ina219_read(bus: Any, addr: int, shunt_ohm: float) -> dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
-def _ads1115_config_word(channel: int, fsr_v: float) -> int:
-    """Single-ended AINn vs GND, single-shot, data rate 250 SPS."""
+def _ads1115_dr_conversion_s(dr: int) -> float:
+    """TI ADS1115: single-shot conversion time ≈ 1 / DR (Table 6-5, nominal)."""
+    sps = (8.0, 16.0, 32.0, 64.0, 128.0, 250.0, 475.0, 860.0)[dr & 7]
+    return 1.0 / sps
+
+
+def _ads1115_config_word(channel: int, fsr_v: float, dr: int = 5) -> int:
+    """Single-ended AINn vs GND, single-shot; DR[2:0] in bits [7:5] (default 101 = 250 SPS)."""
     if channel not in (0, 1, 2, 3):
         raise ValueError("ADS1115 channel must be 0..3")
+    if (dr & 7) != dr:
+        raise ValueError("ADS1115 DR must be 0..7")
     mux = (4 + channel) << 12
     # PGA bits 11-9
     pga_map = {6.144: 0x0000, 4.096: 0x0200, 2.048: 0x0400, 1.024: 0x0600, 0.512: 0x0800, 0.256: 0x0A00}
     pga = pga_map.get(round(fsr_v, 3), 0x0200)
-    # OS=1 start, MUX, PGA, MODE=1 single, DR=101 (250 SPS), comparator bits = 011
-    return 0x8000 | mux | pga | 0x0100 | (5 << 5) | 3
+    # OS=1 start, MUX, PGA, MODE=1 single, DR, comparator bits = 011
+    return 0x8000 | mux | pga | 0x0100 | ((dr & 7) << 5) | 3
 
 
 def _ads1115_volts_per_lsb(fsr_v: float) -> float:
@@ -147,16 +177,26 @@ def ads1115_read_single_ended(
     channel: int,
     fsr_v: float = 4.096,
     *,
-    conversion_delay_s: float = 0.004,
+    dr: int = 5,
+    conversion_delay_s: float | None = None,
     poll_interval_s: float = 0.002,
-    poll_max: int = 50,
+    poll_max: int | None = None,
 ) -> float:
     """Return voltage in volts (single-ended vs GND).
 
     Starts a single-shot conversion then polls TI ADS1115 Config register bit 15
-    (OS) until the device reports not busy, or falls back to a fixed delay.
+    (OS) until the device reports not busy (Table 8-3), or falls back to a delay
+    derived from the selected data rate (TI Table 6-5, ~1/DR) when
+    ``conversion_delay_s`` is omitted.
     """
-    cfg = _ads1115_config_word(channel, fsr_v)
+    cfg = _ads1115_config_word(channel, fsr_v, dr=dr)
+    dr_bits = (cfg >> 5) & 7
+    t_conv = _ads1115_dr_conversion_s(dr_bits)
+    if conversion_delay_s is None:
+        conversion_delay_s = t_conv * 1.25 + 5e-4
+    if poll_max is None:
+        poll_max = max(50, int(t_conv / max(poll_interval_s, 1e-6)) + 25)
+
     bus.write_i2c_block_data(addr, 0x01, [(cfg >> 8) & 0xFF, cfg & 0xFF])
     # Poll Config[15] (OS): reads 1 when not converting (conversion complete).
     for _ in range(poll_max):
@@ -166,7 +206,7 @@ def ads1115_read_single_ended(
         if status & 0x8000:
             break
     else:
-        time.sleep(max(0.0, conversion_delay_s))
+        time.sleep(max(0.0, float(conversion_delay_s)))
 
     raw = bus.read_i2c_block_data(addr, 0x00, 2)
     val = (raw[0] << 8) | raw[1]

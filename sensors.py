@@ -47,15 +47,38 @@ if not SIM_MODE:
 
         SHUNT_OHMS = 0.1  # R100 shunt resistor on each board
 
-        for addr in cfg.INA219_ADDRESSES:
-            sensor = INA219(SHUNT_OHMS, address=addr, busnum=cfg.I2C_BUS)
-            sensor.configure(
-                voltage_range=INA219.RANGE_16V,
-                gain=INA219.GAIN_AUTO,
-                bus_adc=INA219.ADC_128SAMP,
-                shunt_adc=INA219.ADC_128SAMP,
-            )
-            _sensors.append(sensor)
+        # CONFIG matches i2c_bench.INA219_DEFAULT_CONFIG_WORD (0x07FF) when
+        # GAIN_AUTO resolves to GAIN_1_40MV — see pi-ina219 INA219._configure.
+        mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+        per_mux = getattr(cfg, "I2C_MUX_CHANNELS_INA219", None)
+        leg_mux = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
+        mux_bus = None
+        if mux_addr is not None and (per_mux is not None or leg_mux is not None):
+            import smbus2
+
+            from i2c_bench import mux_select_on_bus
+
+            mux_bus = smbus2.SMBus(int(cfg.I2C_BUS))
+        try:
+            from i2c_bench import mux_select_on_bus
+
+            for idx, addr in enumerate(cfg.INA219_ADDRESSES):
+                if mux_bus is not None and mux_addr is not None:
+                    if per_mux is not None and idx < len(per_mux):
+                        mux_select_on_bus(mux_bus, int(mux_addr), int(per_mux[idx]))
+                    elif leg_mux is not None:
+                        mux_select_on_bus(mux_bus, int(mux_addr), int(leg_mux))
+                sensor = INA219(SHUNT_OHMS, address=addr, busnum=cfg.I2C_BUS)
+                sensor.configure(
+                    voltage_range=INA219.RANGE_16V,
+                    gain=INA219.GAIN_AUTO,
+                    bus_adc=INA219.ADC_128SAMP,
+                    shunt_adc=INA219.ADC_128SAMP,
+                )
+                _sensors.append(sensor)
+        finally:
+            if mux_bus is not None:
+                mux_bus.close()
 
         print(f"[sensors] INA219 initialized on {len(_sensors)} channels "
               f"at addresses {[hex(a) for a in cfg.INA219_ADDRESSES]}")
@@ -66,9 +89,11 @@ if not SIM_MODE:
 
 
 def _mux_select_ina219_bus() -> None:
-    """TCA9548A: select downstream port for anode INA219s (no-op if mux not configured)."""
+    """TCA9548A: one shared downstream port for all anode INA219s (legacy; no-op otherwise)."""
     mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
     mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
+    if getattr(cfg, "I2C_MUX_CHANNELS_INA219", None) is not None:
+        return
     if mux_addr is None or mux_ch is None:
         return
     try:
@@ -94,51 +119,91 @@ def read_all_real() -> dict[int, ChannelReading]:
         CH1 → INA219 at 0x41
         CH2 → INA219 at 0x44
         CH3 → INA219 at 0x45
+
+    If ``I2C_MUX_CHANNELS_INA219`` is set, selects that TCA9548A port (0..7) before
+    each channel read (one downstream branch at a time). Legacy single-port layout
+    uses ``I2C_MUX_CHANNEL_INA219`` only (see ``_mux_select_ina219_bus``).
     """
     from ina219 import DeviceRangeError
 
-    _mux_select_ina219_bus()
+    from i2c_bench import mux_select_on_bus
 
+    mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+    per_mux = getattr(cfg, "I2C_MUX_CHANNELS_INA219", None)
+    leg_mux = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
+    mux_bus = None
+    if mux_addr is not None and (per_mux is not None or leg_mux is not None):
+        import smbus2
+
+        mux_bus = smbus2.SMBus(int(cfg.I2C_BUS))
     results: dict[int, ChannelReading] = {}
+    try:
+        if mux_bus is not None and mux_addr is not None and per_mux is None and leg_mux is not None:
+            mux_select_on_bus(mux_bus, int(mux_addr), int(leg_mux))
+        elif mux_addr is not None and per_mux is None:
+            _mux_select_ina219_bus()
 
-    for iccp_ch, sensor in enumerate(_sensors):
-        if iccp_ch >= cfg.NUM_CHANNELS:
-            break
-        try:
-            bus_v     = sensor.voltage()        # V
-            current_ma = sensor.current()       # mA
-            shunt_mv  = sensor.shunt_voltage()  # mV
-            power_mw  = sensor.power()          # mW
+        for iccp_ch, sensor in enumerate(_sensors):
+            if iccp_ch >= cfg.NUM_CHANNELS:
+                break
+            if (
+                mux_bus is not None
+                and mux_addr is not None
+                and per_mux is not None
+                and iccp_ch < len(per_mux)
+            ):
+                mux_select_on_bus(mux_bus, int(mux_addr), int(per_mux[iccp_ch]))
+            try:
+                bus_v = sensor.voltage()  # V
+                current_ma = sensor.current()  # mA
+                shunt_mv = sensor.shunt_voltage()  # mV
+                power_mw = sensor.power()  # mW
 
-            if current_ma != current_ma:        # NaN check
-                raise ValueError("NaN current")
+                if current_ma != current_ma:  # NaN check
+                    raise ValueError("NaN current")
 
-            results[iccp_ch] = {
-                "bus_v":    round(bus_v, 4),
-                "shunt_mv": round(shunt_mv, 4),
-                "current":  round(current_ma, 6),
-                "power":    round(power_mw, 6),
-                "ok":       True,
-            }
+                results[iccp_ch] = {
+                    "bus_v": round(bus_v, 4),
+                    "shunt_mv": round(shunt_mv, 4),
+                    "current": round(current_ma, 6),
+                    "power": round(power_mw, 6),
+                    "ok": True,
+                }
 
-        except DeviceRangeError as e:
-            results[iccp_ch] = {
-                "bus_v": 0.0, "shunt_mv": 0.0, "current": 0.0, "power": 0.0,
-                "ok": False, "error": f"DeviceRangeError: {e}",
-            }
+            except DeviceRangeError as e:
+                results[iccp_ch] = {
+                    "bus_v": 0.0,
+                    "shunt_mv": 0.0,
+                    "current": 0.0,
+                    "power": 0.0,
+                    "ok": False,
+                    "error": f"DeviceRangeError: {e}",
+                }
 
-        except Exception as e:
-            results[iccp_ch] = {
-                "bus_v": 0.0, "shunt_mv": 0.0, "current": 0.0, "power": 0.0,
-                "ok": False, "error": str(e),
-            }
+            except Exception as e:
+                results[iccp_ch] = {
+                    "bus_v": 0.0,
+                    "shunt_mv": 0.0,
+                    "current": 0.0,
+                    "power": 0.0,
+                    "ok": False,
+                    "error": str(e),
+                }
+
+    finally:
+        if mux_bus is not None:
+            mux_bus.close()
 
     # Fill missing channels
     for ch in range(cfg.NUM_CHANNELS):
         if ch not in results:
             results[ch] = {
-                "bus_v": 0.0, "shunt_mv": 0.0, "current": 0.0, "power": 0.0,
-                "ok": False, "error": "no hardware",
+                "bus_v": 0.0,
+                "shunt_mv": 0.0,
+                "current": 0.0,
+                "power": 0.0,
+                "ok": False,
+                "error": "no hardware",
             }
 
     return results
