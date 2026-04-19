@@ -138,9 +138,15 @@ class PWMBank:
     def cleanup(self) -> None:
         self.all_off()
         if not _SIM:
-            for p in self._pwm:
+            for i, p in enumerate(self._pwm):
                 try:
                     p.stop()
+                except Exception:
+                    pass
+                # Drive pin explicitly LOW after stopping PWM so the MOSFET gate
+                # is grounded before GPIO.cleanup() releases the pin to INPUT/floating.
+                try:
+                    GPIO.output(cfg.PWM_GPIO_PINS[i], GPIO.LOW)
                 except Exception:
                     pass
             self._pwm.clear()
