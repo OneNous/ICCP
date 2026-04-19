@@ -48,7 +48,7 @@ def test_build_header_and_rows(latest_path: Path) -> None:
         "ref_baseline_set": True,
         "channels": {
             str(i): {
-                "state": "PROTECTING" if i == 0 else "DRY",
+                "state": "PROTECTING" if i == 0 else "OPEN",
                 "ma": 1.2 if i == 0 else 0.0,
                 "duty": 15.0 if i == 0 else 0.0,
                 "bus_v": 12.0,
@@ -93,7 +93,7 @@ def test_tui_app_renders_table(latest_path: Path) -> None:
         "ref_baseline_set": False,
         "channels": {
             str(i): {
-                "state": "DRY",
+                "state": "OPEN",
                 "ma": 0.0,
                 "duty": 0.0,
                 "bus_v": 12.0,

@@ -2,21 +2,19 @@
 CoilShield ICCP — per-channel control loop.
 
 Design principles:
-  - No master wet switch. Each channel classifies path quality (DRY / WEAK_WET /
-    CONDUCTIVE / PROTECTING) from current and effective impedance (V/I).
-  - DRY: open path → duty 0. WEAK_WET / CONDUCTIVE: ramp PWM from DUTY_PROBE up to
-    PWM_MAX_DUTY (no intermediate % cap); PROTECTING regulates toward TARGET_MA.
-    CONDUCTIVE: stable path → ramp toward target. PROTECTING: regulate to TARGET_MA.
-  - DRY hysteresis requires measurable I (> noise floor) so Z is finite; at I≈0 with no
-    drive, classify WEAK_WET so probes run (avoids false DRY when submerged).
-  - Hysteresis counters reset every STATE_RECHECK_INTERVAL_S for fresh classification.
-  - Low-Z guard (Z < MIN_EFFECTIVE_OHMS): hold non-DRY status to avoid thrash; from DRY
-    return WEAK_WET so probe duty can run (avoids DRY+finite-I short latch at 0% PWM).
+  - Path FSM: OPEN / REGULATE / PROTECTING (+ FAULT), from measured I and Z = V/I.
+  - OPEN: no reliable path → 0% duty. REGULATE: approach current toward TARGET_MA
+    with PWM_STEP ramps under Vcell duty cap. PROTECTING: fine servo at TARGET_MA.
+  - Internal path class (PATH_OPEN / PATH_WEAK / PATH_STRONG) drives transitions;
+    PROTECTING requires PATH_STRONG plus near-target hysteresis.
+  - OPEN hysteresis needs measurable I for finite Z; at I≈0 without drive, classify
+    weak path so REGULATE probe can run (avoids false OPEN when submerged).
+  - Hysteresis counters reset every STATE_RECHECK_INTERVAL_S.
+  - Low-Z guard (Z < MIN_EFFECTIVE_OHMS): hold non-OPEN path class; from OPEN return
+    weak path so probe duty can clarify.
   - FAULT is orthogonal (over/under-voltage, overcurrent, read errors).
   - Fault auto-recovery: channel retries after FAULT_RETRY_INTERVAL_S.
-    After FAULT_RETRY_MAX failures → permanent latch (manual clear needed).
-  - Incremental PWM only — no PID. Slow steps prevent current spikes into
-    overprotection territory on aluminum-containing coils.
+  - Incremental PWM only — no PID. Slow steps limit current spikes on sensitive coils.
 """
 
 from __future__ import annotations
@@ -33,38 +31,54 @@ _SIM = os.environ.get("COILSHIELD_SIM", "0") == "1"
 if not _SIM:
     import RPi.GPIO as GPIO  # noqa: N814
 
+# Path quality for classify_path (not persisted — ChannelState uses OPEN/REGULATE/PROTECTING).
+PATH_OPEN = "PATH_OPEN"
+PATH_WEAK = "PATH_WEAK"
+PATH_STRONG = "PATH_STRONG"
+
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
-def classify_channel(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
+def duty_pct_cap_for_vcell(bus_v: float, cfg) -> float:
     """
-    Classify conduction path once per tick (before actuation).
-    Does not return PROTECTING — promotion happens in Controller.update.
+    Max PWM duty (%) so Vc ≈ bus_v * duty/100 does not exceed VCELL_HARD_MAX_V.
+    If VCELL_HARD_MAX_V <= 0, only PWM_MAX_DUTY applies.
+    """
+    vlim = float(getattr(cfg, "VCELL_HARD_MAX_V", 0.0) or 0.0)
+    if vlim <= 0.0 or bus_v < 1e-6:
+        return float(cfg.PWM_MAX_DUTY)
+    return min(float(cfg.PWM_MAX_DUTY), 100.0 * vlim / bus_v)
 
-    DRY evidence needs finite Z (I above the same 0.01 mA floor as z_ohm); at the
-    noise floor we do not accumulate dry_count so WEAK_WET / probe can run in water.
 
-    If Z is below MIN_EFFECTIVE_OHMS (suspiciously low), hold prior status for non-DRY
-    channels to avoid thrash; from DRY, promote to WEAK_WET so probe duty can clarify.
+def classify_path(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
+    """
+    Classify conduction path once per tick (before FSM transitions).
+    Returns PATH_OPEN, PATH_WEAK, or PATH_STRONG — not the persisted channel status.
+
+    PATH_OPEN evidence needs finite Z (I above the same 0.01 mA floor as z_ohm); at the
+    noise floor we do not accumulate dry_count so weak path can run in water.
+
+    If Z is below MIN_EFFECTIVE_OHMS, hold prior path class for non-OPEN channels;
+    from OPEN, promote to PATH_WEAK so probe duty can clarify.
     """
     z_ohm = (v_bus / (i_ma / 1000.0)) if i_ma > 0.01 else float("inf")
 
     if z_ohm < float(cfg.MIN_EFFECTIVE_OHMS):
-        if ch.status == ChannelState.DRY:
+        if ch.status == ChannelState.OPEN:
             ch.dry_count = 0
             ch.conductive_count = 0
-            return ChannelState.WEAK_WET
-        return ch.status
+            return PATH_WEAK
+        return getattr(ch, "_last_path_class", PATH_WEAK)
 
     dry_ma = float(cfg.CHANNEL_DRY_MA)
     if i_ma < dry_ma and i_ma > 0.01:
         ch.dry_count += 1
         ch.conductive_count = 0
         if ch.dry_count >= int(cfg.DRY_HOLD_TICKS):
-            return ChannelState.DRY
-        return ch.status
+            return PATH_OPEN
+        return getattr(ch, "_last_path_class", PATH_WEAK)
 
     if i_ma >= dry_ma:
         ch.dry_count = 0
@@ -76,12 +90,17 @@ def classify_channel(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
 
     if weak_by_impedance or weak_by_current:
         ch.conductive_count = 0
-        return ChannelState.WEAK_WET
+        return PATH_WEAK
 
     ch.conductive_count += 1
     if ch.conductive_count >= int(cfg.CONDUCTIVE_HOLD_TICKS):
-        return ChannelState.CONDUCTIVE
-    return ChannelState.WEAK_WET
+        return PATH_STRONG
+    return PATH_WEAK
+
+
+def classify_channel(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
+    """Deprecated name for classify_path; returns PATH_OPEN / PATH_WEAK / PATH_STRONG."""
+    return classify_path(ch, i_ma, v_bus, cfg)
 
 
 class PWMBank:
@@ -130,17 +149,19 @@ class PWMBank:
 class ChannelState:
     """Runtime state for one anode channel."""
 
-    DRY = "DRY"
-    WEAK_WET = "WEAK_WET"
-    CONDUCTIVE = "CONDUCTIVE"
+    OPEN = "OPEN"
+    REGULATE = "REGULATE"
     PROTECTING = "PROTECTING"
     FAULT = "FAULT"
 
     def __init__(self, ch: int) -> None:
         self.ch = ch
-        self.status = self.DRY
+        self.status = self.OPEN
         self.conductive_count: int = 0
         self.dry_count: int = 0
+        self.protecting_enter_streak: int = 0
+        self.protecting_exit_streak: int = 0
+        self._last_path_class: str = PATH_WEAK
         self.latch_message: str = ""
         self.fault_time: float = 0.0  # when the fault was latched
         self.fault_retry_count: int = 0  # consecutive failed retries
@@ -171,7 +192,7 @@ class Controller:
             float(cfg.DUTY_PROTECT_MAX), float(cfg.PWM_MAX_DUTY)
         )
         staging_ceiling = float(cfg.PWM_MAX_DUTY)
-        probe_duty = min(float(cfg.DUTY_PROBE), staging_ceiling)
+        probe_floor = min(float(cfg.DUTY_PROBE), staging_ceiling)
 
         for ch, state in enumerate(self._states):
             r = readings.get(ch, {})
@@ -189,11 +210,13 @@ class Controller:
                     f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}"
                 )
                 if state.status != ChannelState.FAULT:
-                    state.status = ChannelState.DRY
+                    state.status = ChannelState.OPEN
                 continue
 
             current_ma = float(r["current"])
             bus_v = float(r["bus_v"])
+            duty_cap = duty_pct_cap_for_vcell(bus_v, cfg)
+            probe_duty = min(probe_floor, duty_cap)
 
             if current_ma > self._channel_max_ma(ch):
                 self._latch_fault(
@@ -220,28 +243,68 @@ class Controller:
                 state.last_state_recheck_monotonic = now
                 state.dry_count = 0
                 state.conductive_count = 0
+                state.protecting_enter_streak = 0
+                state.protecting_exit_streak = 0
 
             i_floor = float(getattr(cfg, "Z_COMPUTE_I_A_MIN", 1e-6))
             z_log = bus_v / max(current_ma / 1000.0, i_floor)
             state._z_window.append(z_log)
 
-            classified = classify_channel(state, current_ma, bus_v, cfg)
+            path = classify_path(state, current_ma, bus_v, cfg)
+            state._last_path_class = path
             target_ma = self._channel_target(ch)
-            status = classified
-            if (
-                classified == ChannelState.CONDUCTIVE
-                and abs(current_ma - target_ma) < 0.2
-            ):
-                status = ChannelState.PROTECTING
-            state.status = status
 
+            enter_d = float(getattr(cfg, "PROTECTING_ENTER_DELTA_MA", 0.2))
+            enter_n = int(getattr(cfg, "PROTECTING_ENTER_HOLD_TICKS", 3))
+            exit_d = float(getattr(cfg, "PROTECTING_EXIT_DELTA_MA", 0.35))
+            exit_n = int(getattr(cfg, "PROTECTING_EXIT_HOLD_TICKS", 3))
+
+            if state.status == ChannelState.OPEN:
+                if path != PATH_OPEN:
+                    state.status = ChannelState.REGULATE
+                    state.protecting_enter_streak = 0
+                    state.protecting_exit_streak = 0
+            elif state.status == ChannelState.REGULATE:
+                if path == PATH_OPEN:
+                    state.status = ChannelState.OPEN
+                    state.protecting_enter_streak = 0
+                    state.protecting_exit_streak = 0
+                elif path == PATH_STRONG:
+                    if abs(current_ma - target_ma) < enter_d:
+                        state.protecting_enter_streak += 1
+                    else:
+                        state.protecting_enter_streak = 0
+                    if state.protecting_enter_streak >= enter_n:
+                        state.status = ChannelState.PROTECTING
+                        state.protecting_enter_streak = 0
+                        state.protecting_exit_streak = 0
+                else:
+                    state.protecting_enter_streak = 0
+            elif state.status == ChannelState.PROTECTING:
+                if path == PATH_OPEN:
+                    state.status = ChannelState.OPEN
+                    state.protecting_enter_streak = 0
+                    state.protecting_exit_streak = 0
+                else:
+                    bad = path == PATH_WEAK or abs(current_ma - target_ma) > exit_d
+                    if bad:
+                        state.protecting_exit_streak += 1
+                    else:
+                        state.protecting_exit_streak = 0
+                    if state.protecting_exit_streak >= exit_n:
+                        state.status = ChannelState.REGULATE
+                        state.protecting_exit_streak = 0
+                        state.protecting_enter_streak = 0
+
+            status = state.status
             current_duty = self._pwm.duty(ch)
+            hi_ramp = min(staging_ceiling, duty_cap)
+            hi_protect = min(protect_ceiling, duty_cap)
 
-            if status == ChannelState.DRY:
+            if status == ChannelState.OPEN:
                 self._pwm.set_duty(ch, 0.0)
-            elif status == ChannelState.WEAK_WET:
-                # Ramp from probe floor toward hardware PWM max (no extra staging % cap).
-                lo, hi = probe_duty, staging_ceiling
+            elif status == ChannelState.REGULATE:
+                lo, hi = probe_duty, hi_ramp
                 step = float(cfg.PWM_STEP)
                 if current_duty > hi:
                     new_duty = max(hi, current_duty - step)
@@ -250,12 +313,6 @@ class Controller:
                 else:
                     new_duty = min(current_duty + step, hi)
                 self._pwm.set_duty(ch, new_duty)
-            elif status == ChannelState.CONDUCTIVE:
-                err = target_ma - current_ma
-                step = 0.5 if err > 0 else (-0.5 if err < 0 else 0.0)
-                self._pwm.set_duty(
-                    ch, clamp(current_duty + step, 0.0, staging_ceiling)
-                )
             elif status == ChannelState.PROTECTING:
                 if current_ma < target_ma:
                     new_duty = current_duty + cfg.PWM_STEP
@@ -263,7 +320,7 @@ class Controller:
                     new_duty = current_duty - cfg.PWM_STEP
                 else:
                     new_duty = current_duty
-                self._pwm.set_duty(ch, clamp(new_duty, 0.0, protect_ceiling))
+                self._pwm.set_duty(ch, clamp(new_duty, 0.0, hi_protect))
 
         self._fault_latched = any(s.status == ChannelState.FAULT for s in self._states)
         return self._faults, self._fault_latched
@@ -306,7 +363,7 @@ class Controller:
                     f"({current_ma:.4f} mA < {recovery_threshold:.2f} mA): "
                     f"clearing fault"
                 )
-                state.status = ChannelState.DRY
+                state.status = ChannelState.OPEN
                 state.latch_message = ""
                 state.fault_retry_count += 1
                 return
@@ -318,12 +375,12 @@ class Controller:
         if elapsed < retry_interval:
             return
 
-        # Time to retry — clear fault and return to DRY for re-classification
+        # Time to retry — clear fault and return to OPEN for re-classification
         print(
             f"[control] CH{ch + 1} auto-retry "
             f"({state.fault_retry_count + 1}/{max_retries}): clearing fault"
         )
-        state.status = ChannelState.DRY
+        state.status = ChannelState.OPEN
         state.latch_message = ""
         state.fault_retry_count += 1
 
@@ -399,7 +456,7 @@ class Controller:
             return
         for state in self._states:
             if state.status == ChannelState.FAULT:
-                state.status = ChannelState.DRY
+                state.status = ChannelState.OPEN
                 state.latch_message = ""
                 state.fault_retry_count = 0  # manual clear resets retry count
                 state.fault_time = 0.0

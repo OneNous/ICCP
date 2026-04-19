@@ -29,7 +29,7 @@ _DS18B20_ERROR_C = {0.0, 85.0}  # CRC failure, power-on default
 #
 # Logger `cooling_cycles` uses the same band: each row is one continuous segment
 # while temp stayed in-band (ICC active), with duration_s = ended_at − started_at
-# and chN_protect_s = time each channel spent in PROTECTING during that segment.
+# and chN_protect_s = time each channel spent in PROTECTING (at-target) during that segment.
 # Impedance vs temp_f in `readings` supports condensate / drain diagnostics offline.
 TEMP_MIN_F: float = 35.0
 TEMP_MAX_F: float = 80.0

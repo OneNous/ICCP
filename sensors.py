@@ -8,7 +8,7 @@ Real path : reads four INA219 boards via I2C (4 channels total).
 Sim path  : 10 distinct HVAC cooling cycles over a compressed 24-hour window.
             Each of the 4 channels has unique wet/dry timing so the control
             loop is exercised with anodes in different DORMANT / PROBING /
-            PROTECTING states.
+            OPEN / REGULATE / PROTECTING states.
             Current responds to PWM duty cycle so the loop can converge.
 
 Time scale: SIM_TIME_SCALE env var sets real-seconds per simulated hour

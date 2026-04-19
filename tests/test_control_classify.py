@@ -1,4 +1,4 @@
-"""Channel path classification (DRY / WEAK_WET / CONDUCTIVE)."""
+"""Path classification (PATH_OPEN / PATH_WEAK / PATH_STRONG) and FSM helpers."""
 
 from __future__ import annotations
 
@@ -7,7 +7,14 @@ import time
 import pytest
 
 import config.settings as cfg
-from control import ChannelState, Controller, classify_channel
+from control import (
+    PATH_OPEN,
+    PATH_STRONG,
+    PATH_WEAK,
+    ChannelState,
+    Controller,
+    classify_path,
+)
 
 
 def _ch() -> ChannelState:
@@ -17,25 +24,28 @@ def _ch() -> ChannelState:
 def test_classify_low_z_holds_previous(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "MIN_EFFECTIVE_OHMS", 800.0)
     ch = _ch()
-    ch.status = ChannelState.WEAK_WET
+    ch.status = ChannelState.REGULATE
+    ch._last_path_class = PATH_WEAK
     # 11.5 V / 0.02 A = 575 Ω < 800
-    assert classify_channel(ch, 20.0, 11.5, cfg) == ChannelState.WEAK_WET
+    assert classify_path(ch, 20.0, 11.5, cfg) == PATH_WEAK
 
 
-def test_low_z_from_dry_promotes_weak_wet_for_probe(
+def test_low_z_from_open_promotes_weak_for_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Below MIN_EFFECTIVE_OHMS from DRY → WEAK_WET so probe runs (not stuck at 0% duty)."""
+    """Below MIN_EFFECTIVE_OHMS from OPEN → PATH_WEAK so probe runs (not stuck at 0% duty)."""
     monkeypatch.setattr(cfg, "MIN_EFFECTIVE_OHMS", 800.0)
     ch = _ch()
-    ch.status = ChannelState.DRY
-    ch.dry_count = 9
-    # Same geometry as test_classify_low_z_holds_previous: Z < MIN
-    assert classify_channel(ch, 20.0, 11.5, cfg) == ChannelState.WEAK_WET
-    assert ch.dry_count == 0
-    assert ch.conductive_count == 0
-    ch.status = ChannelState.WEAK_WET
-    assert classify_channel(ch, 20.0, 11.5, cfg) == ChannelState.WEAK_WET
+    ch.status = ChannelState.OPEN
+    assert classify_path(ch, 20.0, 11.5, cfg) == PATH_WEAK
+
+
+def test_low_z_from_regulate_holds_last_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "MIN_EFFECTIVE_OHMS", 800.0)
+    ch = _ch()
+    ch.status = ChannelState.REGULATE
+    ch._last_path_class = PATH_STRONG
+    assert classify_path(ch, 20.0, 11.5, cfg) == PATH_STRONG
 
 
 def test_dry_hysteresis(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,13 +57,14 @@ def test_dry_hysteresis(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "CONDUCTIVE_HOLD_TICKS", 5)
 
     ch = _ch()
-    ch.status = ChannelState.WEAK_WET
+    ch.status = ChannelState.REGULATE
+    ch._last_path_class = PATH_WEAK
     for _ in range(2):
-        assert classify_channel(ch, 0.02, 11.5, cfg) == ChannelState.WEAK_WET
-    assert classify_channel(ch, 0.02, 11.5, cfg) == ChannelState.DRY
+        assert classify_path(ch, 0.02, 11.5, cfg) == PATH_WEAK
+    assert classify_path(ch, 0.02, 11.5, cfg) == PATH_OPEN
 
 
-def test_weak_wet_high_impedance(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dry_resets_conductive_counter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "CHANNEL_DRY_MA", 0.05)
     monkeypatch.setattr(cfg, "DRY_HOLD_TICKS", 2)
     monkeypatch.setattr(cfg, "CHANNEL_CONDUCTIVE_MA", 0.5)
@@ -62,13 +73,14 @@ def test_weak_wet_high_impedance(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "CONDUCTIVE_HOLD_TICKS", 2)
 
     ch = _ch()
-    ch.status = ChannelState.DRY
-    # 0.4 mA, 11.5 V → 28.75 kΩ > 12k, current < 0.5 mA
-    assert classify_channel(ch, 0.4, 11.5, cfg) == ChannelState.WEAK_WET
+    ch.status = ChannelState.OPEN
+    assert classify_path(ch, 0.4, 11.5, cfg) == PATH_WEAK
 
 
-def test_zero_current_is_weak_wet_not_dry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """At I noise floor, do not latch DRY — need WEAK_WET so probe can run in water."""
+def test_zero_current_never_latches_open_without_ticks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At I noise floor, do not latch OPEN — need weak path so probe can run in water."""
     monkeypatch.setattr(cfg, "CHANNEL_DRY_MA", 0.05)
     monkeypatch.setattr(cfg, "DRY_HOLD_TICKS", 5)
     monkeypatch.setattr(cfg, "CHANNEL_CONDUCTIVE_MA", 0.5)
@@ -77,12 +89,12 @@ def test_zero_current_is_weak_wet_not_dry(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(cfg, "CONDUCTIVE_HOLD_TICKS", 3)
 
     ch = _ch()
-    ch.status = ChannelState.DRY
-    for _ in range(10):
-        assert classify_channel(ch, 0.0, 4.852, cfg) == ChannelState.WEAK_WET
+    ch.status = ChannelState.OPEN
+    for _ in range(6):
+        assert classify_path(ch, 0.0, 4.852, cfg) == PATH_WEAK
 
 
-def test_very_low_current_below_noise_floor_weak_wet(
+def test_very_small_current_never_latches_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cfg, "CHANNEL_DRY_MA", 0.05)
@@ -93,11 +105,11 @@ def test_very_low_current_below_noise_floor_weak_wet(
     monkeypatch.setattr(cfg, "CONDUCTIVE_HOLD_TICKS", 2)
 
     ch = _ch()
-    ch.status = ChannelState.DRY
-    assert classify_channel(ch, 0.005, 4.852, cfg) == ChannelState.WEAK_WET
+    ch.status = ChannelState.OPEN
+    assert classify_path(ch, 0.005, 4.852, cfg) == PATH_WEAK
 
 
-def test_conductive_requires_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_conductive_hold(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "CHANNEL_DRY_MA", 0.05)
     monkeypatch.setattr(cfg, "DRY_HOLD_TICKS", 2)
     monkeypatch.setattr(cfg, "CHANNEL_CONDUCTIVE_MA", 0.5)
@@ -106,11 +118,11 @@ def test_conductive_requires_hold(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "CONDUCTIVE_HOLD_TICKS", 3)
 
     ch = _ch()
-    ch.status = ChannelState.WEAK_WET
-    # 2 mA @ 5 V → 2.5 kΩ, strong path
-    assert classify_channel(ch, 2.0, 5.0, cfg) == ChannelState.WEAK_WET
-    assert classify_channel(ch, 2.0, 5.0, cfg) == ChannelState.WEAK_WET
-    assert classify_channel(ch, 2.0, 5.0, cfg) == ChannelState.CONDUCTIVE
+    ch.status = ChannelState.REGULATE
+    ch._last_path_class = PATH_WEAK
+    assert classify_path(ch, 2.0, 5.0, cfg) == PATH_WEAK
+    assert classify_path(ch, 2.0, 5.0, cfg) == PATH_WEAK
+    assert classify_path(ch, 2.0, 5.0, cfg) == PATH_STRONG
 
 
 def test_channel_target_ma_matches_cfg(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,7 +136,7 @@ def test_channel_target_ma_matches_cfg(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_state_recheck_resets_hysteresis_counters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wall-clock recheck clears dry_count / conductive_count so classify can move."""
+    """Wall-clock recheck clears dry_count / conductive_count / protecting streaks."""
     monkeypatch.setattr(cfg, "STATE_RECHECK_INTERVAL_S", 10.0)
     monkeypatch.setattr(cfg, "CHANNEL_DRY_MA", 0.05)
     monkeypatch.setattr(cfg, "DRY_HOLD_TICKS", 99)
@@ -138,10 +150,12 @@ def test_state_recheck_resets_hysteresis_counters(
 
     ctrl = Controller()
     s0 = ctrl._states[0]
-    s0.status = ChannelState.WEAK_WET
+    s0.status = ChannelState.REGULATE
     s0.last_state_recheck_monotonic = 980.0
     s0.dry_count = 7
     s0.conductive_count = 4
+    s0.protecting_enter_streak = 2
+    s0.protecting_exit_streak = 1
 
     def _readings(ma: float) -> dict[int, dict]:
         return {
@@ -152,6 +166,8 @@ def test_state_recheck_resets_hysteresis_counters(
     ctrl.update(_readings(0.02))
     assert s0.conductive_count == 0
     assert s0.dry_count == 1
+    assert s0.protecting_enter_streak == 0
+    assert s0.protecting_exit_streak == 0
 
     clock["t"] = 1005.0
     ctrl.update(_readings(0.02))

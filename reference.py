@@ -120,10 +120,10 @@ def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> floa
         norm = d / max(cfg.PWM_MAX_DUTY, 1)
         if st == "PROTECTING":
             shift += 25.0 * norm
-        elif st == "CONDUCTIVE":
+        elif st == "REGULATE":
             shift += 18.0 * norm
-        elif st == "WEAK_WET":
-            shift += 8.0 * norm
+        elif st == "OPEN":
+            shift += 0.0
     return round(native + shift + random.gauss(0, 1.5), 2)
 
 

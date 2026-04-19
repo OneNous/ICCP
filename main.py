@@ -138,8 +138,8 @@ def _print_table(
                 for i in range(int(_cfg.NUM_CHANNELS))
             ]
             print(
-                "  I_target (mA) — setpoint in PROTECTING; "
-                "PWM% is actuator only: " + "  ".join(parts)
+                "  I_target (mA) — PROTECTING servos to this; REGULATE ramps toward it; "
+                "OPEN holds 0% PWM: " + "  ".join(parts)
             )
         print("─" * w)
         print(
@@ -196,10 +196,10 @@ def _print_table(
         tpw_s = f"{float(tpw):.4f}" if isinstance(tpw, (int, float)) else "—"
         pwm_mx = float(getattr(_cfg, "PWM_MAX_DUTY", 80.0))
         probe = float(getattr(_cfg, "DUTY_PROBE", 3.0))
-        vsoft = float(getattr(_cfg, "VCELL_SOFT_MAX_V", 0.0) or 0.0)
+        vhard = float(getattr(_cfg, "VCELL_HARD_MAX_V", 0.0) or 0.0)
         print(
-            f"  PWM: WEAK/CONDUCTIVE ramp {probe:.0f}%→{pwm_mx:.0f}% "
-            f"(no staging cap); Vc≈Bus×PWM/100  (soft Vcell ref {vsoft:.1f} V)"
+            f"  PWM: REGULATE ramps from {probe:.0f}% up; max duty "
+            f"min({pwm_mx:.0f}%, 100×{vhard:.1f}V/Bus); Vc≈Bus×PWM/100"
         )
         print(
             f"  AnyWet={int(any_wet)}  Latch={int(latched)}  "

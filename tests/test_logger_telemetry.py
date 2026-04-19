@@ -27,7 +27,7 @@ def test_logger_writes_sqlite_latest_json_and_csv(
 
     readings = _sample_readings()
     duties = {i: float(i * 5) for i in range(cfg.NUM_CHANNELS)}
-    ch_status = {i: "DRY" for i in range(cfg.NUM_CHANNELS)}
+    ch_status = {i: "OPEN" for i in range(cfg.NUM_CHANNELS)}
 
     log = DataLogger()
     snap = log.record(
@@ -79,7 +79,7 @@ def test_logger_writes_sqlite_latest_json_and_csv(
         row = conn.execute(
             "SELECT ch1_state, wet, ch1_impedance_ohm, ch1_cell_voltage_v FROM readings LIMIT 1"
         ).fetchone()
-        assert row[0] == "DRY"
+        assert row[0] == "OPEN"
         assert row[1] == 0
         assert row[2] is not None and float(row[2]) > 1000  # high Z when ~0.1 mA
         assert row[3] is not None
@@ -100,7 +100,7 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     assert len(csv_files) == 1
     text = csv_files[0].read_text(encoding="utf-8")
     assert "ch1_state" in text
-    assert "DRY" in text
+    assert "OPEN" in text
 
 
 def test_cooling_cycle_row_on_band_exit(
@@ -173,7 +173,7 @@ def test_wet_session_row_on_protecting_cycle(
     log = DataLogger()
     log.record(
         readings, False, [], duties, False,
-        {i: "DRY" for i in range(cfg.NUM_CHANNELS)},
+        {i: "OPEN" for i in range(cfg.NUM_CHANNELS)},
         ref_raw_mv=1.0, ref_hw_ok=True,
     )
     log.record(
@@ -183,7 +183,7 @@ def test_wet_session_row_on_protecting_cycle(
     )
     log.record(
         readings, False, [], duties, False,
-        {i: "DRY" for i in range(cfg.NUM_CHANNELS)},
+        {i: "OPEN" for i in range(cfg.NUM_CHANNELS)},
         ref_raw_mv=1.0, ref_hw_ok=True,
     )
     log.close()

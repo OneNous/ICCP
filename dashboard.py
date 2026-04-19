@@ -428,8 +428,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-bottom: 10px;
   }
   .state-PROTECTING { background: var(--green-bg); color: var(--green); }
-  .state-CONDUCTIVE { background: var(--blue-bg); color: var(--blue); }
-  .state-WEAK_WET { background: var(--amber-bg); color: var(--amber); }
+  .state-REGULATE { background: var(--amber-bg); color: var(--amber); }
+  .state-OPEN { background: var(--gray-bg); color: var(--gray-text); }
   .state-DRY { background: var(--gray-bg); color: var(--gray-text); }
   .state-DORMANT { background: var(--gray-bg); color: var(--gray-text); }
   .state-PROBING { background: var(--amber-bg); color: var(--amber); }
@@ -640,7 +640,7 @@ for (let i = 0; i < NUM_CH; i++) {
       <div class="ch-label">
         <span class="ch-dot" style="background:${CH_COLORS[i]}"></span>Channel ${i+1}
       </div>
-      <div class="ch-state state-DRY" id="state-${i}">DRY</div>
+      <div class="ch-state state-OPEN" id="state-${i}">OPEN</div>
       <div class="ch-ma" id="ma-${i}">— <small>mA</small></div>
       <div class="ch-meta">
         Duty: <span id="duty-${i}">—</span>%<br>
@@ -759,7 +759,7 @@ async function fetchLive() {
       st.textContent = ch.status;
       st.className = ch.status === 'OK' ? 'ok'
         : ch.status === 'ERR' ? 'err'
-        : ch.status === 'DRY' ? 'dry' : 'low';
+        : (ch.status === 'DRY' || ch.status === 'OPEN') ? 'dry' : 'low';
       const pw = ch.power_w;
       document.getElementById(`pow-${i}`).textContent =
         (typeof pw === 'number') ? pw.toFixed(4) : '—';

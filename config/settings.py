@@ -44,30 +44,38 @@ CHANNEL_MAX_MA: dict = {}
 CHANNEL_WET_THRESHOLD_MA = 0.15
 
 # --- Wet / conduction thresholds (state machine in control.py) ---
-CHANNEL_DRY_MA = 0.05  # below this → DRY (with DRY_HOLD_TICKS hysteresis)
-CHANNEL_CONDUCTIVE_MA = 0.5  # sustained above this helps qualify → CONDUCTIVE
+CHANNEL_DRY_MA = 0.05  # below this → OPEN (with DRY_HOLD_TICKS hysteresis)
+CHANNEL_CONDUCTIVE_MA = 0.5  # sustained above weak thresholds → PATH_STRONG (see control)
 
 # --- Impedance guardrails (ohms; V / I) ---
-MAX_EFFECTIVE_OHMS = 12000  # above this → WEAK_WET even if current reads “wet”
-MIN_EFFECTIVE_OHMS = 800  # below this → hold state (short / suspicious; use FAULT path)
+MAX_EFFECTIVE_OHMS = 12000  # above this → weak path even if current reads “wet”
+MIN_EFFECTIVE_OHMS = 800  # below this → hold path class (short / suspicious; use FAULT path)
 
 # --- Timing / hysteresis ---
-CONDUCTIVE_HOLD_TICKS = 5  # consecutive ticks above weak thresholds → CONDUCTIVE
-DRY_HOLD_TICKS = 5  # consecutive ticks below CHANNEL_DRY_MA → DRY
+# Consecutive ticks with “strong path” readings before classify_path returns PATH_STRONG.
+CONDUCTIVE_HOLD_TICKS = 5
+DRY_HOLD_TICKS = 5  # consecutive ticks below CHANNEL_DRY_MA → OPEN
 # Reset dry_count / conductive_count on this wall-clock cadence so stages can move.
 STATE_RECHECK_INTERVAL_S = 10.0
+
+# REGULATE → PROTECTING: require near-target I while path is STRONG for this many ticks.
+PROTECTING_ENTER_DELTA_MA = 0.2
+PROTECTING_ENTER_HOLD_TICKS = 3
+# PROTECTING → REGULATE: |error| above this (or weak path) for PROTECTING_EXIT_HOLD_TICKS.
+PROTECTING_EXIT_DELTA_MA = 0.35
+PROTECTING_EXIT_HOLD_TICKS = 3
 
 # Minimum I (A) when computing R = V/I for display and Z windows (noise floor).
 Z_COMPUTE_I_A_MIN = 1e-6
 
 # --- Duty limits per state (% duty cycle) ---
-# Floor when path is weak (not DRY): ramp up with PWM_STEP; ceiling is PWM_MAX_DUTY only
+# Floor in REGULATE: ramp up with PWM_STEP; ceiling is Vcell-capped PWM_MAX
 # (no separate “staging %” caps — current/bus/overcurrent limits are the guards).
 DUTY_PROBE = 3.0
 DUTY_PROTECT_MAX = 100.0  # ceiling in PROTECTING (clamped to PWM_MAX_DUTY in control)
 
-# Documentary: operator-acceptable Vcell for staging discussions (Vc ≈ bus_v * PWM/100).
-VCELL_SOFT_MAX_V = 1.6
+# Hard ceiling on effective cell drive: Vc ≈ bus_v × (PWM%/100) ≤ this (clamps max duty).
+VCELL_HARD_MAX_V = 1.6
 
 # Rolling window for median effective Ω logging (per channel).
 IMPEDANCE_MEDIAN_WINDOW = 32
@@ -76,7 +84,7 @@ Z_STATS_WINDOW = 16
 # EMA smoothing for conductance proxy I/V (Siemens-scale; DataLogger).
 FQI_EMA_ALPHA = 0.15
 
-# --- Probe pulse (deprecated: WEAK_WET uses DUTY_PROBE continuously) ---
+# --- Probe pulse (deprecated: REGULATE uses DUTY_PROBE floor continuously) ---
 PROBE_DUTY_PCT = 3
 PROBE_DURATION_S = 2.0
 PROBE_INTERVAL_S = 60.0

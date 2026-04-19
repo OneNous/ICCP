@@ -124,9 +124,9 @@ def _channel_health(
     """UI / DB status column: OK, LOW, HIGH, ERR, DRY."""
     if not ok:
         return "ERR"
-    if state in ("DRY", "DORMANT", "PROBING"):
+    if state in ("OPEN", "DRY", "DORMANT", "PROBING"):
         return "DRY"
-    if state == "WEAK_WET":
+    if state == "REGULATE":
         return "LOW"
     if ma < cfg.TARGET_MA * 0.7:
         return "LOW"
@@ -180,10 +180,11 @@ class DataLogger:
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.execute("PRAGMA temp_store=MEMORY")
         self._init_schema()
+        self._migrate_legacy_channel_states()
         self._purge_old_rows()
         self._insert_count = 0
 
-        self._prev_fsm: dict[int, str] = {i: "DRY" for i in range(cfg.NUM_CHANNELS)}
+        self._prev_fsm: dict[int, str] = {i: "OPEN" for i in range(cfg.NUM_CHANNELS)}
         self._wet_active: dict[int, dict] = {}
         self._prev_z_ohm: dict[int, float | None] = {
             i: None for i in range(cfg.NUM_CHANNELS)
@@ -360,6 +361,19 @@ class DataLogger:
             name = f"ch{i}_energy_j"
             if name not in cols:
                 self._db.execute(f"ALTER TABLE daily_totals ADD COLUMN {name} REAL")
+
+    def _migrate_legacy_channel_states(self) -> None:
+        """Remap historical readings.chN_state values (DRY/WEAK_WET/CONDUCTIVE) to OPEN/REGULATE."""
+        with self._db_lock:
+            for i in range(1, cfg.NUM_CHANNELS + 1):
+                col = f"ch{i}_state"
+                self._db.execute(
+                    f"UPDATE readings SET {col} = 'OPEN' WHERE {col} = 'DRY'"
+                )
+                self._db.execute(
+                    f"UPDATE readings SET {col} = 'REGULATE' WHERE {col} IN ('WEAK_WET', 'CONDUCTIVE')"
+                )
+            self._db.commit()
 
     def _purge_old_rows(self) -> None:
         cutoff = time.time() - cfg.TELEMETRY_RETENTION_DAYS * 86400
