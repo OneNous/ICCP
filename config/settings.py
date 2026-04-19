@@ -138,7 +138,7 @@ SIM_NATIVE_ZINC_MV = 200.0
 
 # --- Simulator ---
 # Bench nominal bus (V); intentionally not tied to field supply (~4.85 V) — tune for your rig.
-SIM_NOMINAL_BUS_V = 11.8
+SIM_NOMINAL_BUS_V = 4.85
 SIM_NOISE_MA = 0.05
 SIM_DRIFT_MA = 0.002
 SIM_INJECT_FAULT_CH = None
