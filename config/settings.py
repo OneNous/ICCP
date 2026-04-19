@@ -18,6 +18,26 @@ REF_I2C_BUS = 3
 INA219_ADDRESSES = [0x40, 0x41, 0x44, 0x45]
 NUM_CHANNELS = 4
 
+# ADS1115 reference ADC (header I2C; optional TCA9548A via I2C_MUX_*).
+ADS1115_ADDRESS = 0x48
+ADS1115_BUS = 1
+ADS1115_CHANNEL = 0
+ADS1115_FSR_V = 4.096
+# Median of N single-ended reads per sample (noise on long leads).
+REF_ADS_MEDIAN_SAMPLES = 1
+# Multiply ADC volts (after ×1000) for divider scaling vs. electrode node.
+REF_ADS_SCALE = 1.0
+
+# Reference backend: "ads1115" (default) or legacy "ina219" on REF_I2C_BUS.
+REF_ADC_BACKEND = "ads1115"
+# Bench: copper wire; field: ag_agcl after swap — informational for logs/docs.
+REF_ELECTRODE_KIND = "copper_bench"
+
+# TCA9548A multiplexer (optional). When None, mux_select is a no-op.
+I2C_MUX_ADDRESS: int | None = None
+I2C_MUX_CHANNEL_ADS1115: int | None = None
+I2C_MUX_CHANNEL_INA219: int | None = None
+
 # Dedicated INA219 for reference electrode.
 # On the SAME bus as anodes: address must not collide with INA219_ADDRESSES (e.g. 0x42,
 # 0x46, 0x47 per breakout straps).
@@ -127,9 +147,9 @@ LATEST_JSON_NAME = "latest.json"
 TELEMETRY_RETENTION_DAYS = 30
 SQLITE_PURGE_EVERY_N_INSERTS = 10_000
 
-# --- Reference electrode (dedicated INA219; see REF_INA219_* above) ---
-# Set False to skip INA219 init and suppress ref output until hardware is wired.
-REF_ENABLED = False
+# --- Reference electrode (ADS1115 default; legacy INA219 if REF_ADC_BACKEND) ---
+# Set False to skip reference ADC init until hardware is wired.
+REF_ENABLED = True
 TARGET_SHIFT_MV = 100
 MAX_SHIFT_MV = 200
 TARGET_MA_STEP = 0.02

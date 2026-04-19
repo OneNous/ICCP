@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coilshield-iccp"
+version = "0.1.0"
+description = "CoilShield ICCP — Raspberry Pi HVAC coil cathodic protection controller"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "RPi.GPIO>=0.7.0",
+    "flask>=3.0.0",
+    "textual>=1.0.0",
+    "pytest>=7.0",
+    "smbus2>=0.4.0",
+    "pi-ina219>=1.4.0",
+    "adafruit-circuitpython-ina3221>=1.0.0",
+]
+
+[project.scripts]
+iccp = "iccp_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["config*"]
+
+[tool.setuptools]
+py-modules = [
+    "main",
+    "iccp_cli",
+    "hw_probe",
+    "i2c_bench",
+    "control",
+    "sensors",
+    "reference",
+    "commissioning",
+    "logger",
+    "dashboard",
+    "leds",
+    "temp",
+    "tui",
+]

@@ -2,9 +2,11 @@
 """
 CoilShield ICCP controller — main loop.
 
+Operator CLI (after `pip install -e .` in venv): `iccp -start`, `iccp probe`, `iccp clear-fault`.
+
 Use `--sim` or `COILSHIELD_SIM=1` for the bench simulator; default is hardware (`COILSHIELD_SIM=0`).
 On a Raspberry Pi, `COILSHIELD_SIM=1` in the environment alone is ignored (hardware is used) unless you pass `--sim`.
-Clear fault latch: `touch <PROJECT_ROOT>/clear_fault`
+Clear fault latch: `touch <PROJECT_ROOT>/clear_fault` or `iccp clear-fault`
 Commissioning reset: `python3 -c "import commissioning; commissioning.reset()"`
 Sim speed: SIM_TIME_SCALE=10 or `python3 main.py --sim --sim-time-scale 60`
 """

@@ -1,0 +1,33 @@
+# CoilShield ICCP — systemd unit (EXAMPLE)
+#
+# INSTALL (on the Pi):
+#   1. Copy this file:  sudo cp deploy/iccp.service /etc/systemd/system/iccp.service
+#   2. Edit User, Group, WorkingDirectory, and ExecStart to match your install.
+#      - WorkingDirectory = repo root (where commissioning.json / clear_fault live)
+#      - ExecStart = full path to venv's `iccp` after:  pip install -e .
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now iccp
+#
+# Example paths (replace pi / paths with yours):
+#   User=pi
+#   Group=pi
+#   WorkingDirectory=/home/pi/coilshield
+#   ExecStart=/home/pi/coilshield/.venv/bin/iccp -start
+
+[Unit]
+Description=CoilShield ICCP controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/coilshield
+ExecStart=/home/pi/coilshield/.venv/bin/iccp -start
+Restart=on-failure
+RestartSec=10
+Environment=COILSHIELD_SIM=0
+
+[Install]
+WantedBy=multi-user.target

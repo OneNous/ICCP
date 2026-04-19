@@ -1,9 +1,10 @@
 """
-CoilShield — reference electrode (zinc or similar).
+CoilShield — reference electrode (polarization shift input).
 
-Reads the reference node via a **dedicated INA219** on I2C (`REF_INA219_ADDRESS`),
-same driver stack as anode channels in `sensors.py`. Tracks native baseline and
-computes protection shift (mV) for the outer loop.
+Hardware backends (see config.settings):
+  • **ads1115** (default): ADS1115 @ `ADS1115_ADDRESS` on `ADS1115_BUS`, single-ended
+    channel `ADS1115_CHANNEL`; raw scalar = volts × 1000 × `REF_ADS_SCALE` (mV-like).
+  • **ina219**: legacy dedicated INA219 on `REF_I2C_BUS` / `REF_INA219_ADDRESS`.
 
 SIM_MODE: COILSHIELD_SIM=1 uses simulated readings (no hardware).
 """
@@ -15,6 +16,7 @@ import os
 import random
 import statistics
 import time
+from typing import Any
 
 import config.settings as cfg
 
@@ -22,16 +24,26 @@ SIM_MODE = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
 
+_REF_ENABLED: bool = bool(getattr(cfg, "REF_ENABLED", True))
+_REF_BACKEND: str = str(getattr(cfg, "REF_ADC_BACKEND", "ads1115")).lower().strip()
+
 _ref_ina: object | None = None
+_ref_smbus: Any | None = None
 _REF_INIT_ERROR: str | None = None
 _REF_I2C_BUS: int = int(getattr(cfg, "REF_I2C_BUS", cfg.I2C_BUS))
 
-# When False, no ref INA219 is constructed (no I2C traffic on REF_I2C_BUS).
-_REF_ENABLED: bool = bool(getattr(cfg, "REF_ENABLED", True))
 
-if not SIM_MODE and _REF_ENABLED:
+def _ina219_scalar_mv(sensor: object, source: str) -> float:
+    """Map INA219 readings to the mV-like scalar used for native_mv / shift_mv."""
+    if source == "shunt_mv":
+        return float(sensor.shunt_voltage())
+    return float(sensor.voltage()) * 1000.0
+
+
+def _init_ref_ina219() -> None:
+    global _ref_ina, _REF_INIT_ERROR
     try:
-        from ina219 import INA219
+        from ina219 import INA219  # type: ignore[import-untyped]
 
         _ref_ina = INA219(
             cfg.REF_INA219_SHUNT_OHMS,
@@ -45,7 +57,7 @@ if not SIM_MODE and _REF_ENABLED:
             shunt_adc=INA219.ADC_128SAMP,
         )
         print(
-            f"[reference] INA219 ref init OK at {hex(cfg.REF_INA219_ADDRESS)} "
+            f"[reference] INA219 ref OK at {hex(cfg.REF_INA219_ADDRESS)} "
             f"on i2c-{_REF_I2C_BUS} (source={cfg.REF_INA219_SOURCE!r})"
         )
     except Exception as _hw_err:
@@ -54,11 +66,56 @@ if not SIM_MODE and _REF_ENABLED:
         _ref_ina = None
 
 
+def _init_ref_ads1115() -> None:
+    global _ref_smbus, _REF_INIT_ERROR
+    sm = None
+    try:
+        import smbus2
+
+        from i2c_bench import ads1115_read_single_ended, mux_select_on_bus
+
+        busnum = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))
+        addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
+        sm = smbus2.SMBus(busnum)
+        mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+        mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
+        mux_select_on_bus(sm, mux_addr, mux_ch)
+        ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
+        fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
+        ads1115_read_single_ended(sm, addr, ch, fsr)
+        _ref_smbus = sm
+        sm = None
+        kind = getattr(cfg, "REF_ELECTRODE_KIND", "unknown")
+        print(
+            f"[reference] ADS1115 OK ch AIN{ch} @ {hex(addr)} i2c-{busnum} "
+            f"(±{fsr} V, electrode={kind!r})"
+        )
+    except Exception as _hw_err:
+        _REF_INIT_ERROR = str(_hw_err)
+        print(f"[reference] ADS1115 init failed: {_hw_err}")
+        _ref_smbus = None
+    finally:
+        if sm is not None:
+            try:
+                sm.close()
+            except Exception:
+                pass
+
+
+if not SIM_MODE and _REF_ENABLED:
+    if _REF_BACKEND == "ina219":
+        _init_ref_ina219()
+    else:
+        _init_ref_ads1115()
+
+
 def ref_hw_ok() -> bool:
-    """True if simulator, disabled, or reference INA219 initialized."""
+    """True if simulator, disabled, or reference hardware initialized."""
     if SIM_MODE or not _REF_ENABLED:
         return True
-    return _ref_ina is not None
+    if _REF_BACKEND == "ina219":
+        return _ref_ina is not None
+    return _ref_smbus is not None
 
 
 def ref_hw_message() -> str:
@@ -66,13 +123,20 @@ def ref_hw_message() -> str:
     if not _REF_ENABLED:
         return "disabled"
     if SIM_MODE:
-        return "sim (no ref INA219)"
-    if _ref_ina is not None:
-        return f"INA219 OK {hex(cfg.REF_INA219_ADDRESS)} i2c-{_REF_I2C_BUS}"
+        return "sim (no ref ADC)"
+    if _REF_BACKEND == "ina219":
+        if _ref_ina is not None:
+            return f"INA219 OK {hex(cfg.REF_INA219_ADDRESS)} i2c-{_REF_I2C_BUS}"
+    elif _ref_smbus is not None:
+        ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
+        return (
+            f"ADS1115 OK {hex(cfg.ADS1115_ADDRESS)} "
+            f"AIN{ch} i2c-{getattr(cfg, 'ADS1115_BUS', cfg.I2C_BUS)}"
+        )
     err = (_REF_INIT_ERROR or "unknown").replace("\n", " ")
     if len(err) > 72:
         err = err[:69] + "..."
-    return f"INA219 fault: {err}"
+    return f"ref ADC fault: {err}"
 
 
 def ref_ux_hint(*, baseline_set: bool, hw_ok: bool, skip_commission: bool) -> str:
@@ -80,7 +144,7 @@ def ref_ux_hint(*, baseline_set: bool, hw_ok: bool, skip_commission: bool) -> st
     if not _REF_ENABLED:
         return ""
     if not hw_ok and not SIM_MODE:
-        return "Reference INA219 not reachable — check I2C address and wiring."
+        return "Reference ADC not reachable — check I2C / mux / wiring."
     if baseline_set:
         return ""
     if skip_commission:
@@ -88,27 +152,44 @@ def ref_ux_hint(*, baseline_set: bool, hw_ok: bool, skip_commission: bool) -> st
     return ""
 
 
-def _ina219_scalar_mv(sensor: object, source: str) -> float:
-    """Map INA219 readings to the mV-like scalar used for native_mv / shift_mv."""
-    if source == "shunt_mv":
-        return float(sensor.shunt_voltage())
-    return float(sensor.voltage()) * 1000.0
-
-
 def _read_raw_mv_hw() -> float:
-    if _ref_ina is None:
-        raise RuntimeError("[reference] INA219 unavailable — check I2C wiring and address")
+    if _REF_BACKEND == "ina219":
+        if _ref_ina is None:
+            raise RuntimeError("[reference] INA219 unavailable — check I2C wiring and address")
+        try:
+            src = getattr(cfg, "REF_INA219_SOURCE", "bus_v")
+            n = max(1, int(getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1)))
+            if n == 1:
+                return _ina219_scalar_mv(_ref_ina, src)
+            samples = [_ina219_scalar_mv(_ref_ina, src) for _ in range(n)]
+            return float(statistics.median(samples))
+        except Exception as e:
+            print(f"[reference] INA219 read failed: {e}")
+            return 0.0
+
+    if _ref_smbus is None:
+        raise RuntimeError("[reference] ADS1115 unavailable — check I2C wiring and address")
     try:
-        src = getattr(cfg, "REF_INA219_SOURCE", "bus_v")
-        n = max(1, int(getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1)))
+        from i2c_bench import ads1115_read_single_ended, mux_select_on_bus
+
+        mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+        mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
+        mux_select_on_bus(_ref_smbus, mux_addr, mux_ch)
+        addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
+        ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
+        fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
+        scale = float(getattr(cfg, "REF_ADS_SCALE", 1.0))
+        n = max(1, int(getattr(cfg, "REF_ADS_MEDIAN_SAMPLES", getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1))))
         if n == 1:
-            return _ina219_scalar_mv(_ref_ina, src)
-        samples = [_ina219_scalar_mv(_ref_ina, src) for _ in range(n)]
+            v = ads1115_read_single_ended(_ref_smbus, addr, ch, fsr)
+            return v * 1000.0 * scale
+        samples = [
+            ads1115_read_single_ended(_ref_smbus, addr, ch, fsr) * 1000.0 * scale
+            for _ in range(n)
+        ]
         return float(statistics.median(samples))
-    except RuntimeError:
-        raise
     except Exception as e:
-        print(f"[reference] INA219 read failed: {e}")
+        print(f"[reference] ADS1115 read failed: {e}")
         return 0.0
 
 
@@ -181,7 +262,6 @@ class ReferenceElectrode:
         duties: dict[int, float] | None = None,
         statuses: dict[int, str] | None = None,
     ) -> tuple[float, float | None]:
-        """Single INA219 sample; shift vs native when baseline exists."""
         try:
             raw = self.read(duties, statuses)
         except RuntimeError as e:

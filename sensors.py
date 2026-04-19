@@ -65,6 +65,26 @@ if not SIM_MODE:
         _sensors = []
 
 
+def _mux_select_ina219_bus() -> None:
+    """TCA9548A: select downstream port for anode INA219s (no-op if mux not configured)."""
+    mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+    mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
+    if mux_addr is None or mux_ch is None:
+        return
+    try:
+        import smbus2
+
+        from i2c_bench import mux_select_on_bus
+
+        b = smbus2.SMBus(int(cfg.I2C_BUS))
+        try:
+            mux_select_on_bus(b, int(mux_addr), int(mux_ch))
+        finally:
+            b.close()
+    except OSError:
+        pass
+
+
 def read_all_real() -> dict[int, ChannelReading]:
     """
     Read all 4 ICCP channels from INA219 hardware.
@@ -76,6 +96,8 @@ def read_all_real() -> dict[int, ChannelReading]:
         CH3 → INA219 at 0x45
     """
     from ina219 import DeviceRangeError
+
+    _mux_select_ina219_bus()
 
     results: dict[int, ChannelReading] = {}
 
