@@ -2,7 +2,8 @@
 """
 CoilShield ICCP controller — main loop.
 
-Set COILSHIELD_SIM=1 for simulator (default on macOS if unset).
+Use `--sim` or `COILSHIELD_SIM=1` for the bench simulator; default is hardware (`COILSHIELD_SIM=0`).
+On a Raspberry Pi, `COILSHIELD_SIM=1` in the environment alone is ignored (hardware is used) unless you pass `--sim`.
 Clear fault latch: `touch <PROJECT_ROOT>/clear_fault`
 Commissioning reset: `python3 -c "import commissioning; commissioning.reset()"`
 Sim speed: SIM_TIME_SCALE=10 or `python3 main.py --sim --sim-time-scale 60`
@@ -14,17 +15,32 @@ import argparse
 import os
 import sys
 import time
+from pathlib import Path
 
 
-def _default_sim_on_mac() -> None:
-    if sys.platform == "darwin" and "COILSHIELD_SIM" not in os.environ:
-        os.environ["COILSHIELD_SIM"] = "1"
+def _running_on_raspberry_pi() -> bool:
+    """True when /proc/device-tree/model looks like a Raspberry Pi board."""
+    try:
+        model = Path("/proc/device-tree/model").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return False
+    return "Raspberry Pi" in model
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="CoilShield ICCP monitor/controller")
-    p.add_argument("--sim", action="store_true", help="force simulator mode")
-    p.add_argument("--real", action="store_true", help="force real hardware mode")
+    p.add_argument(
+        "--sim",
+        action="store_true",
+        help="simulated sensors + no GPIO (sets COILSHIELD_SIM=1)",
+    )
+    p.add_argument(
+        "--real",
+        action="store_true",
+        help="INA219 + GPIO on Pi (sets COILSHIELD_SIM=0)",
+    )
     p.add_argument(
         "--skip-commission",
         action="store_true",
@@ -95,6 +111,7 @@ def _print_table(
     live_ch: dict[str, object] | None = None,
     ctrl: object | None = None,
     tick_dt_s: float | None = None,
+    path_tags: dict[int, str] | None = None,
 ) -> None:
     try:
         if sim_line:
@@ -131,7 +148,7 @@ def _print_table(
         print(f"[tick] {ts_disp}{dt_suf}")
 
         i_floor = float(getattr(_cfg, "Z_COMPUTE_I_A_MIN", 1e-6))
-        w = 132
+        w = 152
         if ctrl is not None and hasattr(ctrl, "channel_target_ma"):
             parts = [
                 f"CH{i + 1}={ctrl.channel_target_ma(i):.3f}"
@@ -143,14 +160,15 @@ def _print_table(
             )
         print("─" * w)
         print(
-            f"{'CH':<4} {'State':<12} {'BusV':<8} {'mA':>8}  {'PWM%':<8} "
-            f"{'Ω imp':<10} {'Ω med':<10} {'Vc':<8} {'Wet':<5} "
+            f"{'CH':<4} {'State':<12} {'Path':<6} {'dI':>7}  {'BusV':<8} {'mA':>8}  "
+            f"{'PWM%':<8} {'Ω imp':<10} {'Ω med':<10} {'Vc':<8} {'Prot':<5} "
             f"{'P(W)':<9} {'E(J)':<10} {'η':<10}"
         )
         print("─" * w)
         for i in sorted(readings.keys()):
             r = readings[i]
             st = ch_status.get(i, "?")
+            ptag = (path_tags or {}).get(i, "—")
             zm = z_median.get(i) if z_median else None
             ch_map = (
                 live_ch.get("channels", {})
@@ -162,6 +180,11 @@ def _print_table(
                 ma = float(r.get("current", 0))
                 bus_v = float(r.get("bus_v", 0))
                 duty = float(duties.get(i, 0))
+                if ctrl is not None and hasattr(ctrl, "channel_target_ma"):
+                    di = float(ctrl.channel_target_ma(i)) - ma
+                    di_s = f"{di:+7.2f}"
+                else:
+                    di_s = "    —  "
                 if ma > 0.01:
                     z_inst = bus_v / max(ma / 1000.0, i_floor)
                     imp_s = f"{z_inst:,.0f}"
@@ -181,14 +204,14 @@ def _print_table(
                     else "—"
                 )
                 print(
-                    f"{i + 1:<4} {st:<12} {bus_v:<8.3f} {ma:>8.2f}  {duty:<8.1f} "
-                    f"{imp_s:<10} {zmed_s:<10} {vc:<8.3f} {int(st == 'PROTECTING'):<5} "
-                    f"{p_s:<9} {e_s:<10} {n_s:<10}"
+                    f"{i + 1:<4} {st:<12} {ptag:<6} {di_s}  {bus_v:<8.3f} {ma:>8.2f}  "
+                    f"{duty:<8.1f} {imp_s:<10} {zmed_s:<10} {vc:<8.3f} "
+                    f"{int(st == 'PROTECTING'):<5} {p_s:<9} {e_s:<10} {n_s:<10}"
                 )
             else:
                 print(
-                    f"{i + 1:<4} {st:<12} {'--':<8} {'--':>8}  {'--':<8} "
-                    f"{'—':<10} {'—':<10} {'—':<8} {'—':<5} "
+                    f"{i + 1:<4} {st:<12} {'—':<6} {'    —':>7}  {'--':<8} {'--':>8}  "
+                    f"{'--':<8} {'—':<10} {'—':<10} {'—':<8} {'—':<5} "
                     f"{'—':<9} {'—':<10} {'—':<10}"
                 )
         print("─" * w)
@@ -200,6 +223,11 @@ def _print_table(
         print(
             f"  PWM: REGULATE ramps from {probe:.0f}% up; max duty "
             f"min({pwm_mx:.0f}%, 100×{vhard:.1f}V/Bus); Vc≈Bus×PWM/100"
+        )
+        print(
+            "  Path=conduction (weak|strong|open); dI=I_target−I_mA "
+            "(PROTECTING needs strong path + near-target hold). "
+            "Prot=1 only in PROTECTING."
         )
         print(
             f"  AnyWet={int(any_wet)}  Latch={int(latched)}  "
@@ -232,12 +260,20 @@ def _print_ref_compact(
 
 
 def main() -> int:
-    _default_sim_on_mac()
     args = _parse_args()
     if args.sim:
         os.environ["COILSHIELD_SIM"] = "1"
     if args.real:
         os.environ["COILSHIELD_SIM"] = "0"
+    # Leftover COILSHIELD_SIM=1 from a dev machine (systemd, profile, etc.) forces sim
+    # on import; on real Pi hardware we default to INA219 unless --sim was passed.
+    if not args.sim and _running_on_raspberry_pi():
+        if os.environ.get("COILSHIELD_SIM", "0").strip() == "1":
+            print(
+                "[main] Raspberry Pi: ignoring COILSHIELD_SIM=1 from the environment "
+                "(using hardware). Pass --sim to run simulated sensors."
+            )
+            os.environ["COILSHIELD_SIM"] = "0"
     if args.sim_time_scale is not None:
         os.environ["SIM_TIME_SCALE"] = str(args.sim_time_scale)
 
@@ -272,7 +308,8 @@ def main() -> int:
             GPIO.setmode(GPIO.BCM)
         except ImportError:
             print(
-                "RPi.GPIO not available — use --sim or COILSHIELD_SIM=1",
+                "RPi.GPIO not available on this machine — run with "
+                "`python3 main.py --sim` (or set COILSHIELD_SIM=1) for bench mode.",
                 file=sys.stderr,
             )
             return 1
@@ -328,6 +365,14 @@ def main() -> int:
 
     try:
         while True:
+            tick_mono = time.monotonic()
+            v_dt = (
+                None
+                if _prev_verbose_mono is None
+                else (tick_mono - _prev_verbose_mono)
+            )
+            _prev_verbose_mono = tick_mono
+
             temp_f = temp_mod.read_fahrenheit()
             if not temp_mod.in_operating_range(temp_f):
                 ctrl.thermal_off()
@@ -455,13 +500,6 @@ def main() -> int:
                         f"[sim {sim_state.sim_hhmm()}] {cycle_str:<24} "
                         f"anodes: {wet_map}  (W=wet  .=dry)"
                     )
-                now_v = time.monotonic()
-                v_dt = (
-                    None
-                    if _prev_verbose_mono is None
-                    else (now_v - _prev_verbose_mono)
-                )
-                _prev_verbose_mono = now_v
                 _print_table(
                     readings,
                     faults,
@@ -482,6 +520,7 @@ def main() -> int:
                     live_ch=live_snap,
                     ctrl=ctrl,
                     tick_dt_s=v_dt,
+                    path_tags=ctrl.channel_path_tags(),
                 )
 
             elif faults or fault_latched:

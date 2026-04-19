@@ -70,7 +70,7 @@ def classify_path(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
             ch.dry_count = 0
             ch.conductive_count = 0
             return PATH_WEAK
-        return getattr(ch, "_last_path_class", PATH_WEAK)
+        return ch._last_path_class
 
     dry_ma = float(cfg.CHANNEL_DRY_MA)
     if i_ma < dry_ma and i_ma > 0.01:
@@ -78,7 +78,7 @@ def classify_path(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
         ch.conductive_count = 0
         if ch.dry_count >= int(cfg.DRY_HOLD_TICKS):
             return PATH_OPEN
-        return getattr(ch, "_last_path_class", PATH_WEAK)
+        return ch._last_path_class
 
     if i_ma >= dry_ma:
         ch.dry_count = 0
@@ -310,8 +310,12 @@ class Controller:
                     new_duty = max(hi, current_duty - step)
                 elif current_duty < lo:
                     new_duty = lo
-                else:
+                elif current_ma < target_ma:
                     new_duty = min(current_duty + step, hi)
+                elif current_ma > target_ma * 1.05:
+                    new_duty = max(lo, current_duty - step)
+                else:
+                    new_duty = current_duty
                 self._pwm.set_duty(ch, new_duty)
             elif status == ChannelState.PROTECTING:
                 if current_ma < target_ma:
@@ -407,6 +411,22 @@ class Controller:
 
     def channel_statuses(self) -> dict[int, str]:
         return {i: self._states[i].status for i in range(cfg.NUM_CHANNELS)}
+
+    def channel_path_tags(self) -> dict[int, str]:
+        """Short path-quality label from last classify_path (for verbose UI)."""
+        tags: dict[int, str] = {}
+        for i, s in enumerate(self._states):
+            if s.status == ChannelState.FAULT:
+                tags[i] = "—"
+                continue
+            p = s._last_path_class
+            if p == PATH_OPEN:
+                tags[i] = "open"
+            elif p == PATH_STRONG:
+                tags[i] = "strong"
+            else:
+                tags[i] = "weak"
+        return tags
 
     def median_impedance_ohm(self, ch: int) -> float | None:
         """Median effective Ω over the rolling window (None until enough samples)."""

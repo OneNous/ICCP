@@ -10,6 +10,22 @@ def test_sim_readings_count_and_finite():
     assert len(r) == cfg.NUM_CHANNELS
 
 
+def test_sim_per_channel_offsets_split_bus_and_ma(monkeypatch):
+    """With noise disabled, biases still separate channels (not four identical columns)."""
+    monkeypatch.setattr(sensors.random, "gauss", lambda *a, **k: 0.0)
+    monkeypatch.setattr(
+        sensors.SimSensorState,
+        "channel_is_wet",
+        lambda self, ch, sim_s: False,
+    )
+    st = sensors.SimSensorState()
+    r = sensors.read_all_sim(st)
+    cur = [r[i]["current"] for i in range(cfg.NUM_CHANNELS)]
+    bus = [r[i]["bus_v"] for i in range(cfg.NUM_CHANNELS)]
+    assert min(cur) != max(cur)
+    assert min(bus) != max(bus)
+
+
 def test_controller_latches_sim_injected_overcurrent(monkeypatch):
     prev_ch = cfg.SIM_INJECT_FAULT_CH
     prev_ma = cfg.SIM_INJECT_OVERCURRENT_MA

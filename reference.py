@@ -26,6 +26,7 @@ _ref_ina: object | None = None
 _REF_INIT_ERROR: str | None = None
 _REF_I2C_BUS: int = int(getattr(cfg, "REF_I2C_BUS", cfg.I2C_BUS))
 
+# When False, no ref INA219 is constructed (no I2C traffic on REF_I2C_BUS).
 _REF_ENABLED: bool = bool(getattr(cfg, "REF_ENABLED", True))
 
 if not SIM_MODE and _REF_ENABLED:

@@ -5,26 +5,24 @@ Impressed-current cathodic protection monitor/controller for HVAC-style coils.
 
 **How this maps to “standard ICCP”:** the inner loop regulates **shunt current** toward `TARGET_MA`; a **dedicated INA219** on the reference electrode provides **polarization shift** vs a commissioned baseline and **nudges** `TARGET_MA`—still not the same as holding structure potential to an industry criterion (e.g. −0.85 V CSE). See [docs/iccp-comparison.md](docs/iccp-comparison.md) for diagrams, **external standards links**, and [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md) for a line-by-line mapping to the code.
 
-## Simulator (macOS / no hardware)
+## Simulator (bench / no hardware)
 
-On macOS, if `COILSHIELD_SIM` is unset, it defaults to `1` so `board` / `RPi.GPIO` are not imported.
+`main.py` defaults to **hardware** (`COILSHIELD_SIM` unset means `0`). For a laptop or bench run without a Pi, pass **`--sim`** (or export **`COILSHIELD_SIM=1`**) so sensors and GPIO stay simulated.
 
 ```bash
 cd ~/coilshield
 python3 main.py --sim -v
-# or explicitly:
+# equivalent:
 COILSHIELD_SIM=1 python3 main.py --sim
 # Full loop with sim reference + temp, skip commissioning wait:
-COILSHIELD_SIM=1 python3 main.py --sim --verbose --skip-commission
+python3 main.py --sim --verbose --skip-commission
 ```
 
-Force real hardware path (Linux/Pi only):
-
-```bash
-COILSHIELD_SIM=0 python3 main.py --real
-```
+On the Raspberry Pi, run without `--sim` (or **`python3 main.py --real`** to force `COILSHIELD_SIM=0` if your shell had sim set).
 
 ## Raspberry Pi
+
+If the log line says `sim=True` but you expect hardware, check **`COILSHIELD_SIM`** in your environment or systemd unit (`Environment=COILSHIELD_SIM=1` is easy to copy from a laptop). **`main.py` clears that on a Raspberry Pi** unless you start with **`--sim`**.
 
 1. Enable I2C: `sudo raspi-config` → Interface Options → I2C, or  
    `sudo raspi-config nonint do_i2c 0` then reboot if needed.

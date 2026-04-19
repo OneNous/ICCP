@@ -40,7 +40,7 @@ MAX_MA = 5.0
 CHANNEL_TARGET_MA: dict = {}
 CHANNEL_MAX_MA: dict = {}
 
-# --- Wet detection (legacy; superseded by CHANNEL_DRY_MA / CHANNEL_CONDUCTIVE_MA) ---
+# Dry-phase magnitude in read_all_sim (wet vs dry noise ceiling); not used by OPEN/REGULATE FSM.
 CHANNEL_WET_THRESHOLD_MA = 0.15
 
 # --- Wet / conduction thresholds (state machine in control.py) ---
@@ -72,9 +72,13 @@ Z_COMPUTE_I_A_MIN = 1e-6
 # Floor in REGULATE: ramp up with PWM_STEP; ceiling is Vcell-capped PWM_MAX
 # (no separate “staging %” caps — current/bus/overcurrent limits are the guards).
 DUTY_PROBE = 3.0
-DUTY_PROTECT_MAX = 100.0  # ceiling in PROTECTING (clamped to PWM_MAX_DUTY in control)
+# PROTECTING duty ceiling (%); keep in line with PWM_MAX_DUTY unless you intentionally cap lower.
+DUTY_PROTECT_MAX = 80.0
 
 # Hard ceiling on effective cell drive: Vc ≈ bus_v × (PWM%/100) ≤ this (clamps max duty).
+# Example: VCELL_HARD_MAX_V=1.6 at bus≈4.85V → max duty ≈33% regardless of PWM_MAX_DUTY.
+# High-Z paths may not reach TARGET_MA until Z falls; raise for your electrochemistry or set 0
+# to disable (PWM_MAX_DUTY only) for bench tuning.
 VCELL_HARD_MAX_V = 1.6
 
 # Rolling window for median effective Ω logging (per channel).
@@ -133,8 +137,15 @@ COMMISSIONING_SETTLE_S = 60
 SIM_NATIVE_ZINC_MV = 200.0
 
 # --- Simulator ---
+# Bench nominal bus (V); intentionally not tied to field supply (~4.85 V) — tune for your rig.
 SIM_NOMINAL_BUS_V = 11.8
 SIM_NOISE_MA = 0.05
 SIM_DRIFT_MA = 0.002
 SIM_INJECT_FAULT_CH = None
 SIM_INJECT_OVERCURRENT_MA = 3.0
+# Per-channel DC nudges (CH0..CH3) so bench sim does not show four identical columns.
+SIM_CH_BUS_OFFSET_V = (0.0, -0.006, 0.009, -0.004)
+SIM_CH_MA_BIAS_DRY = (0.006, 0.020, 0.034, 0.011)
+SIM_CH_MA_BIAS_WET = (0.0, 0.07, -0.055, 0.045)
+SIM_CH_DRY_NOISE_SCALE = (1.0, 1.4, 0.75, 1.2)
+SIM_CH_WET_NOISE_SCALE = (1.0, 1.25, 0.85, 1.1)

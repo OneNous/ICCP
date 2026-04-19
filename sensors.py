@@ -7,9 +7,9 @@ Real path : reads four INA219 boards via I2C (4 channels total).
 
 Sim path  : 10 distinct HVAC cooling cycles over a compressed 24-hour window.
             Each of the 4 channels has unique wet/dry timing so the control
-            loop is exercised with anodes in different DORMANT / PROBING /
-            OPEN / REGULATE / PROTECTING states.
-            Current responds to PWM duty cycle so the loop can converge.
+            loop is exercised with anodes in different OPEN / REGULATE / PROTECTING
+            states. Current responds to PWM duty; SIM_CH_* offsets spread bus/mA
+            per channel so verbose output is not four identical columns.
 
 Time scale: SIM_TIME_SCALE env var sets real-seconds per simulated hour
             (read at import). Examples:
@@ -190,28 +190,49 @@ class SimSensorState:
         )
 
 
+def _sim_ch_nudge(name: str, ch: int, default: float = 0.0) -> float:
+    tup = getattr(cfg, name, ())
+    try:
+        return float(tup[ch]) if ch < len(tup) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def read_all_sim(state: SimSensorState) -> dict[int, ChannelReading]:
     """
     Generate one tick of simulated sensor readings.
-    Dry → noise below CHANNEL_WET_THRESHOLD_MA.
+    Dry → noise below CHANNEL_WET_THRESHOLD_MA (per-channel bias/scale).
     Wet → current tracks previous-tick duty (duty feedback loop).
     """
     sim_s = state.sim_seconds()
     results: dict[int, ChannelReading] = {}
 
     for ch in range(cfg.NUM_CHANNELS):
-        wet  = state.channel_is_wet(ch, sim_s)
+        wet = state.channel_is_wet(ch, sim_s)
         duty = state.duties.get(ch, 0.0)
-        bus_v = cfg.SIM_NOMINAL_BUS_V + random.gauss(0, 0.03)
+        # cfg.SIM_NOMINAL_BUS_V is a bench nominal; field supply is often ~4.85 V.
+        bus_v = (
+            cfg.SIM_NOMINAL_BUS_V
+            + _sim_ch_nudge("SIM_CH_BUS_OFFSET_V", ch)
+            + random.gauss(0, 0.022 + 0.006 * ch)
+        )
 
         if wet:
             duty_factor = 0.3 + (duty / max(cfg.PWM_MAX_DUTY, 1)) * 1.4
-            current = cfg.TARGET_MA * duty_factor + random.gauss(0, cfg.SIM_NOISE_MA)
+            nscale = _sim_ch_nudge("SIM_CH_WET_NOISE_SCALE", ch, 1.0)
+            current = (
+                cfg.TARGET_MA * duty_factor
+                + random.gauss(0, cfg.SIM_NOISE_MA * nscale)
+                + _sim_ch_nudge("SIM_CH_MA_BIAS_WET", ch)
+            )
             current = max(current, cfg.CHANNEL_WET_THRESHOLD_MA * 1.5)
         else:
             ceiling = cfg.CHANNEL_WET_THRESHOLD_MA * 0.4
-            current = abs(random.gauss(0, ceiling * 0.5))
+            dscale = _sim_ch_nudge("SIM_CH_DRY_NOISE_SCALE", ch, 1.0)
+            current = abs(random.gauss(0, ceiling * 0.5 * dscale))
             current = min(current, ceiling)
+            current += _sim_ch_nudge("SIM_CH_MA_BIAS_DRY", ch)
+            current = max(current, 0.0)
 
         if cfg.SIM_INJECT_FAULT_CH is not None and ch == cfg.SIM_INJECT_FAULT_CH:
             current = cfg.SIM_INJECT_OVERCURRENT_MA
