@@ -130,7 +130,7 @@ flowchart TB
 
 **Commissioning**
 
-- On first run (no `commissioning.json`), commissioning averages the reference with channels off → **`native_mv`**, then ramps current until shift reaches **`TARGET_SHIFT_MV`** repeatedly → stores **`commissioned_target_ma`** used as `TARGET_MA` on subsequent starts (`main.py`).
+- On first run (no `commissioning.json`), commissioning averages the reference with channels off → **`native_mv`**, then ramps current until **shift** (`native_mv − reading`, positive when the reading moves cathodic) reaches **`TARGET_SHIFT_MV`** repeatedly → stores **`commissioned_target_ma`** used as `TARGET_MA` on subsequent starts (`main.py`).
 
 ---
 

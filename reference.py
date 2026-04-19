@@ -207,7 +207,9 @@ def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> floa
             shift += 18.0 * norm
         elif st == "OPEN":
             shift += 0.0
-    return round(native + shift + random.gauss(0, 1.5), 2)
+    # Under CP the mV-like scalar falls vs native; model raw = native − effect so
+    # shift_mv = native − raw stays positive when protected (matches hardware).
+    return round(native - shift + random.gauss(0, 1.5), 2)
 
 
 class ReferenceElectrode:
@@ -253,10 +255,11 @@ class ReferenceElectrode:
         duties: dict[int, float] | None = None,
         statuses: dict[int, str] | None = None,
     ) -> float | None:
+        """Polarization vs native: native_mv − raw (positive when reading drops under CP)."""
         if self.native_mv is None:
             return None
         raw = self.read(duties, statuses)
-        return round(raw - self.native_mv, 2)
+        return round(self.native_mv - raw, 2)
 
     def read_raw_and_shift(
         self,
@@ -270,10 +273,10 @@ class ReferenceElectrode:
             return 0.0, None
         if self.native_mv is None:
             return raw, None
-        return raw, round(raw - self.native_mv, 2)
+        return raw, round(self.native_mv - raw, 2)
 
     def protection_status(self, shift_mv: float | None = None) -> str:
-        """Band vs TARGET_SHIFT_MV / MAX_SHIFT_MV (not an industry CP criterion)."""
+        """Band vs TARGET_SHIFT_MV / MAX_SHIFT_MV for shift = native − raw (not a CP survey criterion)."""
         if shift_mv is None:
             return "UNKNOWN"
         lo = getattr(cfg, "TARGET_SHIFT_MV", 100)

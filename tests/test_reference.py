@@ -68,7 +68,8 @@ def test_protection_status_from_shift(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "MAX_SHIFT_MV", 200)
     ref = ReferenceElectrode()
     ref.native_mv = 200.0
-    monkeypatch.setattr(ReferenceElectrode, "read", lambda self, duties=None, statuses=None: 300.0)
+    # shift = native − raw → 100 mV when reading has fallen 100 mV vs native
+    monkeypatch.setattr(ReferenceElectrode, "read", lambda self, duties=None, statuses=None: 100.0)
     shift = ref.shift_mv(duties={}, statuses={})
     assert shift == 100.0
     assert ref.protection_status(shift) == "OK"

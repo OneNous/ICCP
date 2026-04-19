@@ -397,6 +397,7 @@ class Controller:
     def update_potential_target(self, shift_mv: float | None) -> None:
         """
         Outer loop: nudge TARGET_MA to keep polarization in the safe window.
+        shift_mv is native_mv − ref reading (positive when reading falls under CP).
         Call once per LOG_INTERVAL_S tick, not every SAMPLE_INTERVAL_S.
         """
         if shift_mv is None:

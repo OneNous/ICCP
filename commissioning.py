@@ -112,8 +112,8 @@ def run(
     reference.save_native(native_mv)
     log(f"Native reference scalar: {native_mv:.1f} mV")
     log(
-        f"Target shift: +{cfg.TARGET_SHIFT_MV} mV  →  lock at "
-        f"{native_mv + cfg.TARGET_SHIFT_MV:.1f} mV (reference reading)"
+        f"Target polarization shift: ≥{cfg.TARGET_SHIFT_MV} mV (native − reading); "
+        f"ref typically falls toward ~{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
     )
 
     # Phase 2 — ramp until target shift
