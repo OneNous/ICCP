@@ -61,7 +61,7 @@ The outer loop compares **shift (mV)** against `TARGET_SHIFT_MV` / `MAX_SHIFT_MV
 
 ### Commissioning
 
-On first start (no `commissioning.json` in the project root), `main.py` runs **self-commissioning**: **Phase 1** turns all channels off, waits `COMMISSIONING_SETTLE_S`, averages reference INA219 samples → saves **`native_mv`**. **Phase 2** ramps per-channel target current until the reference **shift** (`native_mv − reading`, positive when the scalar falls under CP) reaches `TARGET_SHIFT_MV` **five** consecutive confirmations, then writes **`commissioned_target_ma`** and timestamps into `commissioning.json`.
+On first start (no `commissioning.json` in the project root), `main.py` runs **self-commissioning**: **Phase 1** turns all channels off, waits `COMMISSIONING_SETTLE_S`, averages reference INA219 samples → saves **`native_mv`**. **Phase 2** ramps per-channel target current: after each **20 s** regulate segment, PWM goes to **0 %** for **100 ms**, the reference is sampled (**instant-off / IR-free** style), then PWM restores; **shift** = `native_mv − that reading`. When shift reaches `TARGET_SHIFT_MV` **five** consecutive times, **`commissioned_target_ma`** and timestamps are written to `commissioning.json`.
 
 **Bench / dev without waiting on hardware:** run with **`--skip-commission`** so the controller starts immediately (native baseline will not be set until you commission for real).
 

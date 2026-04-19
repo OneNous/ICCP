@@ -20,8 +20,10 @@ _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
 
 COMMISSIONING_SETTLE_S: int = getattr(cfg, "COMMISSIONING_SETTLE_S", 60)
 TARGET_RAMP_STEP_MA: float = 0.05
-RAMP_SETTLE_S: float = 10.0
+RAMP_SETTLE_S: float = float(getattr(cfg, "COMMISSIONING_RAMP_SETTLE_S", 20.0))
 CONFIRM_TICKS: int = 5
+# Brief PWM-off window before reference sample (IR-free / “instant-off” potential).
+INSTANT_OFF_WINDOW_S: float = float(getattr(cfg, "COMMISSIONING_INSTANT_OFF_S", 0.1))
 
 
 def needs_commissioning() -> bool:
@@ -58,6 +60,31 @@ def _sensor_readings(sim_state: Any | None) -> dict[int, dict]:
     if sensors.SIM_MODE:
         return sensors.read_all_sim(sim_state)
     return sensors.read_all_real()
+
+
+def _instant_off_ref_mv_and_restore(
+    controller: Controller,
+    reference: ReferenceElectrode,
+    sim_state: Any | None,
+) -> tuple[float, float | None]:
+    """
+    Cut PWM to 0 %, wait INSTANT_OFF_WINDOW_S, read reference at open-circuit instant,
+    then restore outputs via one controller.update() (same idea as LPR instant-off).
+    Returns (raw_mv_at_instant, shift_mv) where shift = native_mv − raw.
+    """
+    controller._pwm.all_off()
+    time.sleep(INSTANT_OFF_WINDOW_S)
+    off_d = {i: 0.0 for i in range(cfg.NUM_CHANNELS)}
+    off_s = {i: "OPEN" for i in range(cfg.NUM_CHANNELS)}
+    raw_inst = float(reference.read(duties=off_d, statuses=off_s))
+    shift: float | None = None
+    if reference.native_mv is not None:
+        shift = round(float(reference.native_mv) - raw_inst, 2)
+    readings = _sensor_readings(sim_state)
+    controller.update(readings)
+    if sim_state is not None:
+        sim_state.duties = controller.duties()
+    return raw_inst, shift
 
 
 def _pump_control(
@@ -129,14 +156,13 @@ def run(
         )
         _pump_control(controller, sim_state, RAMP_SETTLE_S)
 
-        shift = reference.shift_mv(
-            duties=controller.duties(),
-            statuses=controller.channel_statuses(),
+        log("  instant-off ref sample (PWM 0 %, then restore) …")
+        raw, shift = _instant_off_ref_mv_and_restore(
+            controller, reference, sim_state
         )
-        raw = reference.last_raw_mv
         shift_str = f"{shift:.1f}" if shift is not None else "N/A"
         log(
-            f"  ref: {raw:.1f} mV  shift: {shift_str} / "
+            f"  ref@off: {raw:.1f} mV  shift(native−off): {shift_str} / "
             f"{cfg.TARGET_SHIFT_MV} mV"
         )
 
@@ -155,14 +181,15 @@ def run(
         )
 
     log(f"Phase 3 — locking in at {current_target_ma:.3f} mA/ch")
+    _pump_control(controller, sim_state, min(RAMP_SETTLE_S, 2.0))
+    _final_raw, final_shift = _instant_off_ref_mv_and_restore(
+        controller, reference, sim_state
+    )
     _update_comm_file(
         {
             "commissioned_target_ma": current_target_ma,
             "commissioned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "final_shift_mv": reference.shift_mv(
-                duties=controller.duties(),
-                statuses=controller.channel_statuses(),
-            ),
+            "final_shift_mv": final_shift,
         }
     )
     log("Done.")

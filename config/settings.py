@@ -158,6 +158,10 @@ TARGET_SHIFT_MV = 100
 MAX_SHIFT_MV = 200
 TARGET_MA_STEP = 0.02
 COMMISSIONING_SETTLE_S = 60
+# Phase 2: regulate at each ramp step before instant-off reference sample (s).
+COMMISSIONING_RAMP_SETTLE_S = 20.0
+# Phase 2/3: PWM-off duration before ADS1115 / ref read (s).
+COMMISSIONING_INSTANT_OFF_S = 0.1
 SIM_NATIVE_ZINC_MV = 200.0
 
 # --- Simulator ---

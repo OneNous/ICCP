@@ -37,15 +37,11 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
         "read",
         lambda self, duties=None, statuses=None: 210.0,
     )
-    calls = {"n": 0}
-
-    def fake_shift(self, duties=None, statuses=None):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return 0.0
-        return float(cfg.TARGET_SHIFT_MV + 5)
-
-    monkeypatch.setattr(ReferenceElectrode, "shift_mv", fake_shift)
+    monkeypatch.setattr(
+        commissioning,
+        "_instant_off_ref_mv_and_restore",
+        lambda *a, **k: (100.0, 110.0),
+    )
 
     ctrl = SimpleNamespace(
         _pwm=SimpleNamespace(all_off=lambda: None),
@@ -62,3 +58,4 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     assert "commissioned_target_ma" in data
     assert "commissioned_at" in data
     assert isinstance(data["native_mv"], (int, float))
+    assert data.get("final_shift_mv") == 110.0
