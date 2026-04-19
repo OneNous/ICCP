@@ -130,7 +130,7 @@ flowchart TB
 
 **Commissioning**
 
-- On first run (no `commissioning.json`), commissioning averages the reference with channels off → **`native_mv`**, then ramps current: after each **`COMMISSIONING_RAMP_SETTLE_S`** regulate segment, PWM is cut for **`COMMISSIONING_INSTANT_OFF_S`**, the reference is read (IR-free style), **shift** = `native_mv − reading`; when shift ≥ **`TARGET_SHIFT_MV`** for five consecutive steps, **`commissioned_target_ma`** is stored for `TARGET_MA` on subsequent starts (`main.py`).
+- On first run (no `commissioning.json`), commissioning averages the reference with channels off → **`native_mv`**, then ramps by **`COMMISSIONING_RAMP_STEP_MA`**: after each **`COMMISSIONING_RAMP_SETTLE_S`** regulate segment, PWM is cut for **`COMMISSIONING_INSTANT_OFF_S`**, the reference is read (IR-free style), **shift** = `native_mv − reading`; when shift ≥ **`TARGET_SHIFT_MV`** for five consecutive steps, **`commissioned_target_ma`** is stored for `TARGET_MA` on subsequent starts (`main.py`). Longer soak and shorter off-windows reduce depolarization from repeated instant-offs on slow bench paths.
 
 ---
 

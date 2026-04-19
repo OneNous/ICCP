@@ -19,11 +19,11 @@ if TYPE_CHECKING:
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
 
 COMMISSIONING_SETTLE_S: int = getattr(cfg, "COMMISSIONING_SETTLE_S", 60)
-TARGET_RAMP_STEP_MA: float = 0.05
-RAMP_SETTLE_S: float = float(getattr(cfg, "COMMISSIONING_RAMP_SETTLE_S", 20.0))
+TARGET_RAMP_STEP_MA: float = float(getattr(cfg, "COMMISSIONING_RAMP_STEP_MA", 0.15))
+RAMP_SETTLE_S: float = float(getattr(cfg, "COMMISSIONING_RAMP_SETTLE_S", 60.0))
 CONFIRM_TICKS: int = 5
 # Brief PWM-off window before reference sample (IR-free / “instant-off” potential).
-INSTANT_OFF_WINDOW_S: float = float(getattr(cfg, "COMMISSIONING_INSTANT_OFF_S", 0.1))
+INSTANT_OFF_WINDOW_S: float = float(getattr(cfg, "COMMISSIONING_INSTANT_OFF_S", 0.05))
 
 
 def needs_commissioning() -> bool:

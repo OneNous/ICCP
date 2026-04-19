@@ -158,10 +158,13 @@ TARGET_SHIFT_MV = 100
 MAX_SHIFT_MV = 200
 TARGET_MA_STEP = 0.02
 COMMISSIONING_SETTLE_S = 60
-# Phase 2: regulate at each ramp step before instant-off reference sample (s).
-COMMISSIONING_RAMP_SETTLE_S = 20.0
-# Phase 2/3: PWM-off duration before ADS1115 / ref read (s).
-COMMISSIONING_INSTANT_OFF_S = 0.1
+# Phase 2: regulate before each instant-off ref sample (s). Longer soak helps
+# surface polarization on high-Z bench water; real coil + condensate is faster.
+COMMISSIONING_RAMP_SETTLE_S = 60.0
+# Phase 2/3: PWM-off before ref read (s). Shorter cuts shed less charge between samples.
+COMMISSIONING_INSTANT_OFF_S = 0.05
+# Phase 2: current increment per ramp step (mA). Larger steps → fewer instant-offs per mA range.
+COMMISSIONING_RAMP_STEP_MA = 0.15
 SIM_NATIVE_ZINC_MV = 200.0
 
 # --- Simulator ---
