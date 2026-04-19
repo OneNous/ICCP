@@ -186,6 +186,14 @@ def run_i2c_scan(bus: int) -> None:
         print(f"  ✓ ADS1115 present at {hex(ADS1115_ADDRESS)}")
     else:
         print(f"\n  ✗ ADS1115 not found at {hex(ADS1115_ADDRESS)} — reference ADC path will fail")
+        if cfg is not None:
+            mxa = getattr(cfg, "I2C_MUX_ADDRESS", None)
+            mxc = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
+            if mxa is not None and mxc is not None:
+                print(
+                    f"    • If ADS1115 is on TCA9548A port {mxc}, it only appears after mux "
+                    "select — run STEP 3 or `python3 hw_probe.py --ads1115-only`."
+                )
 
     if extra:
         print(f"\n  ? Other addresses: {[hex(a) for a in extra]}")
@@ -349,20 +357,21 @@ def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: b
 
 
 def run_ads1115_reads(busnum: int, ads_address: int | None = None) -> None:
-    from i2c_bench import ads1115_read_single_ended, mux_select_on_bus
+    from i2c_bench import ads1115_behind_i2c_mux, ads1115_read_single_ended, mux_select_on_bus
 
     addr = int(ADS1115_ADDRESS if ads_address is None else ads_address)
+    mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None) if cfg else None
+    mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None) if cfg else None
+    behind_mux = ads1115_behind_i2c_mux(
+        int(mux_addr) if mux_addr is not None else None,
+        int(mux_ch) if mux_ch is not None else None,
+    )
 
     section("STEP 3 — ADS1115 (reference ADC)")
     print(
         f"\n  Bus {busnum}  address {hex(addr)}  "
         f"single-ended AIN0..AIN3  FSR ±{ADS1115_FSR_V} V\n"
     )
-
-    found = scan_i2c(busnum)
-    if addr not in found:
-        print(f"  [!] Skipping — {hex(addr)} not on bus scan.")
-        return
 
     try:
         import smbus2
@@ -373,11 +382,19 @@ def run_ads1115_reads(busnum: int, ads_address: int | None = None) -> None:
         _i2c_diagnostic(e, busnum)
         return
 
-    mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None) if cfg else None
-    mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None) if cfg else None
-
     try:
         mux_select_on_bus(sm, mux_addr, mux_ch)
+        found = scan_i2c(busnum)
+        if addr not in found:
+            if behind_mux:
+                print(
+                    f"  [!] {hex(addr)} not listed after TCA ch{mux_ch} select "
+                    "(attempting ADC reads anyway)."
+                )
+            else:
+                print(f"  [!] Skipping — {hex(addr)} not on bus scan.")
+                return
+
         print(f"  {'AIN':<6} {'Volts':>10} {'mV':>10}")
         print("  " + "─" * 28)
         for ch in range(4):

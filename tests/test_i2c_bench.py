@@ -8,6 +8,7 @@ from i2c_bench import (
     INA219_DEFAULT_CONFIG_WORD,
     _ads1115_config_word,
     _ads1115_dr_conversion_s,
+    ads1115_behind_i2c_mux,
 )
 
 
@@ -30,3 +31,10 @@ def test_ads1115_config_word_dr_field() -> None:
     assert ((w >> 5) & 7) == 5
     w8 = _ads1115_config_word(2, 4.096, dr=0)
     assert ((w8 >> 5) & 7) == 0
+
+
+def test_ads1115_behind_i2c_mux_gate() -> None:
+    assert ads1115_behind_i2c_mux(None, None) is False
+    assert ads1115_behind_i2c_mux(0x70, None) is False
+    assert ads1115_behind_i2c_mux(None, 4) is False
+    assert ads1115_behind_i2c_mux(0x70, 4) is True

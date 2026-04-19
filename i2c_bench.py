@@ -54,6 +54,11 @@ def mux_select_on_bus(bus: Any, mux_addr: int | None, mux_ch: int | None) -> Non
     bus.write_byte(int(mux_addr), 1 << int(mux_ch))
 
 
+def ads1115_behind_i2c_mux(mux_addr: int | None, mux_channel_ads: int | None) -> bool:
+    """True when ADS1115 sits behind a TCA9548A port (idle bus scan cannot see 0x48)."""
+    return mux_addr is not None and mux_channel_ads is not None
+
+
 def ina219_write_config(bus: Any, addr: int, config: int) -> None:
     bus.write_word_data(addr, 0, word_out(config & 0xFFFF))
 

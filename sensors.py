@@ -53,15 +53,13 @@ if not SIM_MODE:
         per_mux = getattr(cfg, "I2C_MUX_CHANNELS_INA219", None)
         leg_mux = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
         mux_bus = None
+        from i2c_bench import mux_select_on_bus
+
         if mux_addr is not None and (per_mux is not None or leg_mux is not None):
             import smbus2
 
-            from i2c_bench import mux_select_on_bus
-
             mux_bus = smbus2.SMBus(int(cfg.I2C_BUS))
         try:
-            from i2c_bench import mux_select_on_bus
-
             for idx, addr in enumerate(cfg.INA219_ADDRESSES):
                 if mux_bus is not None and mux_addr is not None:
                     if per_mux is not None and idx < len(per_mux):
