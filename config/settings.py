@@ -100,10 +100,10 @@ DUTY_PROBE = 3.0
 DUTY_PROTECT_MAX = 80.0
 
 # Hard ceiling on effective cell drive: Vc ≈ bus_v × (PWM%/100) ≤ this (clamps max duty).
-# Example: VCELL_HARD_MAX_V=1.6 at bus≈4.85V → max duty ≈33% regardless of PWM_MAX_DUTY.
-# High-Z paths may not reach TARGET_MA until Z falls; raise for your electrochemistry or set 0
-# to disable (PWM_MAX_DUTY only) for bench tuning.
-VCELL_HARD_MAX_V = 1.6
+# Example at bus≈4.85V: 1.6V → max duty ≈33%; 3.0V → ≈62%. A low cap with high-Z tap water
+# limits current (Vc/R) and can block polarization / commissioning — raise for bench, lower
+# for production cell chemistry, or set 0 to disable (PWM_MAX_DUTY only).
+VCELL_HARD_MAX_V = 3.0
 
 # Rolling window for median effective Ω logging (per channel).
 IMPEDANCE_MEDIAN_WINDOW = 32
