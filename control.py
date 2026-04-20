@@ -260,8 +260,9 @@ class Controller:
                 state.last_state_recheck_monotonic = now
                 state.dry_count = 0
                 state.conductive_count = 0
-                state.protecting_enter_streak = 0
-                state.protecting_exit_streak = 0
+                if bool(getattr(cfg, "STATE_RECHECK_RESET_PROTECT_STREAKS", False)):
+                    state.protecting_enter_streak = 0
+                    state.protecting_exit_streak = 0
 
             i_floor = float(getattr(cfg, "Z_COMPUTE_I_A_MIN", 1e-6))
             z_log = bus_v / max(current_ma / 1000.0, i_floor)
@@ -303,7 +304,11 @@ class Controller:
                     state.protecting_enter_streak = 0
                     state.protecting_exit_streak = 0
                 else:
-                    bad = path == PATH_WEAK or abs(current_ma - target_ma) > exit_d
+                    # Exit PROTECTING only on true OPEN, or weak path *and* current off-target
+                    # (weak alone can glitch during PWM edges while I is still fine).
+                    bad = path == PATH_OPEN or (
+                        path == PATH_WEAK and abs(current_ma - target_ma) > exit_d
+                    )
                     if bad:
                         state.protecting_exit_streak += 1
                     else:

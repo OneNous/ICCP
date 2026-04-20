@@ -27,6 +27,13 @@ def test_find_oc_inflection_piecewise_knee() -> None:
     assert got == pytest.approx(224.5, abs=0.01)
 
 
+def test_find_oc_inflection_returns_valid_sample_index() -> None:
+    """Regression: inflection index is always within samples (no IndexError)."""
+    s = [(i * 0.001, 100.0 - i * 0.1) for i in range(30)]
+    v = find_oc_inflection_mv(s, skip_rates=0, tail_exclude=0.05)
+    assert any(abs(v - p[1]) < 1e-6 for p in s)
+
+
 def test_find_oc_inflection_flat_tail_excluded() -> None:
     # Steep then flat end — should not pick final flat noise as "knee" if tail excluded.
     s = [(i * 0.01, 300.0 - i * 2.0) for i in range(15)]

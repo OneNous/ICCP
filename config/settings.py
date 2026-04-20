@@ -12,8 +12,10 @@ CLEAR_FAULT_FILE = PROJECT_ROOT / "clear_fault"
 
 # --- I2C ---
 I2C_BUS = 1
-# REF I2C: dedicated gpio bit-bang bus (dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=20,i2c_gpio_scl=12)
-REF_I2C_BUS = 3
+# Reference INA219 / legacy ref I2C bus. Default **1** (shared header bus with anodes).
+# For an isolated gpio bit-bang bus set **3** after adding to `/boot/firmware/config.txt`:
+#   dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=20,i2c_gpio_scl=12
+REF_I2C_BUS = 1
 
 INA219_ADDRESSES = [0x40, 0x41, 0x44, 0x45]
 NUM_CHANNELS = 4
@@ -25,6 +27,9 @@ ADS1115_CHANNEL = 0
 ADS1115_FSR_V = 4.096
 # BCM pin for ADS1115 ALERT/RDY (conversion-ready, active low). None = poll config register only.
 ADS1115_ALRT_GPIO: int | None = 24
+# If True, try RPi.GPIO wait_for_edge on ALRT after starting a conversion; on failure
+# firmware falls back to polled OS bit + sleep. Set False to skip edge wait entirely.
+ADS1115_ALRT_USE_WAIT_FOR_EDGE = True
 # Median of N single-ended reads per sample (noise on long leads / PWM pickup).
 REF_ADS_MEDIAN_SAMPLES = 5
 # Data rate bits 0..7 for routine reference reads (5 = 250 SPS). Commissioning curve uses COMMISSIONING_ADS1115_DR.
@@ -60,7 +65,8 @@ REF_INA219_MEDIAN_SAMPLES = 1
 REF_INA219_SOURCE = "bus_v"
 
 # --- Current targets ---
-TARGET_MA = 1.2
+# Conservative default for aluminum fin chemistry; raise on bench copper if needed.
+TARGET_MA = 0.5
 MAX_MA = 5.0
 # Per-channel overrides (0-indexed). Omit a channel key to use the global value.
 # Example: CHANNEL_TARGET_MA = {1: 1.8}  → CH2 targets 1.8 mA
@@ -85,6 +91,8 @@ CONDUCTIVE_HOLD_TICKS = 5
 DRY_HOLD_TICKS = 5  # consecutive ticks below CHANNEL_DRY_MA → OPEN
 # Reset dry_count / conductive_count on this wall-clock cadence so stages can move.
 STATE_RECHECK_INTERVAL_S = 10.0
+# Do not reset PROTECTING enter/exit streaks on periodic recheck (see control.py).
+STATE_RECHECK_RESET_PROTECT_STREAKS = False
 
 # REGULATE → PROTECTING: require near-target I while path is STRONG for this many ticks.
 PROTECTING_ENTER_DELTA_MA = 0.2
@@ -183,10 +191,22 @@ COMMISSIONING_RAMP_STEP_MA = 0.1
 # Phase 1 native baseline: sample count and spacing (e.g. 30 × 2 s ≈ 60 s).
 COMMISSIONING_NATIVE_SAMPLE_COUNT = 30
 COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S = 2.0
+# Wall-clock regulate before final instant-off after target shift is confirmed.
+# Actual settle = max(this, COMMISSIONING_RAMP_SETTLE_S) so lock-in is not truncated to 2 s.
+COMMISSIONING_PHASE3_LOCK_SETTLE_S = 30.0
+# Phase 2: shift confirm hysteresis — within this fraction of TARGET_SHIFT_MV counts as “still
+# good”; below that band decays confirm_count instead of hard reset (noisy tap water).
+COMMISSIONING_SHIFT_CONFIRM_TOLERANCE = 0.9
+# After Phase 1 settle: confirm all PWM at 0% and INA219 |I| below COMMISSIONING_OC_CONFIRM_I_MA
+# before native reads; during averaging, all_off() is re-applied each tick so probe duty
+# cannot inject current. Set False to skip (e.g. unusual bench wiring).
+COMMISSIONING_PHASE1_OFF_VERIFY = True
+COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S = 3.0
 # OC decay curve + inflection (Phase 2/3 instant-off).
 COMMISSIONING_OC_CURVE_ENABLED = True
 COMMISSIONING_OC_BURST_SAMPLES = 20
-COMMISSIONING_OC_BURST_INTERVAL_S = 0.01
+# Extra delay between OC samples; 0 = back-to-back when ALRT/poll paces conversion (faster curve).
+COMMISSIONING_OC_BURST_INTERVAL_S = 0.0
 # Alternative to fixed burst count: sample for a wall-time window (slow OC knees / tap water).
 COMMISSIONING_OC_DURATION_MODE = False
 COMMISSIONING_OC_CURVE_DURATION_S = 3.0

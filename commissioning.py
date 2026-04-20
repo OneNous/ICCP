@@ -136,6 +136,99 @@ def _wait_ina_oc_confirm(
     return False
 
 
+def _pwm_duties_all_zero(controller: Any) -> tuple[bool, list[str]]:
+    """True if every channel PWM duty is 0 (gates commanded off)."""
+    issues: list[str] = []
+    for ch in range(cfg.NUM_CHANNELS):
+        d = float(controller._pwm.duty(ch))
+        if d > 1e-6:
+            issues.append(f"CH{ch} duty={d:.4f}%")
+    return (len(issues) == 0, issues)
+
+
+def _channels_shunt_below(
+    readings: dict[int, dict], i_max_ma: float
+) -> tuple[bool, list[str]]:
+    """True if every ok channel has |shunt current| below i_max_ma (electrode drive ~ off)."""
+    issues: list[str] = []
+    for ch in range(cfg.NUM_CHANNELS):
+        r = readings.get(ch, {})
+        if not r.get("ok"):
+            issues.append(f"CH{ch} INA219 not ok")
+            continue
+        cur = abs(float(r.get("current", 999.0)))
+        if cur >= i_max_ma:
+            issues.append(f"CH{ch} |I|={cur:.4f} mA (threshold {i_max_ma:g} mA)")
+    return (len(issues) == 0, issues)
+
+
+def _wait_phase1_shunts_off(
+    sim_state: Any | None,
+    i_max_ma: float,
+    timeout_s: float,
+) -> tuple[bool, list[str]]:
+    """Poll INA219 until all channels look electrically idle or timeout (hardware only)."""
+    import sensors
+
+    if sensors.SIM_MODE:
+        return True, []
+    deadline = time.monotonic() + max(0.05, float(timeout_s))
+    last_issues: list[str] = []
+    while time.monotonic() < deadline:
+        readings = _sensor_readings(sim_state)
+        ok, issues = _channels_shunt_below(readings, i_max_ma)
+        if ok:
+            return True, []
+        last_issues = issues
+        time.sleep(0.02)
+    return False, last_issues
+
+
+def _verify_phase1_drive_off(
+    controller: Any,
+    sim_state: Any | None,
+    *,
+    log: Callable[[str], None] | None,
+) -> None:
+    """
+    After Phase 1 settle: confirm MOSFETs are commanded off and shunts show no CP current.
+    Logs warnings on failure; does not abort commissioning.
+    """
+    if not bool(getattr(cfg, "COMMISSIONING_PHASE1_OFF_VERIFY", True)):
+        return
+
+    pwm_ok, pwm_issues = _pwm_duties_all_zero(controller)
+    if not pwm_ok:
+        msg = "WARNING: PWM not at 0% after settle — " + "; ".join(pwm_issues)
+        print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
+        if log is not None:
+            log(msg)
+        controller._pwm.all_off()
+        if sim_state is not None:
+            sim_state.duties = controller.duties()
+
+    i_max = float(getattr(cfg, "COMMISSIONING_OC_CONFIRM_I_MA", 0.15))
+    t_out = float(getattr(cfg, "COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S", 3.0))
+    shunt_ok, shunt_issues = _wait_phase1_shunts_off(sim_state, i_max, t_out)
+    if not shunt_ok:
+        msg = (
+            "WARNING: shunt current still ≥ "
+            f"{i_max:g} mA on one or more channels after {t_out:g}s — "
+            + ("; ".join(shunt_issues) if shunt_issues else "check wiring / leakage")
+            + "; native baseline may be biased."
+        )
+        print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
+        if log is not None:
+            log(msg)
+    else:
+        ok_msg = (
+            f"Phase 1 off-check: all PWM 0% and |I| < {i_max:g} mA per channel "
+            "(gates closed, no CP drive through shunts)."
+        )
+        if log is not None:
+            log(ok_msg)
+
+
 @contextmanager
 def _commissioning_pwm_hz_context(controller: Any) -> Any:
     alt = getattr(cfg, "COMMISSIONING_PWM_HZ", None)
@@ -268,22 +361,35 @@ def run(
     log(f"Channels off. Settling {COMMISSIONING_SETTLE_S}s ...")
     _pump_control(controller, sim_state, float(COMMISSIONING_SETTLE_S))
 
+    controller._pwm.all_off()
+    if sim_state is not None:
+        sim_state.duties = controller.duties()
+    _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
+
     log(
         f"Averaging {native_n} reference samples "
         f"({native_iv:g}s apart, ~{native_n * native_iv:.0f}s window) ..."
     )
+    # One FSM tick after settle, then freeze statuses — native loop does not run update()
+    # so REGULATE cannot apply probe duty between reads.
+    readings = _sensor_readings(sim_state)
+    controller.update(readings)
+    controller._pwm.all_off()
+    if sim_state is not None:
+        sim_state.duties = controller.duties()
+    status_snap = {
+        ch: controller.channel_statuses().get(ch, "OPEN") for ch in range(cfg.NUM_CHANNELS)
+    }
+    zero_duties = {ch: 0.0 for ch in range(cfg.NUM_CHANNELS)}
+
     samples: list[float] = []
     with _commissioning_pwm_hz_context(controller):
         for _ in range(native_n):
-            readings = _sensor_readings(sim_state)
-            controller.update(readings)
+            controller._pwm.all_off()
             if sim_state is not None:
-                sim_state.duties = controller.duties()
+                sim_state.duties = dict(zero_duties)
             samples.append(
-                reference.read(
-                    duties=controller.duties(),
-                    statuses=controller.channel_statuses(),
-                )
+                reference.read(duties=zero_duties, statuses=status_snap)
             )
             time.sleep(native_iv)
 
@@ -329,13 +435,17 @@ def run(
             f"{cfg.TARGET_SHIFT_MV} mV"
         )
 
-        if shift is not None and shift >= cfg.TARGET_SHIFT_MV:
+        tol = float(getattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_TOLERANCE", 0.9))
+        thr = float(cfg.TARGET_SHIFT_MV)
+        if shift is not None and shift >= thr:
             confirm_count += 1
             log(f"  target reached ({confirm_count}/{CONFIRM_TICKS})")
             if confirm_count >= CONFIRM_TICKS:
                 break
+        elif shift is not None and shift >= thr * tol:
+            pass
         else:
-            confirm_count = 0
+            confirm_count = max(0, confirm_count - 1)
             current_target_ma = round(current_target_ma + TARGET_RAMP_STEP_MA, 3)
     else:
         log(
@@ -344,7 +454,12 @@ def run(
         )
 
     log(f"Phase 3 — locking in at {current_target_ma:.3f} mA/ch")
-    _pump_control(controller, sim_state, min(RAMP_SETTLE_S, 2.0))
+    phase3_s = max(
+        float(RAMP_SETTLE_S),
+        float(getattr(cfg, "COMMISSIONING_PHASE3_LOCK_SETTLE_S", 30.0)),
+    )
+    log(f"  final regulate / settle {phase3_s:.0f}s before last instant-off …")
+    _pump_control(controller, sim_state, phase3_s)
     _final_raw, final_shift = _instant_off_ref_mv_and_restore(
         controller, reference, sim_state, log=log if verbose else None
     )

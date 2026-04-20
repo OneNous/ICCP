@@ -29,8 +29,10 @@ def test_ads1115_dr_conversion_inverse_of_dr() -> None:
 def test_ads1115_config_word_dr_field() -> None:
     w = _ads1115_config_word(0, 4.096, dr=5)
     assert ((w >> 5) & 7) == 5
+    assert (w & 3) == 0  # COMP_QUE != 11 for ALERT/RDY conversion-ready mode
     w8 = _ads1115_config_word(2, 4.096, dr=0)
     assert ((w8 >> 5) & 7) == 0
+    assert (w8 & 3) == 0
 
 
 def test_ads1115_behind_i2c_mux_gate() -> None:

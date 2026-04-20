@@ -136,7 +136,7 @@ def test_channel_target_ma_matches_cfg(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_state_recheck_resets_hysteresis_counters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wall-clock recheck clears dry_count / conductive_count / protecting streaks."""
+    """Wall-clock recheck clears dry_count / conductive_count."""
     monkeypatch.setattr(cfg, "STATE_RECHECK_INTERVAL_S", 10.0)
     monkeypatch.setattr(cfg, "CHANNEL_DRY_MA", 0.05)
     monkeypatch.setattr(cfg, "DRY_HOLD_TICKS", 99)
@@ -154,8 +154,6 @@ def test_state_recheck_resets_hysteresis_counters(
     s0.last_state_recheck_monotonic = 980.0
     s0.dry_count = 7
     s0.conductive_count = 4
-    s0.protecting_enter_streak = 2
-    s0.protecting_exit_streak = 1
 
     def _readings(ma: float) -> dict[int, dict]:
         return {
@@ -166,8 +164,6 @@ def test_state_recheck_resets_hysteresis_counters(
     ctrl.update(_readings(0.02))
     assert s0.conductive_count == 0
     assert s0.dry_count == 1
-    assert s0.protecting_enter_streak == 0
-    assert s0.protecting_exit_streak == 0
 
     clock["t"] = 1005.0
     ctrl.update(_readings(0.02))

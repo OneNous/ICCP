@@ -33,6 +33,8 @@ _ref_smbus: Any | None = None
 _REF_INIT_ERROR: str | None = None
 _REF_I2C_BUS: int = int(getattr(cfg, "REF_I2C_BUS", cfg.I2C_BUS))
 _ADS_ALRT_GPIO_SETUP: bool = False
+# Set True after first GPIO.wait_for_edge RuntimeError so we poll instead of retrying.
+_ADS_ALRT_WAIT_EDGE_BROKEN: bool = False
 
 
 def _ina219_scalar_mv(sensor: object, source: str) -> float:
@@ -86,6 +88,15 @@ def _init_ref_ads1115() -> None:
         ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
         fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
         ads1115_read_single_ended(sm, addr, ch, fsr)
+        # TI ADS1115: Lo_thresh MSB=0, Hi_thresh MSB=1 + COMP_QUE≠11 in config → ALERT/RDY pulses conversion-ready.
+        try:
+            sm.write_i2c_block_data(addr, 0x02, [0x7F, 0xFF])  # Lo_thresh
+            sm.write_i2c_block_data(addr, 0x03, [0x80, 0x00])  # Hi_thresh
+        except Exception as _alrt_err:
+            print(
+                f"[reference] ADS1115 ALERT/RDY threshold init skipped: {_alrt_err} "
+                "(OC capture will fall back to polled conversion timing)"
+            )
         _ref_smbus = sm
         sm = None
         kind = getattr(cfg, "REF_ELECTRODE_KIND", "unknown")
@@ -259,7 +270,8 @@ def find_oc_inflection_mv(
     # segment; then prefer the earliest index on ties (first knee in window).
     best = min(range(len(sub)), key=lambda j: (round(sub[j], 6), j))
     k = k_lo + best
-    return float(samples[k + 1][1])
+    idx = min(k + 1, len(samples) - 1)
+    return float(samples[idx][1])
 
 
 def _ensure_ads_alrt_gpio() -> int | None:
@@ -311,12 +323,29 @@ def _read_ads_mv_scaled_once(
         if pin is not None and use_alrt:
             import RPi.GPIO as GPIO  # noqa: N814
 
+            global _ADS_ALRT_WAIT_EDGE_BROKEN
+
             ads1115_start_single_shot(_ref_smbus, addr, ch, fsr, dr=dr)
             t_wait = _ads1115_dr_conversion_s(dr) * 2.0 + 0.005
             # RPi.GPIO wait_for_edge timeout is integer milliseconds, not seconds.
             timeout_ms = max(1, int(math.ceil(t_wait * 1000.0)))
-            if not ads1115_config_os_ready(_ref_smbus, addr):
-                GPIO.wait_for_edge(pin, GPIO.FALLING, timeout=timeout_ms)
+            use_edge = bool(getattr(cfg, "ADS1115_ALRT_USE_WAIT_FOR_EDGE", True))
+            if (
+                use_edge
+                and not _ADS_ALRT_WAIT_EDGE_BROKEN
+                and not ads1115_config_os_ready(_ref_smbus, addr)
+            ):
+                try:
+                    GPIO.wait_for_edge(pin, GPIO.FALLING, timeout=timeout_ms)
+                except RuntimeError as exc:
+                    _ADS_ALRT_WAIT_EDGE_BROKEN = True
+                    print(
+                        "[reference] WARNING: GPIO.wait_for_edge on ADS1115 ALRT failed "
+                        f"({exc!s}); using polled conversion timing for the rest of this "
+                        "OC capture. Each new `collect_oc_decay_samples()` run re-tries edge "
+                        "wait. Set ADS1115_ALRT_USE_WAIT_FOR_EDGE=False or ADS1115_ALRT_GPIO=None "
+                        "to skip; verify ALRT wiring / TI conversion-ready ALERT/RDY mode."
+                    )
             if not ads1115_config_os_ready(_ref_smbus, addr):
                 time.sleep(_ads1115_dr_conversion_s(dr) * 1.25 + 0.001)
             return float(ads1115_read_conversion_volts(_ref_smbus, addr, fsr))
@@ -398,6 +427,10 @@ class ReferenceElectrode:
         INA219 ref backend → single sample (or time series in duration mode);
         SIM → synthetic decay; ADS1115 → burst or duration-window sampling.
         """
+        global _ADS_ALRT_WAIT_EDGE_BROKEN
+
+        _ADS_ALRT_WAIT_EDGE_BROKEN = False
+
         dr = int(getattr(cfg, "COMMISSIONING_ADS1115_DR", 7))
         med_sub = max(1, int(getattr(cfg, "COMMISSIONING_OC_ADS_MEDIAN_SAMPLES", 1)))
         use_alrt = bool(
@@ -452,6 +485,17 @@ class ReferenceElectrode:
                 v = 0.0
             return [(0.0, v)]
 
+        from i2c_bench import _ads1115_dr_conversion_s
+
+        # Approximate I2C + conversion wall time so sleep does not add full poll/interval on top.
+        conv_block = float(_ads1115_dr_conversion_s(dr)) * max(1, med_sub) * 1.15 + 0.002
+
+        def _sleep_after_ads_sample(period_s: float) -> None:
+            nap = max(0.0, float(period_s))
+            if use_alrt and nap > 0:
+                nap = max(0.0, nap - conv_block)
+            time.sleep(nap)
+
         samples: list[tuple[float, float]] = []
         t0 = time.monotonic()
         if duration_mode:
@@ -463,7 +507,7 @@ class ReferenceElectrode:
                     median_subsamples=med_sub,
                 )
                 samples.append((elapsed, float(mv)))
-                time.sleep(poll_s if poll_s > 0 else interval)
+                _sleep_after_ads_sample(poll_s if poll_s > 0 else interval)
         else:
             for _ in range(n):
                 elapsed = time.monotonic() - t0
@@ -473,7 +517,7 @@ class ReferenceElectrode:
                     median_subsamples=med_sub,
                 )
                 samples.append((elapsed, float(mv)))
-                time.sleep(max(0.0, interval))
+                _sleep_after_ads_sample(interval)
         return samples
 
     def protection_status(self, shift_mv: float | None = None) -> str:

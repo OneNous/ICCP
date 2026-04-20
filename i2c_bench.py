@@ -168,8 +168,9 @@ def _ads1115_config_word(channel: int, fsr_v: float, dr: int = 5) -> int:
     # PGA bits 11-9
     pga_map = {6.144: 0x0000, 4.096: 0x0200, 2.048: 0x0400, 1.024: 0x0600, 0.512: 0x0800, 0.256: 0x0A00}
     pga = pga_map.get(round(fsr_v, 3), 0x0200)
-    # OS=1 start, MUX, PGA, MODE=1 single, DR, comparator bits = 011
-    return 0x8000 | mux | pga | 0x0100 | ((dr & 7) << 5) | 3
+    # OS=1 start, MUX, PGA, MODE=1 single, DR; COMP_QUE=00 (not 11) so ALERT/RDY can act as conversion-ready
+    # when Lo/Hi_thresh are programmed (see reference._init_ref_ads1115).
+    return 0x8000 | mux | pga | 0x0100 | ((dr & 7) << 5) | 0
 
 
 def _ads1115_volts_per_lsb(fsr_v: float) -> float:

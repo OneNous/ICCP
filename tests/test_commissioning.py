@@ -46,7 +46,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     )
 
     ctrl = SimpleNamespace(
-        _pwm=SimpleNamespace(all_off=lambda: None),
+        _pwm=SimpleNamespace(all_off=lambda: None, duty=lambda _ch: 0.0),
         update=lambda readings: None,
         duties=lambda: {i: 40.0 for i in range(cfg.NUM_CHANNELS)},
         channel_statuses=lambda: {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)},
