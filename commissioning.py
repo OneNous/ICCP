@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import contextmanager
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import config.settings as cfg
-from reference import ReferenceElectrode, _update_comm_file
+from reference import ReferenceElectrode, _update_comm_file, find_oc_inflection_mv
 
 if TYPE_CHECKING:
     from control import Controller
@@ -22,7 +24,7 @@ COMMISSIONING_SETTLE_S: int = getattr(cfg, "COMMISSIONING_SETTLE_S", 60)
 TARGET_RAMP_STEP_MA: float = float(getattr(cfg, "COMMISSIONING_RAMP_STEP_MA", 0.15))
 RAMP_SETTLE_S: float = float(getattr(cfg, "COMMISSIONING_RAMP_SETTLE_S", 60.0))
 CONFIRM_TICKS: int = 5
-# Seconds at 0% PWM before reference ADC read (open-circuit / IR decay); tune in settings.
+# Legacy single dwell (s) when COMMISSIONING_OC_CURVE_ENABLED is False.
 INSTANT_OFF_WINDOW_S: float = float(getattr(cfg, "COMMISSIONING_INSTANT_OFF_S", 2.0))
 
 
@@ -62,36 +64,171 @@ def _sensor_readings(sim_state: Any | None) -> dict[int, dict]:
     return sensors.read_all_real()
 
 
+def _snapshot_bus_v(readings: dict[int, dict]) -> dict[int, float]:
+    out: dict[int, float] = {}
+    for ch in range(cfg.NUM_CHANNELS):
+        r = readings.get(ch, {})
+        if r.get("ok"):
+            out[ch] = float(r["bus_v"])
+    return out
+
+
+def _ina_confirm_off(
+    readings: dict[int, dict],
+    pre_bus: dict[int, float] | None,
+    *,
+    cut_ch: int | None,
+    mode: str,
+) -> bool:
+    mode_l = str(mode).lower().strip()
+    if mode_l in ("", "none"):
+        return True
+    chs = range(cfg.NUM_CHANNELS) if cut_ch is None else (cut_ch,)
+    i_max = float(getattr(cfg, "COMMISSIONING_OC_CONFIRM_I_MA", 0.15))
+    dv_min = float(getattr(cfg, "COMMISSIONING_OCBUS_MAX_DELTA_V", 0.05))
+    for ch in chs:
+        r = readings.get(ch, {})
+        if not r.get("ok"):
+            return False
+        cur = abs(float(r.get("current", 999.0)))
+        cur_ok = cur < i_max
+        if mode_l == "current":
+            if not cur_ok:
+                return False
+        elif mode_l == "delta_v":
+            if not pre_bus or ch not in pre_bus:
+                return False
+            if (pre_bus[ch] - float(r.get("bus_v", 0.0))) < dv_min:
+                return False
+        elif mode_l == "both":
+            if not cur_ok:
+                return False
+            if pre_bus and ch in pre_bus:
+                if (pre_bus[ch] - float(r.get("bus_v", 0.0))) < dv_min:
+                    return False
+        else:
+            if not cur_ok:
+                return False
+    return True
+
+
+def _wait_ina_oc_confirm(
+    sim_state: Any | None,
+    pre_bus: dict[int, float] | None,
+    *,
+    cut_ch: int | None,
+) -> bool:
+    import sensors
+
+    if sensors.SIM_MODE:
+        return True
+    mode = str(getattr(cfg, "COMMISSIONING_OCBUS_CONFIRM_MODE", "current"))
+    if mode.lower().strip() in ("", "none"):
+        return True
+    deadline = time.monotonic() + float(
+        getattr(cfg, "COMMISSIONING_OC_CONFIRM_TIMEOUT_S", 0.5)
+    )
+    while time.monotonic() < deadline:
+        readings = _sensor_readings(sim_state)
+        if _ina_confirm_off(readings, pre_bus, cut_ch=cut_ch, mode=mode):
+            return True
+        time.sleep(0.005)
+    return False
+
+
+@contextmanager
+def _commissioning_pwm_hz_context(controller: Any) -> Any:
+    alt = getattr(cfg, "COMMISSIONING_PWM_HZ", None)
+    if alt is None:
+        yield
+        return
+    base = int(cfg.PWM_FREQUENCY_HZ)
+    try:
+        controller._pwm.set_pwm_frequency_hz(int(alt))
+        yield
+    finally:
+        controller._pwm.set_pwm_frequency_hz(base)
+
+
 def _instant_off_ref_mv_and_restore(
     controller: Controller,
     reference: ReferenceElectrode,
     sim_state: Any | None,
+    *,
+    log: Callable[[str], None] | None = None,
 ) -> tuple[float, float | None]:
     """
-    Snapshot PWM duties, all channels off, dwell at OC, read reference, restore exact
-    duties via set_duty, then one controller.update() tick (sim duties synced first).
-
-    The next FSM step still uses restored _pwm.duty(ch) as current_duty (control.py);
-    OPEN channels already had saved duty 0.
-    Returns (raw_mv_at_instant, shift_mv) where shift = native_mv − raw.
+    OC sample: save duties → cut → (INA219 confirm) → ADS curve + inflection
+    (or legacy dwell + read) → restore duties via set_duty → one update tick.
     """
+
     saved_duties = {
         ch: float(controller._pwm.duty(ch)) for ch in range(cfg.NUM_CHANNELS)
     }
-    controller._pwm.all_off()
-    time.sleep(INSTANT_OFF_WINDOW_S)
-    raw_inst = float(reference.read())
-    shift: float | None = None
-    if reference.native_mv is not None:
-        shift = round(float(reference.native_mv) - raw_inst, 2)
-    for ch, duty in saved_duties.items():
-        controller._pwm.set_duty(ch, duty)
+    curve_on = bool(getattr(cfg, "COMMISSIONING_OC_CURVE_ENABLED", True))
+    sequential = bool(getattr(cfg, "COMMISSIONING_OC_SEQUENTIAL_CHANNELS", False))
+
+    def _pre_bus_snapshot() -> dict[int, float] | None:
+        mode = str(getattr(cfg, "COMMISSIONING_OCBUS_CONFIRM_MODE", "current"))
+        if mode.lower().strip() in ("", "none"):
+            return None
+        return _snapshot_bus_v(_sensor_readings(sim_state))
+
+    def _one_cut_and_sample(cut_ch: int | None) -> float:
+        pre_bus = _pre_bus_snapshot()
+        if cut_ch is None:
+            controller._pwm.all_off()
+        else:
+            for c in range(cfg.NUM_CHANNELS):
+                controller._pwm.set_duty(c, 0.0 if c == cut_ch else saved_duties[c])
+        if not _wait_ina_oc_confirm(sim_state, pre_bus, cut_ch=cut_ch):
+            w = (
+                "WARNING: INA219 off-confirm timed out; continuing with ADS/ref OC read "
+                "(degraded — tune COMMISSIONING_OC_CONFIRM_* / OCBUS_*)."
+            )
+            print(f"[commission {time.strftime('%H:%M:%S')}] {w}")
+            if log is not None:
+                log(w)
+        if curve_on:
+            samples = reference.collect_oc_decay_samples()
+            return float(find_oc_inflection_mv(samples))
+        time.sleep(INSTANT_OFF_WINDOW_S)
+        return float(reference.read())
+
+    with _commissioning_pwm_hz_context(controller):
+        if sequential:
+            raw_vals: list[float] = []
+            for cut_ch in range(cfg.NUM_CHANNELS):
+                raw_vals.append(_one_cut_and_sample(cut_ch))
+                if log is not None:
+                    log(
+                        f"  OC sequential CH{cut_ch}: inflection {raw_vals[-1]:.1f} mV "
+                        f"(using min across CH for shift)"
+                    )
+                for ch, duty in saved_duties.items():
+                    controller._pwm.set_duty(ch, duty)
+                if sim_state is not None:
+                    sim_state.duties = dict(saved_duties)
+                readings = _sensor_readings(sim_state)
+                controller.update(readings)
+                if sim_state is not None:
+                    sim_state.duties = controller.duties()
+            raw_inst = min(raw_vals)
+        else:
+            raw_inst = _one_cut_and_sample(None)
+            for ch, duty in saved_duties.items():
+                controller._pwm.set_duty(ch, duty)
+
     if sim_state is not None:
         sim_state.duties = dict(saved_duties)
     readings = _sensor_readings(sim_state)
     controller.update(readings)
     if sim_state is not None:
         sim_state.duties = controller.duties()
+
+    shift: float | None = None
+    if reference.native_mv is not None:
+        shift = round(float(reference.native_mv) - raw_inst, 2)
     return raw_inst, shift
 
 
@@ -122,26 +259,33 @@ def run(
         if verbose:
             print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
 
+    native_n = int(getattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_COUNT", 30))
+    native_iv = float(getattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S", 2.0))
+
     # Phase 1 — native potential
     log("Phase 1 — measuring native corrosion potential")
     controller._pwm.all_off()
     log(f"Channels off. Settling {COMMISSIONING_SETTLE_S}s ...")
     _pump_control(controller, sim_state, float(COMMISSIONING_SETTLE_S))
 
-    log("Averaging 30 reference (INA219) samples ...")
+    log(
+        f"Averaging {native_n} reference samples "
+        f"({native_iv:g}s apart, ~{native_n * native_iv:.0f}s window) ..."
+    )
     samples: list[float] = []
-    for _ in range(30):
-        readings = _sensor_readings(sim_state)
-        controller.update(readings)
-        if sim_state is not None:
-            sim_state.duties = controller.duties()
-        samples.append(
-            reference.read(
-                duties=controller.duties(),
-                statuses=controller.channel_statuses(),
+    with _commissioning_pwm_hz_context(controller):
+        for _ in range(native_n):
+            readings = _sensor_readings(sim_state)
+            controller.update(readings)
+            if sim_state is not None:
+                sim_state.duties = controller.duties()
+            samples.append(
+                reference.read(
+                    duties=controller.duties(),
+                    statuses=controller.channel_statuses(),
+                )
             )
-        )
-        time.sleep(0.1)
+            time.sleep(native_iv)
 
     native_mv = round(sum(samples) / len(samples), 2)
     reference.save_native(native_mv)
@@ -155,6 +299,17 @@ def run(
     log("Phase 2 — ramping current toward target polarization")
     current_target_ma = max(cfg.TARGET_MA * 0.1, 0.05)
     confirm_count = 0
+    curve_on = bool(getattr(cfg, "COMMISSIONING_OC_CURVE_ENABLED", True))
+    if curve_on:
+        if bool(getattr(cfg, "COMMISSIONING_OC_DURATION_MODE", False)):
+            ds = float(getattr(cfg, "COMMISSIONING_OC_CURVE_DURATION_S", 3.0))
+            oc_desc = f"OC duration {ds:g}s window + inflection, duty restore"
+        else:
+            burst_n = int(getattr(cfg, "COMMISSIONING_OC_BURST_SAMPLES", 20))
+            burst_iv = float(getattr(cfg, "COMMISSIONING_OC_BURST_INTERVAL_S", 0.01))
+            oc_desc = f"OC curve {burst_n}×{burst_iv:g}s + inflection, duty restore"
+    else:
+        oc_desc = f"dwell {INSTANT_OFF_WINDOW_S:.1f}s + single read"
 
     while current_target_ma <= cfg.MAX_MA:
         cfg.TARGET_MA = round(current_target_ma, 3)
@@ -164,11 +319,9 @@ def run(
         )
         _pump_control(controller, sim_state, RAMP_SETTLE_S)
 
-        log(
-            f"  OC ref sample (0% PWM {INSTANT_OFF_WINDOW_S:.1f}s, read, restore duties) …"
-        )
+        log(f"  instant-off ({oc_desc}) …")
         raw, shift = _instant_off_ref_mv_and_restore(
-            controller, reference, sim_state
+            controller, reference, sim_state, log=log if verbose else None
         )
         shift_str = f"{shift:.1f}" if shift is not None else "N/A"
         log(
@@ -193,7 +346,7 @@ def run(
     log(f"Phase 3 — locking in at {current_target_ma:.3f} mA/ch")
     _pump_control(controller, sim_state, min(RAMP_SETTLE_S, 2.0))
     _final_raw, final_shift = _instant_off_ref_mv_and_restore(
-        controller, reference, sim_state
+        controller, reference, sim_state, log=log if verbose else None
     )
     _update_comm_file(
         {

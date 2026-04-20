@@ -218,3 +218,28 @@ def ads1115_read_single_ended(
     if val & 0x8000:
         val -= 65536
     return val * _ads1115_volts_per_lsb(fsr_v)
+
+
+def ads1115_start_single_shot(
+    bus: Any, addr: int, channel: int, fsr_v: float, dr: int = 5
+) -> int:
+    """Write config register to start a single-shot conversion; returns config word."""
+    cfg = _ads1115_config_word(channel, fsr_v, dr=dr)
+    bus.write_i2c_block_data(addr, 0x01, [(cfg >> 8) & 0xFF, cfg & 0xFF])
+    return int(cfg)
+
+
+def ads1115_config_os_ready(bus: Any, addr: int) -> bool:
+    """True if ADS1115 config bit 15 (OS) indicates conversion complete / not busy."""
+    hi, lo = bus.read_i2c_block_data(addr, 0x01, 2)
+    status = ((hi << 8) | lo) & 0xFFFF
+    return bool(status & 0x8000)
+
+
+def ads1115_read_conversion_volts(bus: Any, addr: int, fsr_v: float) -> float:
+    """Read conversion register (0x00) as signed voltage vs full-scale."""
+    raw = bus.read_i2c_block_data(addr, 0x00, 2)
+    val = (raw[0] << 8) | raw[1]
+    if val & 0x8000:
+        val -= 65536
+    return val * _ads1115_volts_per_lsb(fsr_v)

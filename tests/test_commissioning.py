@@ -24,6 +24,8 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(ref_mod, "_COMM_FILE", comm_path)
 
     monkeypatch.setattr(commissioning, "COMMISSIONING_SETTLE_S", 0)
+    monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_COUNT", 1)
+    monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S", 0.0)
     monkeypatch.setattr(commissioning, "RAMP_SETTLE_S", 0.0)
     monkeypatch.setattr(commissioning, "CONFIRM_TICKS", 1)
     monkeypatch.setattr(commissioning, "TARGET_RAMP_STEP_MA", 0.05)

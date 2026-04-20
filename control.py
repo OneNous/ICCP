@@ -135,6 +135,17 @@ class PWMBank:
         for ch in range(cfg.NUM_CHANNELS):
             self.set_duty(ch, 0.0)
 
+    def set_pwm_frequency_hz(self, hz: int) -> None:
+        """Change PWM carrier on all channels (RPi.GPIO 0.7+). No-op in sim or if unset."""
+        hz = int(max(1, hz))
+        if _SIM or not self._pwm:
+            return
+        for p in self._pwm:
+            try:
+                p.ChangeFrequency(hz)
+            except Exception:
+                pass
+
     def cleanup(self) -> None:
         self.all_off()
         if not _SIM:

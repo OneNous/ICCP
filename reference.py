@@ -12,6 +12,7 @@ SIM_MODE: COILSHIELD_SIM=1 uses simulated readings (no hardware).
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import statistics
@@ -31,6 +32,7 @@ _ref_ina: object | None = None
 _ref_smbus: Any | None = None
 _REF_INIT_ERROR: str | None = None
 _REF_I2C_BUS: int = int(getattr(cfg, "REF_I2C_BUS", cfg.I2C_BUS))
+_ADS_ALRT_GPIO_SETUP: bool = False
 
 
 def _ina219_scalar_mv(sensor: object, source: str) -> float:
@@ -181,11 +183,12 @@ def _read_raw_mv_hw() -> float:
         fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
         scale = float(getattr(cfg, "REF_ADS_SCALE", 1.0))
         n = max(1, int(getattr(cfg, "REF_ADS_MEDIAN_SAMPLES", getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1))))
+        dr = int(getattr(cfg, "REF_ADS1115_DR", 5))
         if n == 1:
-            v = ads1115_read_single_ended(_ref_smbus, addr, ch, fsr)
+            v = ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr)
             return v * 1000.0 * scale
         samples = [
-            ads1115_read_single_ended(_ref_smbus, addr, ch, fsr) * 1000.0 * scale
+            ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr) * 1000.0 * scale
             for _ in range(n)
         ]
         return float(statistics.median(samples))
@@ -210,6 +213,118 @@ def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> floa
     # Under CP the mV-like scalar falls vs native; model raw = native − effect so
     # shift_mv = native − raw stays positive when protected (matches hardware).
     return round(native - shift + random.gauss(0, 1.5), 2)
+
+
+def find_oc_inflection_mv(
+    samples: list[tuple[float, float]],
+    *,
+    skip_rates: int | None = None,
+    tail_exclude: float | None = None,
+) -> float:
+    """
+    Pick mV at the decay-curve knee: minimum |dV/dt| over a guarded window of
+    finite-difference rates (avoids IR-collapse tail and final flat tail).
+    """
+    if not samples:
+        return 0.0
+    if len(samples) < 4:
+        return float(samples[-1][1])
+
+    skip = int(
+        skip_rates
+        if skip_rates is not None
+        else getattr(cfg, "COMMISSIONING_OC_INFLECTION_SKIP_RATES", 3)
+    )
+    tail = float(
+        tail_exclude
+        if tail_exclude is not None
+        else getattr(cfg, "COMMISSIONING_OC_INFLECTION_TAIL_EXCLUDE", 0.2)
+    )
+
+    rates: list[float] = []
+    for i in range(1, len(samples)):
+        dt = float(samples[i][0] - samples[i - 1][0])
+        dv = abs(float(samples[i][1]) - float(samples[i - 1][1]))
+        rates.append(dv / max(dt, 1e-9))
+
+    n_rates = len(rates)
+    k_lo = max(0, min(skip, n_rates - 2))
+    tail_n = max(0, int(n_rates * tail))
+    k_hi = max(k_lo + 1, n_rates - tail_n)
+    if k_hi <= k_lo:
+        return float(samples[len(samples) // 2][1])
+
+    sub = rates[k_lo:k_hi]
+    # Round so near-identical |dV/dt| from float noise does not pick a late
+    # segment; then prefer the earliest index on ties (first knee in window).
+    best = min(range(len(sub)), key=lambda j: (round(sub[j], 6), j))
+    k = k_lo + best
+    return float(samples[k + 1][1])
+
+
+def _ensure_ads_alrt_gpio() -> int | None:
+    """One-time BCM setup for ADS1115 ALERT/RDY (open-drain, active low)."""
+    global _ADS_ALRT_GPIO_SETUP
+    if SIM_MODE:
+        return None
+    pin = getattr(cfg, "ADS1115_ALRT_GPIO", None)
+    if pin is None:
+        return None
+    if not _ADS_ALRT_GPIO_SETUP:
+        import RPi.GPIO as GPIO  # noqa: N814
+
+        GPIO.setwarnings(False)
+        GPIO.setup(int(pin), GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        _ADS_ALRT_GPIO_SETUP = True
+    return int(pin)
+
+
+def _read_ads_mv_scaled_once(
+    *,
+    dr: int,
+    use_alrt: bool,
+    median_subsamples: int,
+) -> float:
+    """Single ADS1115 sample → mV-like scalar (mux, scale)."""
+    from i2c_bench import (
+        _ads1115_dr_conversion_s,
+        ads1115_config_os_ready,
+        ads1115_read_conversion_volts,
+        ads1115_read_single_ended,
+        ads1115_start_single_shot,
+        mux_select_on_bus,
+    )
+
+    if _ref_smbus is None:
+        raise RuntimeError("[reference] ADS1115 bus not open")
+
+    mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+    mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
+    mux_select_on_bus(_ref_smbus, mux_addr, mux_ch)
+    addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
+    ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
+    fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
+    scale = float(getattr(cfg, "REF_ADS_SCALE", 1.0))
+    pin = _ensure_ads_alrt_gpio() if use_alrt else None
+
+    def _one_volt() -> float:
+        if pin is not None and use_alrt:
+            import RPi.GPIO as GPIO  # noqa: N814
+
+            ads1115_start_single_shot(_ref_smbus, addr, ch, fsr, dr=dr)
+            t_wait = _ads1115_dr_conversion_s(dr) * 2.0 + 0.005
+            if not ads1115_config_os_ready(_ref_smbus, addr):
+                GPIO.wait_for_edge(pin, GPIO.FALLING, timeout=t_wait)
+            if not ads1115_config_os_ready(_ref_smbus, addr):
+                time.sleep(_ads1115_dr_conversion_s(dr) * 1.25 + 0.001)
+            return float(ads1115_read_conversion_volts(_ref_smbus, addr, fsr))
+        return float(ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr))
+
+    n_sub = max(1, int(median_subsamples))
+    if n_sub == 1:
+        return round(_one_volt() * 1000.0 * scale, 4)
+    sub = [_one_volt() * 1000.0 * scale for _ in range(n_sub)]
+    return round(float(statistics.median(sub)), 4)
 
 
 class ReferenceElectrode:
@@ -274,6 +389,90 @@ class ReferenceElectrode:
         if self.native_mv is None:
             return raw, None
         return raw, round(self.native_mv - raw, 2)
+
+    def collect_oc_decay_samples(self) -> list[tuple[float, float]]:
+        """
+        After PWM cut: (elapsed_s, mV-like) points for OC inflection pick.
+        INA219 ref backend → single sample (or time series in duration mode);
+        SIM → synthetic decay; ADS1115 → burst or duration-window sampling.
+        """
+        dr = int(getattr(cfg, "COMMISSIONING_ADS1115_DR", 7))
+        med_sub = max(1, int(getattr(cfg, "COMMISSIONING_OC_ADS_MEDIAN_SAMPLES", 1)))
+        use_alrt = bool(
+            not SIM_MODE
+            and getattr(cfg, "ADS1115_ALRT_GPIO", None) is not None
+            and str(getattr(cfg, "REF_ADC_BACKEND", "ads1115")).lower() == "ads1115"
+        )
+        duration_mode = bool(getattr(cfg, "COMMISSIONING_OC_DURATION_MODE", False))
+        n = max(1, int(getattr(cfg, "COMMISSIONING_OC_BURST_SAMPLES", 20)))
+        interval = float(getattr(cfg, "COMMISSIONING_OC_BURST_INTERVAL_S", 0.01))
+        duration_s = max(0.05, float(getattr(cfg, "COMMISSIONING_OC_CURVE_DURATION_S", 3.0)))
+        poll_s = max(0.0, float(getattr(cfg, "COMMISSIONING_OC_CURVE_POLL_S", 0.002)))
+
+        def _sim_point(elapsed: float) -> tuple[float, float]:
+            base = float(getattr(cfg, "SIM_NATIVE_ZINC_MV", 200.0))
+            mv = base - 45.0 * (1.0 - math.exp(-elapsed / 0.08)) + random.gauss(0, 0.8)
+            return elapsed, round(mv, 2)
+
+        if SIM_MODE:
+            t0 = time.monotonic()
+            out: list[tuple[float, float]] = []
+            if duration_mode:
+                while time.monotonic() - t0 < duration_s:
+                    elapsed = time.monotonic() - t0
+                    out.append(_sim_point(elapsed))
+                    time.sleep(poll_s if poll_s > 0 else interval)
+            else:
+                for _ in range(n):
+                    elapsed = time.monotonic() - t0
+                    out.append(_sim_point(elapsed))
+                    time.sleep(max(0.0, interval))
+            return out
+
+        backend = str(getattr(cfg, "REF_ADC_BACKEND", "ads1115")).lower()
+        if backend == "ina219":
+            if duration_mode and poll_s > 0.0:
+                t0 = time.monotonic()
+                series: list[tuple[float, float]] = []
+                while time.monotonic() - t0 < duration_s:
+                    elapsed = time.monotonic() - t0
+                    try:
+                        v = float(self.read())
+                    except Exception:
+                        v = 0.0
+                    series.append((elapsed, v))
+                    time.sleep(poll_s)
+                if series:
+                    return series
+            try:
+                v = float(self.read())
+            except Exception:
+                v = 0.0
+            return [(0.0, v)]
+
+        samples: list[tuple[float, float]] = []
+        t0 = time.monotonic()
+        if duration_mode:
+            while time.monotonic() - t0 < duration_s:
+                elapsed = time.monotonic() - t0
+                mv = _read_ads_mv_scaled_once(
+                    dr=dr,
+                    use_alrt=use_alrt,
+                    median_subsamples=med_sub,
+                )
+                samples.append((elapsed, float(mv)))
+                time.sleep(poll_s if poll_s > 0 else interval)
+        else:
+            for _ in range(n):
+                elapsed = time.monotonic() - t0
+                mv = _read_ads_mv_scaled_once(
+                    dr=dr,
+                    use_alrt=use_alrt,
+                    median_subsamples=med_sub,
+                )
+                samples.append((elapsed, float(mv)))
+                time.sleep(max(0.0, interval))
+        return samples
 
     def protection_status(self, shift_mv: float | None = None) -> str:
         """Band vs TARGET_SHIFT_MV / MAX_SHIFT_MV for shift = native − raw (not a CP survey criterion)."""

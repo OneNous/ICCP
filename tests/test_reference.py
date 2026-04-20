@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 import config.settings as cfg
@@ -61,6 +63,20 @@ def test_ina219_scalar_mv_bus_and_shunt() -> None:
 
     assert _ina219_scalar_mv(f, "bus_v") == 200.0
     assert _ina219_scalar_mv(f, "shunt_mv") == 15.5
+
+
+def test_collect_oc_decay_samples_duration_mode_sim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """COMMISSIONING_OC_DURATION_MODE samples over a wall-time window (SIM)."""
+    monkeypatch.setattr(cfg, "COMMISSIONING_OC_DURATION_MODE", True)
+    monkeypatch.setattr(cfg, "COMMISSIONING_OC_CURVE_DURATION_S", 0.06)
+    monkeypatch.setattr(cfg, "COMMISSIONING_OC_CURVE_POLL_S", 0.0)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    ref = ReferenceElectrode()
+    pts = ref.collect_oc_decay_samples()
+    assert len(pts) >= 4
+    assert all(isinstance(p[0], float) and isinstance(p[1], float) for p in pts)
 
 
 def test_protection_status_from_shift(monkeypatch: pytest.MonkeyPatch) -> None:

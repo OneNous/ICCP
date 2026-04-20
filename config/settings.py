@@ -23,8 +23,12 @@ ADS1115_ADDRESS = 0x48
 ADS1115_BUS = 1
 ADS1115_CHANNEL = 0
 ADS1115_FSR_V = 4.096
-# Median of N single-ended reads per sample (noise on long leads).
-REF_ADS_MEDIAN_SAMPLES = 1
+# BCM pin for ADS1115 ALERT/RDY (conversion-ready, active low). None = poll config register only.
+ADS1115_ALRT_GPIO: int | None = 24
+# Median of N single-ended reads per sample (noise on long leads / PWM pickup).
+REF_ADS_MEDIAN_SAMPLES = 5
+# Data rate bits 0..7 for routine reference reads (5 = 250 SPS). Commissioning curve uses COMMISSIONING_ADS1115_DR.
+REF_ADS1115_DR = 5
 # Multiply ADC volts (after ×1000) for divider scaling vs. electrode node.
 REF_ADS_SCALE = 1.0
 
@@ -124,7 +128,17 @@ FAULT_RETRY_INTERVAL_S = 60.0
 FAULT_RETRY_MAX = 10
 
 # --- PWM ---
-PWM_FREQUENCY_HZ = 1000
+# Anode drive: RPi.GPIO software PWM on all channels (`control.PWMBank`).
+# Frequency tradeoffs (cell + wiring dependent):
+#   ~100 Hz — default below: harmonics stay low; less capacitive / inductive pickup
+#             on long reference jumpers, ADS1115, and shared I2C vs mid-audio PWM;
+#             larger electrolyte / double-layer ripple at a given duty; wiring or
+#             coil may be faintly audible.
+#   ~1 kHz — smaller low-frequency ripple (drive looks “more DC” to the cell);
+#             switching often couples into measurement runs; was a common bench default.
+#   ≥20 kHz — inaudible; energy pushed above much ADC settling bandwidth (layout
+#             still dominates); soft-PWM duty resolution and gate losses — verify on scope.
+PWM_FREQUENCY_HZ = 100
 PWM_STEP = 1
 PWM_MIN_DUTY = 1
 PWM_MAX_DUTY = 80
@@ -166,6 +180,30 @@ COMMISSIONING_RAMP_SETTLE_S = 80.0
 COMMISSIONING_INSTANT_OFF_S = 2.0
 # Phase 2: current increment per ramp step (mA). Larger steps → fewer instant-offs per mA range.
 COMMISSIONING_RAMP_STEP_MA = 0.1
+# Phase 1 native baseline: sample count and spacing (e.g. 30 × 2 s ≈ 60 s).
+COMMISSIONING_NATIVE_SAMPLE_COUNT = 30
+COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S = 2.0
+# OC decay curve + inflection (Phase 2/3 instant-off).
+COMMISSIONING_OC_CURVE_ENABLED = True
+COMMISSIONING_OC_BURST_SAMPLES = 20
+COMMISSIONING_OC_BURST_INTERVAL_S = 0.01
+# Alternative to fixed burst count: sample for a wall-time window (slow OC knees / tap water).
+COMMISSIONING_OC_DURATION_MODE = False
+COMMISSIONING_OC_CURVE_DURATION_S = 3.0
+COMMISSIONING_OC_CURVE_POLL_S = 0.002
+COMMISSIONING_ADS1115_DR = 7
+COMMISSIONING_OC_ADS_MEDIAN_SAMPLES = 1
+COMMISSIONING_OC_INFLECTION_SKIP_RATES = 3
+COMMISSIONING_OC_INFLECTION_TAIL_EXCLUDE = 0.2
+# Per-channel cut → ref curve (diagnostics); False = all channels off together.
+COMMISSIONING_OC_SEQUENTIAL_CHANNELS = False
+# INA219 gate before ADS curve: none | current | delta_v | both
+COMMISSIONING_OCBUS_CONFIRM_MODE = "current"
+COMMISSIONING_OC_CONFIRM_I_MA = 0.15
+COMMISSIONING_OCBUS_MAX_DELTA_V = 0.05
+COMMISSIONING_OC_CONFIRM_TIMEOUT_S = 0.5
+# Optional PWM Hz override only during OC / sensitive commissioning paths (None = no change).
+COMMISSIONING_PWM_HZ: int | None = None
 SIM_NATIVE_ZINC_MV = 200.0
 
 # --- Simulator ---

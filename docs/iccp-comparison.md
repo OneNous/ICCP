@@ -2,7 +2,7 @@
 
 This document compares **classical impressed-current cathodic protection (ICCP)** as used on ships and buried pipelines with **what this repository implements** (CoilShield HVAC coil hardware + Raspberry Pi firmware). It is for engineering context, not a product compliance claim.
 
-**Hardware note:** CoilShield uses a **Raspberry Pi**, **five [INA219](https://www.ti.com/product/INA219)** boards on one I2C bus — **four** for anode channel current/bus (`sensors.py`) and **one** dedicated to the **reference electrode** (`reference.py`, `REF_INA219_ADDRESS`) — plus **PWM-driven MOSFETs** per anode channel.
+**Hardware note:** CoilShield uses a **Raspberry Pi**, **five [INA219](https://www.ti.com/product/INA219)** boards on one I2C bus — **four** for anode channel current/bus (`sensors.py`) and **one** dedicated to the **reference electrode** (`reference.py`, `REF_INA219_ADDRESS`) — plus **PWM-driven MOSFETs** per anode channel. Anode **soft-PWM defaults to 100 Hz** (`PWM_FREQUENCY_HZ` in `config/settings.py`): that favors **quieter coupling** into reference/ADS and I2C vs **~1 kHz**; **≥20 kHz** is an alternative when you want switching **above** audio/ADC bands—see the comment block on that setting for ripple vs EMI tradeoffs.
 
 For a line-by-line mapping of common ICCP claims to code paths, see [iccp-vs-coilshield.md](iccp-vs-coilshield.md).
 
@@ -130,7 +130,7 @@ flowchart TB
 
 **Commissioning**
 
-- On first run (no `commissioning.json`), commissioning averages the reference with channels off → **`native_mv`**, then ramps by **`COMMISSIONING_RAMP_STEP_MA`**: after each **`COMMISSIONING_RAMP_SETTLE_S`** regulate segment, PWM duties are saved, outputs are held at **0%** for **`COMMISSIONING_INSTANT_OFF_S`**, the reference is read at open circuit, duties are restored exactly, then one control tick runs; **shift** = `native_mv − reading`; when shift ≥ **`TARGET_SHIFT_MV`** for five consecutive steps, **`commissioned_target_ma`** is stored for `TARGET_MA` on subsequent starts (`main.py`). Longer **`COMMISSIONING_INSTANT_OFF_S`** improves OC settling but interrupts CP longer each sample.
+- On first run (no `commissioning.json`), commissioning averages the reference with channels off → **`native_mv`** using **`COMMISSIONING_NATIVE_SAMPLE_COUNT`** samples at **`COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S`** spacing, then ramps by **`COMMISSIONING_RAMP_STEP_MA`**: after each **`COMMISSIONING_RAMP_SETTLE_S`** regulate segment, PWM duties are saved, outputs go to **0%** (simultaneous or **`COMMISSIONING_OC_SEQUENTIAL_CHANNELS`** per channel), an **INA219 off-confirm** step gates the following ADC read, then **`COMMISSIONING_OC_CURVE_ENABLED`** drives a **short ADS1115 burst** (or a **`COMMISSIONING_OC_DURATION_MODE`** time window with **`COMMISSIONING_OC_CURVE_DURATION_S`** / **`COMMISSIONING_OC_CURVE_POLL_S`**) at high data rate and **`find_oc_inflection_mv`** picks the OC scalar (legacy mode: **`COMMISSIONING_INSTANT_OFF_S`** dwell + single read). Duties return via **`set_duty`** only, then one control tick; **shift** = `native_mv − reading`; when shift ≥ **`TARGET_SHIFT_MV`** for five consecutive steps, **`commissioned_target_ma`** is stored for `TARGET_MA` on subsequent starts (`main.py`). **`REF_ADS_MEDIAN_SAMPLES`** denoises routine reference reads; **`ADS1115_ALRT_GPIO`** (e.g. **24**) can synchronize conversion-ready on hardware; optional **`COMMISSIONING_PWM_HZ`** trades PWM frequency during Phase 1 / instant-off commissioning vs **`PWM_FREQUENCY_HZ`** for noise coupling.
 
 ---
 
