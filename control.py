@@ -4,7 +4,8 @@ CoilShield ICCP — per-channel control loop.
 Design principles:
   - Path FSM: OPEN / REGULATE / PROTECTING (+ FAULT), from measured I and Z = V/I.
   - OPEN: no reliable path → 0% duty. REGULATE: approach current toward TARGET_MA
-    with PWM_STEP ramps under Vcell duty cap. PROTECTING: fine servo at TARGET_MA.
+    with per-mode PWM_STEP_* ramps (optional per-channel CHANNEL_PWM_STEP_* dicts) under Vcell
+    duty cap. PROTECTING: fine servo at TARGET_MA.
   - Internal path class (PATH_OPEN / PATH_WEAK / PATH_STRONG) drives transitions;
     PROTECTING requires PATH_STRONG plus near-target hysteresis.
   - OPEN hysteresis needs measurable I for finite Z; at I≈0 without drive, classify
@@ -25,6 +26,7 @@ import time
 from collections import deque
 
 import config.settings as cfg
+from sensors import ina219_read_failure_expected_idle
 
 _SIM = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
@@ -39,6 +41,41 @@ PATH_STRONG = "PATH_STRONG"
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+def pwm_ramp_step(ch: int, *, regulating: bool, increasing: bool) -> float:
+    """
+    PWM duty delta (% per control tick) for this channel, mode, and direction.
+
+    Per-channel dicts (CHANNEL_PWM_STEP_*_REGULATE / _PROTECTING) override the global
+    PWM_STEP_* scalars for that index only. getattr(..., cfg.PWM_STEP) keeps older
+    configs that only define PWM_STEP.
+    """
+    base = float(cfg.PWM_STEP)
+    if regulating:
+        global_key = (
+            "PWM_STEP_UP_REGULATE" if increasing else "PWM_STEP_DOWN_REGULATE"
+        )
+        channel_key = (
+            "CHANNEL_PWM_STEP_UP_REGULATE"
+            if increasing
+            else "CHANNEL_PWM_STEP_DOWN_REGULATE"
+        )
+    else:
+        global_key = (
+            "PWM_STEP_UP_PROTECTING"
+            if increasing
+            else "PWM_STEP_DOWN_PROTECTING"
+        )
+        channel_key = (
+            "CHANNEL_PWM_STEP_UP_PROTECTING"
+            if increasing
+            else "CHANNEL_PWM_STEP_DOWN_PROTECTING"
+        )
+    m = getattr(cfg, channel_key, None)
+    if isinstance(m, dict) and ch in m:
+        return float(m[ch])
+    return float(getattr(cfg, global_key, base))
 
 
 def duty_pct_cap_for_vcell(bus_v: float, cfg) -> float:
@@ -207,6 +244,34 @@ class Controller:
         """When True, `update()` keeps all PWM off but still evaluates read errors and FAULT recovery."""
         self._thermal_pause = bool(active)
 
+    def _any_drive_intent(self, readings: dict[int, dict]) -> bool:
+        """True if any channel is regulating, driven, or reporting wet-scale current."""
+        wet_ma = float(getattr(cfg, "CHANNEL_WET_THRESHOLD_MA", 0.15))
+        for ch in range(cfg.NUM_CHANNELS):
+            st = self._states[ch].status
+            if st in (ChannelState.REGULATE, ChannelState.PROTECTING):
+                return True
+            if self._pwm.duty(ch) >= 0.06:
+                return True
+            r = readings.get(ch, {})
+            if r.get("ok") and float(r.get("current", 0) or 0) > wet_ma:
+                return True
+        return False
+
+    def _ina219_idle_benign_ch(self, ch: int, readings: dict[int, dict]) -> bool:
+        """Transient I2C while PWM idle and FSM not conducting — not a live CP fault."""
+        r = readings.get(ch, {})
+        if r.get("ok"):
+            return False
+        return ina219_read_failure_expected_idle(
+            ok=False,
+            error=r.get("error"),
+            duty_pct=self._pwm.duty(ch),
+            fsm_state=self._states[ch].status,
+            current_ma=float(r.get("current", 0) or 0),
+            bus_v=float(r.get("bus_v", 0) or 0),
+        )
+
     def update(self, readings: dict[int, dict]) -> tuple[list[str], bool]:
         self._faults = []
         self._check_clear_fault()
@@ -222,15 +287,16 @@ class Controller:
                     self._maybe_auto_clear_fault(ch, state, r)
                 elif not r.get("ok"):
                     self._pwm.set_duty(ch, 0.0)
-                    extra = ""
-                    if "bus_v" in r or "shunt_mv" in r:
-                        extra = (
-                            f"  last bus_v={r.get('bus_v', '—')}  "
-                            f"shunt_mv={r.get('shunt_mv', '—')}"
+                    if not self._ina219_idle_benign_ch(ch, readings):
+                        extra = ""
+                        if "bus_v" in r or "shunt_mv" in r:
+                            extra = (
+                                f"  last bus_v={r.get('bus_v', '—')}  "
+                                f"shunt_mv={r.get('shunt_mv', '—')}"
+                            )
+                        self._faults.append(
+                            f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
                         )
-                    self._faults.append(
-                        f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
-                    )
                     if state.status != ChannelState.FAULT:
                         state.status = ChannelState.OPEN
                 else:
@@ -251,7 +317,20 @@ class Controller:
             for ch in range(cfg.NUM_CHANNELS)
             if not readings.get(ch, {}).get("ok")
         ]
-        if failed_reads and bool(getattr(cfg, "INA219_FAILSAFE_ALL_OFF", True)):
+        suppress_read_faults = (
+            bool(failed_reads)
+            and not self._any_drive_intent(readings)
+            and all(
+                readings.get(ch, {}).get("ok")
+                or self._ina219_idle_benign_ch(ch, readings)
+                for ch in range(cfg.NUM_CHANNELS)
+            )
+        )
+        if (
+            failed_reads
+            and bool(getattr(cfg, "INA219_FAILSAFE_ALL_OFF", True))
+            and not suppress_read_faults
+        ):
             # Do not regulate a subset of channels while others are unreadable (unsafe).
             self._pwm.all_off()
             for ch, state in enumerate(self._states):
@@ -298,15 +377,16 @@ class Controller:
             if not r.get("ok"):
                 state.overcurrent_streak = 0
                 self._pwm.set_duty(ch, 0.0)
-                extra = ""
-                if "bus_v" in r or "shunt_mv" in r:
-                    extra = (
-                        f"  last bus_v={r.get('bus_v', '—')}  "
-                        f"shunt_mv={r.get('shunt_mv', '—')}"
+                if not self._ina219_idle_benign_ch(ch, readings):
+                    extra = ""
+                    if "bus_v" in r or "shunt_mv" in r:
+                        extra = (
+                            f"  last bus_v={r.get('bus_v', '—')}  "
+                            f"shunt_mv={r.get('shunt_mv', '—')}"
+                        )
+                    self._faults.append(
+                        f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
                     )
-                self._faults.append(
-                    f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
-                )
                 if state.status != ChannelState.FAULT:
                     state.status = ChannelState.OPEN
                 continue
@@ -412,24 +492,35 @@ class Controller:
             if status == ChannelState.OPEN:
                 self._pwm.set_duty(ch, 0.0)
             elif status == ChannelState.REGULATE:
+                idle_off = float(getattr(cfg, "REGULATE_IDLE_OFF_BELOW_MA", 0.05))
+                if idle_off > 0.0 and abs(current_ma) < idle_off:
+                    # No measurable conduction — default off; do not ramp duty chasing TARGET_MA.
+                    self._pwm.set_duty(ch, 0.0)
+                    continue
                 lo, hi = probe_duty, hi_ramp
-                step = float(cfg.PWM_STEP)
                 if current_duty > hi:
+                    step = pwm_ramp_step(ch, regulating=True, increasing=False)
                     new_duty = max(hi, current_duty - step)
                 elif current_duty < lo:
                     new_duty = lo
                 elif current_ma < target_ma:
+                    step = pwm_ramp_step(ch, regulating=True, increasing=True)
                     new_duty = min(current_duty + step, hi)
                 elif current_ma > target_ma * 1.05:
+                    step = pwm_ramp_step(ch, regulating=True, increasing=False)
                     new_duty = max(lo, current_duty - step)
                 else:
                     new_duty = current_duty
                 self._pwm.set_duty(ch, new_duty)
             elif status == ChannelState.PROTECTING:
                 if current_ma < target_ma:
-                    new_duty = current_duty + cfg.PWM_STEP
+                    new_duty = current_duty + pwm_ramp_step(
+                        ch, regulating=False, increasing=True
+                    )
                 elif current_ma > target_ma * 1.05:
-                    new_duty = current_duty - cfg.PWM_STEP
+                    new_duty = current_duty - pwm_ramp_step(
+                        ch, regulating=False, increasing=False
+                    )
                 else:
                     new_duty = current_duty
                 self._pwm.set_duty(ch, clamp(new_duty, 0.0, hi_protect))

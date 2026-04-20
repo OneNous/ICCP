@@ -706,21 +706,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border-bottom: none;
   }
 
+  /* N columns from --ch-cols (NUM_CHANNELS). MUST use minmax(0,1fr): plain 1fr uses an
+     implicit min-content minimum and wide inner grids make tracks overlap visually. */
   .ch-grid {
     display: grid;
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
-    /* auto-fit + floor width: cards wrap instead of four ultra-narrow overlapping columns */
-    grid-template-columns: repeat(
-      auto-fit,
-      minmax(min(100%, var(--ch-card-min, 260px)), 1fr)
-    );
+    grid-template-columns: repeat(var(--ch-cols, 4), minmax(0, 1fr));
     gap: 16px;
     margin-bottom: 24px;
     align-items: start;
   }
-  @media (max-width: 520px) {
+  @media (max-width: 1180px) {
+    .ch-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 560px) {
     .ch-grid {
       grid-template-columns: minmax(0, 1fr);
     }
@@ -732,8 +735,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     padding: 14px;
     min-width: 0;
     max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
     overflow-x: hidden;
     overflow-y: visible;
+    position: relative;
+    isolation: isolate;
   }
   .ch-card .ch-label {
     font-size: 11px;
@@ -754,6 +761,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .state-PROTECTING { background: var(--green-bg); color: var(--green); }
   .state-REGULATE { background: var(--amber-bg); color: var(--amber); }
   .state-OPEN { background: var(--gray-bg); color: var(--gray-text); }
+  .state-OFF { background: var(--gray-bg); color: var(--gray-text); }
   .state-DRY { background: var(--gray-bg); color: var(--gray-text); }
   .state-DORMANT { background: var(--gray-bg); color: var(--gray-text); }
   .state-PROBING { background: var(--amber-bg); color: var(--amber); }
@@ -858,6 +866,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .ok { color: var(--green); font-weight: 600; }
   .low { color: var(--amber); font-weight: 600; }
   .err { color: var(--red); font-weight: 600; }
+  .off { color: var(--gray-text); font-weight: 600; }
   .dry { color: var(--csp-text-muted); font-weight: 500; }
 
   .sim-badge {
@@ -898,6 +907,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .stale { color: var(--red); font-weight: 700; }
   .ch-extra .sensor-ok { color: var(--green); font-weight: 600; }
   .ch-extra .sensor-bad { color: var(--red); font-weight: 600; }
+  .ch-extra .sensor-off { color: var(--gray-text); font-weight: 600; }
   .ch-extra .elec-zero {
     display: inline-block;
     margin-top: 4px;
@@ -1048,7 +1058,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <h2 class="section-title">Channels</h2>
       <span style="font-size:12px;color:var(--csp-text-muted)">Live from latest.json</span>
     </div>
-    <div class="ch-grid" id="ch-grid"></div>
+    <div class="ch-grid" id="ch-grid" style="--ch-cols: __NUM_CH__"></div>
   </section>
 
   <div class="section" id="trends">
@@ -1152,6 +1162,7 @@ const STATUS_HINT = {
   OK: 'On target: current and path look healthy for this tick.',
   LOW: 'Marginal: current or path is below expectations; monitor.',
   ERR: 'Sensor or read failed for this channel; values may not reflect the anode.',
+  OFF: 'Outputs idle: transient I2C (e.g. errno 5) while PWM at 0% — not treated as a live fault.',
   DRY: 'Treated as dry / non-conductive path by the state machine.',
   OPEN: 'Output path open or not in closed regulation.',
   OPEN_CIRCUIT: 'Very low current; treated as open path.',
@@ -1202,7 +1213,7 @@ for (let i = 0; i < NUM_CH; i++) {
           <span class="dl-v"><span id="eff-${i}">—</span><span class="muted"> mA/%</span></span>
         </div>
         <div class="dl-row">
-          <span class="dl-k" title="Controller health flag: OK on target; LOW marginal; ERR bad read; DRY/OPEN not in closed conducting path.">Channel health</span>
+          <span class="dl-k" title="Controller health flag: OK on target; LOW marginal; ERR bad read; OFF idle bus glitch; DRY/OPEN not in closed conducting path.">Channel health</span>
           <span class="dl-v"><span id="status-${i}">—</span></span>
         </div>
       </div>
@@ -1668,6 +1679,7 @@ async function fetchLive() {
       st.title = STATUS_HINT[stt] || 'Channel status from the controller.';
       st.className = stt === 'OK' ? 'ok'
         : stt === 'ERR' ? 'err'
+        : stt === 'OFF' ? 'off'
         : (stt === 'DRY' || stt === 'OPEN') ? 'dry' : 'low';
       const pw = ch.power_w;
       document.getElementById(`pow-${i}`).textContent =
@@ -1680,8 +1692,13 @@ async function fetchLive() {
         (typeof ef === 'number' && Number.isFinite(ef)) ? ef.toFixed(3) : '—';
 
       const sens = document.getElementById(`sens-${i}`);
-      sens.textContent = readingOk ? 'OK' : 'NO READ';
-      sens.className = readingOk ? 'sensor-ok' : 'sensor-bad';
+      if (stt === 'OFF') {
+        sens.textContent = 'OFF';
+        sens.className = 'sensor-off';
+      } else {
+        sens.textContent = readingOk ? 'OK' : 'NO READ';
+        sens.className = readingOk ? 'sensor-ok' : 'sensor-bad';
+      }
       const se = (ch.sensor_error && String(ch.sensor_error).trim()) || '';
       const cerr = document.getElementById(`ch-err-${i}`);
       if (cerr) {

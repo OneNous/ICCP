@@ -7,6 +7,7 @@ optional diagnostics live in one module.
 
 from __future__ import annotations
 
+import signal
 import sys
 import time
 import traceback
@@ -44,6 +45,19 @@ def run_iccp_forever(args: Namespace) -> int:
     ref = ReferenceElectrode()
     leds = StatusLEDs(use_hw_gpio)
     log = DataLogger()
+
+    def _signal_pwm_off(signum: int, _frame) -> None:
+        """Best-effort: drive anodes off before exit (SIGKILL cannot be caught)."""
+        try:
+            ctrl._pwm.all_off()
+        except Exception:
+            pass
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _signal_pwm_off)
+    signal.signal(signal.SIGINT, _signal_pwm_off)
 
     leds.setup()
 

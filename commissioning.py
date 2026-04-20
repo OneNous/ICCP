@@ -524,7 +524,13 @@ def run(
     controller._pwm.all_off()
     _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
     log(f"Channels off. Settling {COMMISSIONING_SETTLE_S}s ...")
-    _pump_control(controller, sim_state, float(COMMISSIONING_SETTLE_S))
+    # _pump_control calls update() each tick; without thermal pause the FSM can still
+    # enter REGULATE/PROTECTING from shunt readings — contradicting “gates closed” Phase 1.
+    controller.set_thermal_pause(True)
+    try:
+        _pump_control(controller, sim_state, float(COMMISSIONING_SETTLE_S))
+    finally:
+        controller.set_thermal_pause(False)
 
     controller._pwm.all_off()
     if sim_state is not None:

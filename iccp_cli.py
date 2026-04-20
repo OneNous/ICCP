@@ -129,6 +129,32 @@ def _cmd_version() -> int:
     return 0
 
 
+def _warn_if_runtime_may_be_active() -> None:
+    """If latest.json is fresh, another controller process may still own GPIO + telemetry."""
+    try:
+        import time
+
+        import config.settings as cfg
+
+        p = cfg.LOG_DIR / getattr(cfg, "LATEST_JSON_NAME", "latest.json")
+        if not p.is_file():
+            return
+        age = time.time() - p.stat().st_mtime
+        thr = max(5.0, 4.0 * float(getattr(cfg, "SAMPLE_INTERVAL_S", 1.0)))
+        if age >= thr:
+            return
+        print(
+            "[iccp commission] WARNING: "
+            f"{p.name} was updated {age:.1f}s ago (threshold {thr:.0f}s). "
+            "If main.py or systemd is still running the controller, stop it before commissioning: "
+            "two processes share the same PWM GPIO and the dashboard reads latest.json from the "
+            "runtime, not this CLI — you will see REGULATE / non-zero duty while logs say 'channels off'.",
+            file=sys.stderr,
+        )
+    except OSError:
+        pass
+
+
 def _cmd_commission(rest: list[str]) -> int:
     """Run commissioning.run() — same sequence as first boot of main.py (no --skip-commission)."""
     use_sim = "--sim" in rest
@@ -206,6 +232,9 @@ def main() -> int:
     os.chdir(root)
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
+
+    if cmd in ("commission", "--commission", "-commission"):
+        _warn_if_runtime_may_be_active()
 
     if cmd in ("-start", "--start", "start"):
         os.environ.setdefault("COILSHIELD_SIM", "0")

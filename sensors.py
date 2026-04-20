@@ -35,6 +35,53 @@ SIM_MODE: bool = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 ChannelReading = dict[str, Any]
 
+# Substrings of ``reading["error"]`` treated as bus glitches when outputs are idle
+# (not wiring faults like NACK / DeviceRangeError overflow).
+_I2C_TRANSIENT_ERR_MARKERS: tuple[str, ...] = (
+    "ERRNO 5",
+    "INPUT/OUTPUT ERROR",
+    "[ERRNO 5]",
+    "REMOTE I/O ERROR",
+    "[ERRNO 121]",
+)
+
+
+def ina219_read_failure_expected_idle(
+    *,
+    ok: bool,
+    error: object,
+    duty_pct: float,
+    fsm_state: str,
+    current_ma: float,
+    bus_v: float,
+    duty_idle_max: float = 0.06,
+) -> bool:
+    """
+    True when an INA219 read failed but the channel is not driving CP and the
+    error looks like a transient bus glitch (not overflow / addressing).
+
+    Used so idle stacks do not log ERR / READ ERROR for errno-5 noise while PWM
+    is at 0% and the FSM is not in a closed conducting state.
+    """
+    if ok:
+        return False
+    err_u = (str(error) if error is not None else "").upper()
+    if "DEVICERANGEERROR" in err_u or (
+        "OUT OF RANGE" in err_u and "OVERFLOW" in err_u
+    ):
+        return False
+    if not any(m in err_u for m in _I2C_TRANSIENT_ERR_MARKERS):
+        return False
+    if float(duty_pct) > float(duty_idle_max):
+        return False
+    st = str(fsm_state)
+    if st in ("REGULATE", "PROTECTING", "FAULT"):
+        return False
+    if abs(float(current_ma)) > 1e-4 or abs(float(bus_v)) > 0.08:
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Real hardware path — four INA219 boards, one channel each
 # ---------------------------------------------------------------------------

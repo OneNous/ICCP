@@ -83,8 +83,8 @@ I2C_MUX_CHANNEL_INA219: int | None = None
 # Per anode index 0..NUM_CHANNELS-1: TCA9548A port before that INA219 (bytes 0x01,0x02,0x04,0x08).
 I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
 # After selecting a mux downstream port, optional settle time before talking to INA219/ADS.
-# Leave 0 unless you see sporadic ``[Errno 5] Input/output error`` on I2C; try 0.0002–0.001.
-I2C_MUX_POST_SELECT_DELAY_S: float = 0.0
+# Non-zero reduces ``[Errno 5] Input/output error`` when switching TCA9548A → ADS1115 / INA219.
+I2C_MUX_POST_SELECT_DELAY_S: float = 0.0005
 # If any anode INA219 read fails in a tick, force 0% PWM on every non-FAULT channel (OPEN).
 # Prevents regulating CH1/2 while CH3/4 are blind — the usual cause of “anodes should be off
 # but total mA is still high” during I2C storms. Set False only if you intentionally regulate
@@ -149,6 +149,10 @@ Z_COMPUTE_I_A_MIN = 1e-6
 # Floor in REGULATE: ramp up with PWM_STEP; ceiling is Vcell-capped PWM_MAX
 # (no separate “staging %” caps — current/bus/overcurrent limits are the guards).
 DUTY_PROBE = 3.0
+# REGULATE: hold **0%% PWM** while sensed |I| is below this (mA). Prevents duty runaway on
+# open / ultra-high-Z paths (dashboard “~60%% duty, 0 mA” with script still logically idle).
+# Set to **0** to disable and restore legacy ramp-from-DUTY_PROBE behavior.
+REGULATE_IDLE_OFF_BELOW_MA = 0.05
 # PROTECTING duty ceiling (%); keep in line with PWM_MAX_DUTY unless you intentionally cap lower.
 DUTY_PROTECT_MAX = 80.0
 
@@ -190,7 +194,24 @@ OVERCURRENT_LATCH_TICKS = 1
 #   ≥20 kHz — inaudible; energy pushed above much ADC settling bandwidth (layout
 #             still dominates); soft-PWM duty resolution and gate losses — verify on scope.
 PWM_FREQUENCY_HZ = 100
+# Base step (% duty per control tick). Used as default when the per-mode keys below are omitted
+# (code uses getattr(..., PWM_STEP)).
 PWM_STEP = 1
+# Finer ramp tuning: % duty added or removed per SAMPLE_INTERVAL_S tick in each state/direction.
+# Defaults mirror PWM_STEP; override any key for asymmetric or mode-specific ramps. Smaller values
+# slow ramps; effective %/s ≈ step / SAMPLE_INTERVAL_S. On hardware, PWMBank still sends
+# int(round(duty)) to RPi.GPIO each tick, so sub-integer steps accumulate in software before the pin moves.
+PWM_STEP_UP_REGULATE = PWM_STEP
+PWM_STEP_DOWN_REGULATE = PWM_STEP
+PWM_STEP_UP_PROTECTING = PWM_STEP
+PWM_STEP_DOWN_PROTECTING = PWM_STEP
+# Per-anode ramp overrides (0-based channel index). Omit a key to use that direction’s global
+# PWM_STEP_* value above. Lets one channel ramp faster or slower than the others independently.
+# Example: CHANNEL_PWM_STEP_UP_REGULATE = {0: 2.0, 2: 0.5}  → CH1 faster up, CH3 slower up.
+CHANNEL_PWM_STEP_UP_REGULATE: dict = {}
+CHANNEL_PWM_STEP_DOWN_REGULATE: dict = {}
+CHANNEL_PWM_STEP_UP_PROTECTING: dict = {}
+CHANNEL_PWM_STEP_DOWN_PROTECTING: dict = {}
 PWM_MIN_DUTY = 1
 PWM_MAX_DUTY = 80
 
@@ -263,7 +284,8 @@ COMMISSIONING_SHIFT_CONFIRM_TOLERANCE = 0.9
 COMMISSIONING_PHASE1_OFF_VERIFY = True
 COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S = 3.0
 # Stricter ceiling (mA) for “at rest” before native averaging — abort if exceeded after long settle.
-COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA = 0.1
+# Keep in line with COMMISSIONING_OC_CONFIRM_I_MA so bench parasitic / INA offset does not abort Phase 1.
+COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA = 1.0
 # OC decay curve + inflection (Phase 2/3 instant-off).
 COMMISSIONING_OC_CURVE_ENABLED = True
 # Post-cutoff potential spike: industry practice treats ~0.3 s of inductive/capacitive
@@ -288,9 +310,10 @@ COMMISSIONING_OC_REPOLARIZE_S = 10.0
 COMMISSIONING_OC_SEQUENTIAL_CHANNELS = False
 # INA219 gate before ADS curve: none | current | delta_v | both
 COMMISSIONING_OCBUS_CONFIRM_MODE = "current"
-COMMISSIONING_OC_CONFIRM_I_MA = 0.15
+# Bench rigs often show ~0.5–1 mA |I| at 0%% PWM (offset / leakage); 0.15 mA was too tight.
+COMMISSIONING_OC_CONFIRM_I_MA = 1.0
 COMMISSIONING_OCBUS_MAX_DELTA_V = 0.05
-COMMISSIONING_OC_CONFIRM_TIMEOUT_S = 0.5
+COMMISSIONING_OC_CONFIRM_TIMEOUT_S = 1.5
 # Optional PWM Hz override only during OC / sensitive commissioning paths (None = no change).
 COMMISSIONING_PWM_HZ: int | None = None
 SIM_NATIVE_ZINC_MV = 200.0

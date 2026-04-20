@@ -26,7 +26,7 @@ daily_totals: per-calendar-day chN_ma_s (mA·s), chN_wet_s (seconds PROTECTING),
 Per-channel derived telemetry (latest.json + CSV; see also readings.cross_*):
   σ_proxy = 1/Z, smoothed FQI ≈ EMA(I/V), z_std_ohm, z_rate_ohm_s, dV_dI_ohm,
   efficiency_ma_per_pct, surface_hint (DRY / FILM_FORMING / STABLE_WET / SATURATED),
-  energy_today_j, reading_ok (INA219 sample succeeded). System cross-channel: i_cv, z_cv (pstdev/mean when ≥2 channels OK).
+  energy_today_j, reading_ok (INA219 sample succeeded, or idle-bus benign for transient I2C while PWM off). System cross-channel: i_cv, z_cv (pstdev/mean when ≥2 channels OK).
 
 CSV vs SQLite/latest.json:
   SQLite and latest.json are written every control tick (near real-time).
@@ -50,6 +50,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import config.settings as cfg
+from sensors import ina219_read_failure_expected_idle
 
 
 def _cell_impedance_ohm(bus_v: float, current_ma: float) -> float:
@@ -531,7 +532,19 @@ class DataLogger:
                 bus_v = 0.0
             duty = round(float(duties.get(i, 0.0)), 1)
             state = (ch_status or {}).get(i, "UNKNOWN")
-            status = _channel_health(ok, state, ma) if ok else "ERR"
+            benign_idle = (not ok) and ina219_read_failure_expected_idle(
+                ok=False,
+                error=r.get("error"),
+                duty_pct=duty,
+                fsm_state=state,
+                current_ma=ma,
+                bus_v=bus_v,
+            )
+            status = (
+                "OFF"
+                if benign_idle
+                else (_channel_health(ok, state, ma) if ok else "ERR")
+            )
             z_ohm = _cell_impedance_ohm(bus_v, ma) if ok else 0.0
             v_cell = _cell_voltage_v(bus_v, duty) if ok else 0.0
             p_w = _dc_power_w(bus_v, ma) if ok else 0.0
@@ -589,7 +602,7 @@ class DataLogger:
             )
 
             sensor_err = ""
-            if not ok:
+            if not ok and not benign_idle:
                 raw_err = r.get("error")
                 if raw_err is not None:
                     sensor_err = str(raw_err).strip()[:400]
@@ -606,6 +619,7 @@ class DataLogger:
                 "power_w": p_w,
                 "z_delta_ohm": z_delta,
                 "_reading_ok": ok,
+                "_benign_idle_read": benign_idle,
                 "z_std_ohm": z_std,
                 "sigma_proxy_s": sigma_s,
                 "fqi_raw_s": fqi_raw,
@@ -675,8 +689,10 @@ class DataLogger:
 
         def _ch_public(d: dict) -> dict:
             out = {k: v for k, v in d.items() if not k.startswith("_")}
-            if "_reading_ok" in d:
-                out["reading_ok"] = bool(d["_reading_ok"])
+            if "_reading_ok" in d or d.get("_benign_idle_read"):
+                out["reading_ok"] = bool(d.get("_reading_ok")) or bool(
+                    d.get("_benign_idle_read")
+                )
             return out
 
         public_channels: dict[str, dict] = {

@@ -51,6 +51,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
         update=lambda readings: None,
         duties=lambda: {i: 40.0 for i in range(cfg.NUM_CHANNELS)},
         channel_statuses=lambda: {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)},
+        set_thermal_pause=lambda _active: None,
     )
 
     commissioning.run(ref, ctrl, sim_state=sensors.SimSensorState(), verbose=False)
