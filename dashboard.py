@@ -1080,8 +1080,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <a href="/api/sessions?hours=720&amp;limit=5000" download="wet_sessions.json">↓ Wet sessions JSON</a>
       </div>
     </div>
-    <p class="chart-legend" style="font-size:12px;color:var(--csp-text-muted);margin:0 0 8px"><strong>Legend:</strong> Target = setpoint (mA mode); CH1–CH__NUM_CH__ = per-channel; Total mA = sum of channels. DB series is downsampled; the live tail updates from <code>latest.json</code> between refreshes.</p>
-    <p class="chart-note">Downsampled from SQLite for performance. Legend toggling is disabled so lines stay visible.</p>
+    <p class="chart-legend" style="font-size:12px;color:var(--csp-text-muted);margin:0 0 8px"><strong>Legend:</strong> Target = setpoint (mA mode); CH1–CH__NUM_CH__ = per-channel; Total mA = sum of channels. Click legend labels to show or hide series (at least one line stays on). DB is downsampled; the live tail updates from <code>latest.json</code> between refreshes.</p>
+    <p class="chart-note">Downsampled from SQLite for performance.</p>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
   </div>
 
@@ -1157,6 +1157,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <script>
 const CH_COLORS = ['var(--ch0)','var(--ch1)','var(--ch2)','var(--ch3)','var(--ch4)'];
+/* Hex for Chart.js line borders — canvas stroke does not resolve CSS var(). */
+const CHART_CH_HEX = ['#0369a1', '#0f766e', '#c2410c', '#b91c1c', '#6d28d9'];
+const CHART_TARGET_HEX = '#9333ea';
+const CHART_TOTAL_HEX = '#0891b2';
 const NUM_CH = __NUM_CH__;
 const STATUS_HINT = {
   OK: 'On target: current and path look healthy for this tick.',
@@ -1269,27 +1273,43 @@ const ctx = document.getElementById('chart').getContext('2d');
 const TOTAL_DS = NUM_CH + 1;
 const MAX_CHART_POINTS = 2400;
 
+function dashLegendClickHandler(evt, legendItem, legend) {
+  const ch = legend.chart;
+  const idx = legendItem.datasetIndex;
+  if (idx == null || idx < 0) return;
+  const visible = ch.isDatasetVisible(idx);
+  if (visible) {
+    let n = 0;
+    for (let i = 0; i < ch.data.datasets.length; i++) {
+      if (ch.isDatasetVisible(i)) n++;
+    }
+    if (n <= 1) return;
+  }
+  ch.setDatasetVisibility(idx, !visible);
+  ch.update('none');
+}
+
 chart = new Chart(ctx, {
   type: 'line',
   data: {
     labels: [],
     datasets: [
       {
-        label: 'Target', data: [], borderColor: '#94a3b8',
-        borderDash: [5, 5], borderWidth: 1.5, pointRadius: 0,
+        label: 'Target', data: [], borderColor: CHART_TARGET_HEX,
+        borderDash: [6, 4], borderWidth: 2, pointRadius: 0,
         fill: false, tension: 0, hidden: false,
       },
       ...Array.from({length: NUM_CH}, (_, i) => ({
         label: `CH${i+1}`,
-        data: [], borderColor: CH_COLORS[i],
+        data: [], borderColor: CHART_CH_HEX[i % CHART_CH_HEX.length],
         backgroundColor: 'transparent',
-        borderWidth: 1.5, pointRadius: 0, tension: 0.2, fill: false, hidden: false,
+        borderWidth: 2, pointRadius: 0, tension: 0.2, fill: false, hidden: false,
       })),
       {
         label: 'Total mA',
         data: [],
-        borderColor: '#475569',
-        borderWidth: 1.8,
+        borderColor: CHART_TOTAL_HEX,
+        borderWidth: 2.2,
         pointRadius: 0,
         tension: 0.15,
         fill: false,
@@ -1303,9 +1323,8 @@ chart = new Chart(ctx, {
     plugins: {
       legend: {
         position: 'top',
-        labels: { boxWidth: 12, font: { size: 12 } },
-        /* Avoid click-to-hide: an empty chart when all series are toggled off. */
-        onClick: () => {},
+        labels: { boxWidth: 14, font: { size: 12 }, usePointStyle: false },
+        onClick: dashLegendClickHandler,
       },
       tooltip: { callbacks: { label: ctx => {
         const u = chartMetric === 'impedance' ? 'Ω' : 'mA';
