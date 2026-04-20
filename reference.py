@@ -313,8 +313,10 @@ def _read_ads_mv_scaled_once(
 
             ads1115_start_single_shot(_ref_smbus, addr, ch, fsr, dr=dr)
             t_wait = _ads1115_dr_conversion_s(dr) * 2.0 + 0.005
+            # RPi.GPIO wait_for_edge timeout is integer milliseconds, not seconds.
+            timeout_ms = max(1, int(math.ceil(t_wait * 1000.0)))
             if not ads1115_config_os_ready(_ref_smbus, addr):
-                GPIO.wait_for_edge(pin, GPIO.FALLING, timeout=t_wait)
+                GPIO.wait_for_edge(pin, GPIO.FALLING, timeout=timeout_ms)
             if not ads1115_config_os_ready(_ref_smbus, addr):
                 time.sleep(_ads1115_dr_conversion_s(dr) * 1.25 + 0.001)
             return float(ads1115_read_conversion_volts(_ref_smbus, addr, fsr))
