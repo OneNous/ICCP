@@ -191,15 +191,15 @@ def _verify_phase1_drive_off(
     log: Callable[[str], None] | None,
 ) -> None:
     """
-    After Phase 1 settle: confirm MOSFETs are commanded off and shunts show no CP current.
-    Logs warnings on failure; does not abort commissioning.
+    Confirm MOSFETs are commanded 0% and shunts show no CP current (Phase 1, open-circuit).
+    Call after all_off(), before or after the long settle per product wiring; logs only.
     """
     if not bool(getattr(cfg, "COMMISSIONING_PHASE1_OFF_VERIFY", True)):
         return
 
     pwm_ok, pwm_issues = _pwm_duties_all_zero(controller)
     if not pwm_ok:
-        msg = "WARNING: PWM not at 0% after settle — " + "; ".join(pwm_issues)
+        msg = "WARNING: PWM not at 0% when commanding off — " + "; ".join(pwm_issues)
         print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
         if log is not None:
             log(msg)
@@ -215,16 +215,19 @@ def _verify_phase1_drive_off(
             "WARNING: shunt current still ≥ "
             f"{i_max:g} mA on one or more channels after {t_out:g}s — "
             + ("; ".join(shunt_issues) if shunt_issues else "check wiring / leakage")
-            + "; native baseline may be biased."
+            + "; shunts may still be decaying before long settle — native baseline may be biased."
         )
         print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
         if log is not None:
             log(msg)
     else:
+        nch = int(getattr(cfg, "NUM_CHANNELS", 4))
         ok_msg = (
-            f"Phase 1 off-check: all PWM 0% and |I| < {i_max:g} mA per channel "
+            f"Phase 1 off-check: all {nch} channels PWM 0% and |I| < {i_max:g} mA "
             "(gates closed, no CP drive through shunts)."
         )
+        ts = f"[commission {time.strftime('%H:%M:%S')}]"
+        print(f"{ts} {ok_msg}")
         if log is not None:
             log(ok_msg)
 
@@ -358,13 +361,13 @@ def run(
     # Phase 1 — native potential
     log("Phase 1 — measuring native corrosion potential")
     controller._pwm.all_off()
+    _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
     log(f"Channels off. Settling {COMMISSIONING_SETTLE_S}s ...")
     _pump_control(controller, sim_state, float(COMMISSIONING_SETTLE_S))
 
     controller._pwm.all_off()
     if sim_state is not None:
         sim_state.duties = controller.duties()
-    _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
 
     log(
         f"Averaging {native_n} reference samples "
@@ -413,7 +416,13 @@ def run(
         else:
             burst_n = int(getattr(cfg, "COMMISSIONING_OC_BURST_SAMPLES", 20))
             burst_iv = float(getattr(cfg, "COMMISSIONING_OC_BURST_INTERVAL_S", 0.01))
-            oc_desc = f"OC curve {burst_n}×{burst_iv:g}s + inflection, duty restore"
+            if burst_iv <= 0.0:
+                oc_desc = (
+                    f"OC curve {burst_n} samples back-to-back (ADC-paced), "
+                    "inflection, duty restore"
+                )
+            else:
+                oc_desc = f"OC curve {burst_n}×{burst_iv:g}s + inflection, duty restore"
     else:
         oc_desc = f"dwell {INSTANT_OFF_WINDOW_S:.1f}s + single read"
 
