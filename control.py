@@ -246,6 +246,45 @@ class Controller:
         staging_ceiling = float(cfg.PWM_MAX_DUTY)
         probe_floor = min(float(cfg.DUTY_PROBE), staging_ceiling)
 
+        failed_reads = [
+            ch
+            for ch in range(cfg.NUM_CHANNELS)
+            if not readings.get(ch, {}).get("ok")
+        ]
+        if failed_reads and bool(getattr(cfg, "INA219_FAILSAFE_ALL_OFF", True)):
+            # Do not regulate a subset of channels while others are unreadable (unsafe).
+            self._pwm.all_off()
+            for ch, state in enumerate(self._states):
+                r = readings.get(ch, {})
+                if state.status == ChannelState.FAULT:
+                    self._pwm.set_duty(ch, 0.0)
+                    if state.latch_message:
+                        self._faults.append(state.latch_message)
+                    self._maybe_auto_clear_fault(ch, state, r)
+                    continue
+                state.overcurrent_streak = 0
+                if not r.get("ok"):
+                    extra = ""
+                    if "bus_v" in r or "shunt_mv" in r:
+                        extra = (
+                            f"  last bus_v={r.get('bus_v', '—')}  "
+                            f"shunt_mv={r.get('shunt_mv', '—')}"
+                        )
+                    self._faults.append(
+                        f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
+                    )
+                if state.status != ChannelState.FAULT:
+                    state.status = ChannelState.OPEN
+            chs = ", ".join(str(c + 1) for c in failed_reads)
+            self._faults.append(
+                "Outputs: all channels forced OPEN (0% PWM) — "
+                f"sensor read failed on CH {chs}; fix I2C before regulating."
+            )
+            self._fault_latched = any(
+                s.status == ChannelState.FAULT for s in self._states
+            )
+            return self._faults, self._fault_latched
+
         for ch, state in enumerate(self._states):
             r = readings.get(ch, {})
 

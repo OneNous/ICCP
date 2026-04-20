@@ -85,6 +85,11 @@ I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
 # After selecting a mux downstream port, optional settle time before talking to INA219/ADS.
 # Leave 0 unless you see sporadic ``[Errno 5] Input/output error`` on I2C; try 0.0002–0.001.
 I2C_MUX_POST_SELECT_DELAY_S: float = 0.0
+# If any anode INA219 read fails in a tick, force 0% PWM on every non-FAULT channel (OPEN).
+# Prevents regulating CH1/2 while CH3/4 are blind — the usual cause of “anodes should be off
+# but total mA is still high” during I2C storms. Set False only if you intentionally regulate
+# partial buses (not recommended on a shared TCA9548A rig).
+INA219_FAILSAFE_ALL_OFF: bool = True
 
 # Dedicated INA219 for reference electrode.
 # On the SAME bus as anodes: address must not collide with INA219_ADDRESSES (e.g. 0x42,

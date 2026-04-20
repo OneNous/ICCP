@@ -500,15 +500,16 @@ def _read_ads_mv_scaled_once(
         ads1115_read_single_ended,
         ads1115_start_single_shot,
         ads1115_wait_os_ready,
+        i2c_bus_lock,
         mux_select_on_bus,
     )
 
     if _ref_smbus is None:
         raise RuntimeError("[reference] ADS1115 bus not open")
 
+    busnum = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))
     mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
     mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
-    mux_select_on_bus(_ref_smbus, mux_addr, mux_ch)
     addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
     ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
     fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
@@ -613,10 +614,27 @@ def _read_ads_mv_scaled_once(
         return float(ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr))
 
     n_sub = max(1, int(median_subsamples))
-    if n_sub == 1:
-        return round(_one_volt() * 1000.0 * scale, 4)
-    sub = [_one_volt() * 1000.0 * scale for _ in range(n_sub)]
-    return round(float(statistics.median(sub)), 4)
+    # Same bus as anode INA219 reads: serialize with i2c_bus_lock + errno-5 retry
+    # (matches _read_raw_mv_hw). OC burst used to interleave without the lock → EIO.
+    for attempt in range(2):
+        try:
+            with i2c_bus_lock(busnum):
+                mux_select_on_bus(_ref_smbus, mux_addr, mux_ch)
+                if n_sub == 1:
+                    return round(_one_volt() * 1000.0 * scale, 4)
+                sub = [_one_volt() * 1000.0 * scale for _ in range(n_sub)]
+                return round(float(statistics.median(sub)), 4)
+        except OSError as e:
+            if getattr(e, "errno", None) == 5 and attempt == 0:
+                time.sleep(0.003)
+                continue
+            print(f"[reference] ADS1115 read failed: {e}")
+            return 0.0
+        except Exception as e:
+            print(f"[reference] ADS1115 read failed: {e}")
+            return 0.0
+    print("[reference] ADS1115 read failed: repeated I/O error (errno 5)")
+    return 0.0
 
 
 class ReferenceElectrode:

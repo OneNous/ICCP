@@ -438,7 +438,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     animation: pulse 2s infinite;
   }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
-  main { max-width: 1400px; margin: 0 auto; padding: 20px; }
+  main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+    min-width: 0;
+  }
 
   .skip-link {
     position: absolute;
@@ -606,14 +611,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin: 0;
     min-width: 0;
   }
+  /* Two minmax(0,…) columns: "auto" on values let long numbers set min-content width
+     and blew grid tracks so channel cards drew on top of each other. */
   .ref-dl .dl-row, .ch-dl .dl-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px 12px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px 10px;
     padding: 6px 0;
     border-bottom: 1px solid var(--csp-border);
     font-size: 13px;
-    align-items: baseline;
+    align-items: start;
     min-width: 0;
   }
   .ref-dl .dl-row:last-child, .ch-dl .dl-row:last-child { border-bottom: none; }
@@ -629,6 +636,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    hyphens: manual;
   }
   .ch-ma-row .dl-k { font-weight: 700; color: var(--csp-text); }
   .ch-ma-row .dl-v .ch-ma { font-size: 1.75rem; }
@@ -701,15 +711,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
-    /* Equal columns; minmax(0,1fr) prevents content min-width from blowing the grid */
-    grid-template-columns: repeat(var(--ch-cols, 4), minmax(0, 1fr));
+    /* auto-fit + floor width: cards wrap instead of four ultra-narrow overlapping columns */
+    grid-template-columns: repeat(
+      auto-fit,
+      minmax(min(100%, var(--ch-card-min, 260px)), 1fr)
+    );
     gap: 16px;
     margin-bottom: 24px;
-  }
-  @media (max-width: 1020px) {
-    .ch-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
+    align-items: start;
   }
   @media (max-width: 520px) {
     .ch-grid {
@@ -724,6 +733,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     min-width: 0;
     max-width: 100%;
     overflow-x: hidden;
+    overflow-y: visible;
   }
   .ch-card .ch-label {
     font-size: 11px;
@@ -749,7 +759,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .state-PROBING { background: var(--amber-bg); color: var(--amber); }
   .state-FAULT { background: var(--red-bg); color: var(--red); }
   .state-UNKNOWN { background: var(--gray-bg); color: var(--gray-text); }
-  .ch-ma { font-size: 26px; font-weight: 700; line-height: 1; margin-bottom: 4px; }
+  .ch-ma {
+    font-size: clamp(1.1rem, 2.8vw + 0.6rem, 1.65rem);
+    font-weight: 700;
+    line-height: 1.15;
+    margin-bottom: 4px;
+  }
   .ch-ma small { font-size: 13px; font-weight: 400; color: var(--csp-text-muted); }
   .ch-meta { margin-top: 4px; }
 
@@ -760,6 +775,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     padding: 18px;
     margin-bottom: 24px;
     box-shadow: 0 1px 3px rgba(43, 43, 43, 0.06);
+    min-width: 0;
   }
   .section-header {
     display: flex;
@@ -938,7 +954,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <article class="kpi-tile">
         <h3>Total power</h3>
         <p class="kpi-value" id="kpi-total-pw">—</p>
-        <p class="kpi-caption">Σ V×I (control proxy)</p>
+        <p class="kpi-caption" id="kpi-total-pw-cap">Σ V×I (control proxy)</p>
       </article>
       <article class="kpi-tile">
         <h3>PROTECTING</h3>
@@ -1032,7 +1048,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <h2 class="section-title">Channels</h2>
       <span style="font-size:12px;color:var(--csp-text-muted)">Live from latest.json</span>
     </div>
-    <div class="ch-grid" id="ch-grid" style="--ch-cols: __NUM_CH__"></div>
+    <div class="ch-grid" id="ch-grid"></div>
   </section>
 
   <div class="section" id="trends">
@@ -1362,6 +1378,17 @@ function fmtOpt(x, digits, suffix = '') {
   return n.toFixed(digits) + suffix;
 }
 
+/** Watts from latest.json; extra decimals when |P| < 0.01 W so small totals are visible. */
+function fmtPowerW(w) {
+  if (w == null || w === '') return '—';
+  const n = Number(w);
+  if (!Number.isFinite(n)) return '—';
+  const a = Math.abs(n);
+  if (a === 0) return '0.000 W';
+  if (a < 0.01) return n.toFixed(6) + ' W';
+  return n.toFixed(3) + ' W';
+}
+
 function paintChannelUnknown(i) {
   const stateEl = document.getElementById(`state-${i}`);
   stateEl.textContent = 'UNKNOWN';
@@ -1494,13 +1521,30 @@ async function fetchLive() {
       ? ' · unix ' + d.ts_unix : '';
     document.getElementById('ts').textContent = (d.ts || '—') + tsExtra;
 
-    document.getElementById('kpi-total-ma').textContent =
-      (d.total_ma != null && d.total_ma !== '') ? `${fmtOpt(d.total_ma, 4)} mA` : '—';
-    document.getElementById('kpi-total-cap').textContent =
-      `Target (global) ${fmtOpt(d.target_ma, 3)} mA`;
     const tpw = d.total_power_w;
-    document.getElementById('kpi-total-pw').textContent =
-      (tpw != null && tpw !== '') ? `${Number(tpw).toFixed(3)} W` : '—';
+    const lastMaStr = (d.total_ma != null && d.total_ma !== '') ? fmtOpt(d.total_ma, 4) : null;
+    const lastPwNum = (tpw != null && tpw !== '') ? Number(tpw) : null;
+    const pwCapEl = document.getElementById('kpi-total-pw-cap');
+    if (stale) {
+      document.getElementById('kpi-total-ma').textContent = '—';
+      document.getElementById('kpi-total-cap').textContent = lastMaStr != null
+        ? `Not live · last file had ΣI = ${lastMaStr} mA · target (global) ${fmtOpt(d.target_ma, 3)} mA`
+        : `Not live · target (global) ${fmtOpt(d.target_ma, 3)} mA`;
+      document.getElementById('kpi-total-pw').textContent = '—';
+      if (pwCapEl) {
+        pwCapEl.textContent = (lastPwNum != null && Number.isFinite(lastPwNum))
+          ? `Not live · last file had ΣV×I = ${fmtPowerW(lastPwNum)}`
+          : 'Not live · Σ V×I (control proxy)';
+      }
+    } else {
+      document.getElementById('kpi-total-ma').textContent =
+        lastMaStr != null ? `${lastMaStr} mA` : '—';
+      document.getElementById('kpi-total-cap').textContent =
+        `Live · sum of channel mA · target (global) ${fmtOpt(d.target_ma, 3)} mA`;
+      document.getElementById('kpi-total-pw').textContent =
+        (lastPwNum != null && Number.isFinite(lastPwNum)) ? fmtPowerW(lastPwNum) : '—';
+      if (pwCapEl) pwCapEl.textContent = 'Live · Σ V×I (control proxy)';
+    }
     document.getElementById('kpi-wet-ch').textContent =
       `${d.wet_channels != null ? d.wet_channels : '—'} / ${NUM_CH}`;
     const sup = d.supply_v_avg;
@@ -1603,8 +1647,12 @@ async function fetchLive() {
       stateEl.className = 'ch-state state-' + stName;
       const maNum = Number(ch.ma);
       const maDisp = Number.isFinite(maNum) ? maNum : 0;
-      document.getElementById(`ma-${i}`).innerHTML =
-        `${maDisp.toFixed(3)} <small>mA</small>`;
+      if (stale) {
+        document.getElementById(`ma-${i}`).innerHTML = '— <small>mA</small>';
+      } else {
+        document.getElementById(`ma-${i}`).innerHTML =
+          `${maDisp.toFixed(3)} <small>mA</small>`;
+      }
       document.getElementById(`duty-${i}`).textContent = fmtOpt(ch.duty, 1);
       const busV = Number(ch.bus_v);
       document.getElementById(`busv-${i}`).textContent = fmtOpt(ch.bus_v, 3);
@@ -1658,10 +1706,10 @@ async function fetchLive() {
 
       const zf = document.getElementById(`zero-flag-${i}`);
       const busOk = Number.isFinite(busV);
-      if (readingOk && Math.abs(maDisp) < 0.001 && busOk && Math.abs(busV) < 0.05) {
+      if (!stale && readingOk && Math.abs(maDisp) < 0.001 && busOk && Math.abs(busV) < 0.05) {
         zf.style.display = 'inline-block';
         zf.textContent = 'Live: 0 mA and ~0 V bus (path open / supply off / INA219 idle)';
-      } else if (readingOk && Math.abs(maDisp) < 0.001) {
+      } else if (!stale && readingOk && Math.abs(maDisp) < 0.001) {
         zf.style.display = 'inline-block';
         zf.textContent = 'Live: 0 mA (sensor OK — check wet state and bus voltage)';
       } else {
