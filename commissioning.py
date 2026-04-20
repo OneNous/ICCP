@@ -189,10 +189,12 @@ def _verify_phase1_drive_off(
     sim_state: Any | None,
     *,
     log: Callable[[str], None] | None,
+    post_long_settle: bool = False,
 ) -> None:
     """
     Confirm MOSFETs are commanded 0% and shunts show no CP current (Phase 1, open-circuit).
-    Call after all_off(), before or after the long settle per product wiring; logs only.
+    Call after all_off(); typically once before the long settle and again immediately before
+    native reference averaging. Logs only.
     """
     if not bool(getattr(cfg, "COMMISSIONING_PHASE1_OFF_VERIFY", True)):
         return
@@ -200,9 +202,10 @@ def _verify_phase1_drive_off(
     pwm_ok, pwm_issues = _pwm_duties_all_zero(controller)
     if not pwm_ok:
         msg = "WARNING: PWM not at 0% when commanding off — " + "; ".join(pwm_issues)
-        print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
         if log is not None:
             log(msg)
+        else:
+            print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
         controller._pwm.all_off()
         if sim_state is not None:
             sim_state.duties = controller.duties()
@@ -211,25 +214,41 @@ def _verify_phase1_drive_off(
     t_out = float(getattr(cfg, "COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S", 3.0))
     shunt_ok, shunt_issues = _wait_phase1_shunts_off(sim_state, i_max, t_out)
     if not shunt_ok:
+        tail = (
+            "after long settle, persistent shunt current suggests wiring/leakage or "
+            "instrumentation — native baseline may be biased."
+            if post_long_settle
+            else (
+                "shunts may still be decaying before long settle — native baseline may be biased."
+            )
+        )
         msg = (
             "WARNING: shunt current still ≥ "
             f"{i_max:g} mA on one or more channels after {t_out:g}s — "
             + ("; ".join(shunt_issues) if shunt_issues else "check wiring / leakage")
-            + "; shunts may still be decaying before long settle — native baseline may be biased."
+            + f"; {tail}"
         )
-        print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
         if log is not None:
             log(msg)
+        else:
+            print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
     else:
         nch = int(getattr(cfg, "NUM_CHANNELS", 4))
-        ok_msg = (
-            f"Phase 1 off-check: all {nch} channels PWM 0% and |I| < {i_max:g} mA "
-            "(gates closed, no CP drive through shunts)."
-        )
-        ts = f"[commission {time.strftime('%H:%M:%S')}]"
-        print(f"{ts} {ok_msg}")
+        if post_long_settle:
+            ok_msg = (
+                f"Phase 1 off-check after settle: all {nch} channels PWM 0% and |I| < {i_max:g} mA "
+                "(gates closed, no CP drive through shunts)."
+            )
+        else:
+            ok_msg = (
+                f"Phase 1 off-check: all {nch} channels PWM 0% and |I| < {i_max:g} mA "
+                "(gates closed, no CP drive through shunts)."
+            )
+        # log() already prints with [commission HH:MM:SS] when verbose — do not print twice.
         if log is not None:
             log(ok_msg)
+        else:
+            print(f"[commission {time.strftime('%H:%M:%S')}] {ok_msg}")
 
 
 @contextmanager
@@ -368,6 +387,10 @@ def run(
     controller._pwm.all_off()
     if sim_state is not None:
         sim_state.duties = controller.duties()
+
+    _verify_phase1_drive_off(
+        controller, sim_state, log=log if verbose else None, post_long_settle=True
+    )
 
     log(
         f"Averaging {native_n} reference samples "

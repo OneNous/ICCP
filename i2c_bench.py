@@ -237,6 +237,43 @@ def ads1115_config_os_ready(bus: Any, addr: int) -> bool:
     return bool(status & 0x8000)
 
 
+def ads1115_wait_os_ready(
+    bus: Any,
+    addr: int,
+    *,
+    deadline_s: float,
+    poll_interval_s: float,
+) -> bool:
+    """Poll the config register until OS (conversion complete) or time runs out.
+
+    Uses the same OS semantics as :func:`ads1115_config_os_ready`. This is the
+    reliable completion path for single-shot conversions; ALERT/RDY edges are
+    optional and can be too short for userspace GPIO on some platforms.
+
+    ``deadline_s`` is a duration (seconds) from *now* on the monotonic clock.
+    ``poll_interval_s`` is clamped to at least 1 µs when positive to avoid a
+    busy spin; if zero or negative, each loop sleeps 1 µs.
+
+    Returns True if OS became ready in time (including a final check at the
+    deadline). Returns False if still not ready after the window — caller
+    should apply a fixed delay fallback (see :func:`ads1115_read_single_ended`).
+    """
+    end = time.monotonic() + max(0.0, float(deadline_s))
+    interval = float(poll_interval_s)
+    sleep_s = interval if interval > 0 else 1e-6
+    sleep_s = max(sleep_s, 1e-6)
+
+    while time.monotonic() < end:
+        if ads1115_config_os_ready(bus, addr):
+            return True
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(sleep_s, remaining))
+
+    return ads1115_config_os_ready(bus, addr)
+
+
 def ads1115_read_conversion_volts(bus: Any, addr: int, fsr_v: float) -> float:
     """Read conversion register (0x00) as signed voltage vs full-scale."""
     raw = bus.read_i2c_block_data(addr, 0x00, 2)

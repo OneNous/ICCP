@@ -304,6 +304,7 @@ def _read_ads_mv_scaled_once(
         ads1115_read_conversion_volts,
         ads1115_read_single_ended,
         ads1115_start_single_shot,
+        ads1115_wait_os_ready,
         mux_select_on_bus,
     )
 
@@ -346,8 +347,13 @@ def _read_ads_mv_scaled_once(
                         "wait. Set ADS1115_ALRT_USE_WAIT_FOR_EDGE=False or ADS1115_ALRT_GPIO=None "
                         "to skip; verify ALRT wiring / TI conversion-ready ALERT/RDY mode."
                     )
-            if not ads1115_config_os_ready(_ref_smbus, addr):
-                time.sleep(_ads1115_dr_conversion_s(dr) * 1.25 + 0.001)
+            t_conv = _ads1115_dr_conversion_s(dr)
+            deadline_s = t_conv * 1.25 + 0.001
+            poll_iv = float(getattr(cfg, "ADS1115_OS_POLL_INTERVAL_S", 0.0003))
+            if not ads1115_wait_os_ready(
+                _ref_smbus, addr, deadline_s=deadline_s, poll_interval_s=poll_iv
+            ):
+                time.sleep(max(0.0, t_conv * 1.25 + 5e-4))
             return float(ads1115_read_conversion_volts(_ref_smbus, addr, fsr))
         return float(ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr))
 
