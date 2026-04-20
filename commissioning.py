@@ -7,13 +7,14 @@ Reset: delete commissioning.json or call commissioning.reset().
 from __future__ import annotations
 
 import json
+import statistics
 import time
 from contextlib import contextmanager
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import config.settings as cfg
-from reference import ReferenceElectrode, _update_comm_file, find_oc_inflection_mv
+from reference import ReferenceElectrode, _update_comm_file, find_oc_curve_metrics
 
 if TYPE_CHECKING:
     from control import Controller
@@ -270,9 +271,11 @@ def _verify_phase1_drive_off(
         if sim_state is not None:
             sim_state.duties = controller.duties()
 
-    i_max = float(getattr(cfg, "COMMISSIONING_OC_CONFIRM_I_MA", 0.15))
+    i_loose = float(getattr(cfg, "COMMISSIONING_OC_CONFIRM_I_MA", 0.15))
+    i_strict = float(getattr(cfg, "COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA", 0.1))
+    i_gate = i_strict if post_long_settle else i_loose
     t_out = float(getattr(cfg, "COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S", 3.0))
-    shunt_ok, shunt_issues = _wait_phase1_shunts_off(sim_state, i_max, t_out)
+    shunt_ok, shunt_issues = _wait_phase1_shunts_off(sim_state, i_gate, t_out)
     if not shunt_ok:
         tail = (
             "after long settle, persistent shunt current suggests wiring/leakage or "
@@ -283,11 +286,18 @@ def _verify_phase1_drive_off(
             )
         )
         msg = (
-            "WARNING: shunt current still ≥ "
-            f"{i_max:g} mA on one or more channels after {t_out:g}s — "
+            "shunt current still ≥ "
+            f"{i_gate:g} mA on one or more channels after {t_out:g}s — "
             + ("; ".join(shunt_issues) if shunt_issues else "check wiring / leakage")
             + f"; {tail}"
         )
+        if post_long_settle:
+            raise RuntimeError(
+                "Native measurement aborted — channels not at rest. "
+                "Check for leakage current before measuring baseline. "
+                + msg
+            )
+        msg = "WARNING: " + msg
         if log is not None:
             log(msg)
         else:
@@ -296,12 +306,12 @@ def _verify_phase1_drive_off(
         nch = int(getattr(cfg, "NUM_CHANNELS", 4))
         if post_long_settle:
             ok_msg = (
-                f"Phase 1 off-check after settle: all {nch} channels PWM 0% and |I| < {i_max:g} mA "
+                f"Phase 1 off-check after settle: all {nch} channels PWM 0% and |I| < {i_gate:g} mA "
                 "(gates closed, no CP drive through shunts)."
             )
         else:
             ok_msg = (
-                f"Phase 1 off-check: all {nch} channels PWM 0% and |I| < {i_max:g} mA "
+                f"Phase 1 off-check: all {nch} channels PWM 0% and |I| < {i_gate:g} mA "
                 "(gates closed, no CP drive through shunts)."
             )
         # log() already prints with [commission HH:MM:SS] when verbose — do not print twice.
@@ -331,10 +341,16 @@ def _instant_off_ref_mv_and_restore(
     sim_state: Any | None,
     *,
     log: Callable[[str], None] | None = None,
-) -> tuple[float, float | None]:
+    repeat_cuts: int | None = None,
+    repolarize_s: float | None = None,
+) -> tuple[float, float | None, float]:
     """
     OC sample: save duties → cut → (INA219 confirm) → ADS curve + inflection
     (or legacy dwell + read) → restore duties via set_duty → one update tick.
+
+    Returns ``(raw_mv, shift_mv, ref_depol_rate_mv_s)``. Depolarization rate is 0 in legacy
+    dwell mode. With ``COMMISSIONING_OC_REPEAT_CUTS`` > 1 (non-sequential OC), takes the median
+    scalar and median rate between repolarize-soak intervals.
     """
 
     saved_duties = {
@@ -342,6 +358,19 @@ def _instant_off_ref_mv_and_restore(
     }
     curve_on = bool(getattr(cfg, "COMMISSIONING_OC_CURVE_ENABLED", True))
     sequential = bool(getattr(cfg, "COMMISSIONING_OC_SEQUENTIAL_CHANNELS", False))
+    repeats = max(
+        1,
+        int(
+            repeat_cuts
+            if repeat_cuts is not None
+            else getattr(cfg, "COMMISSIONING_OC_REPEAT_CUTS", 1)
+        ),
+    )
+    repol_s = float(
+        repolarize_s
+        if repolarize_s is not None
+        else getattr(cfg, "COMMISSIONING_OC_REPOLARIZE_S", 10.0)
+    )
 
     def _pre_bus_snapshot() -> dict[int, float] | None:
         mode = str(getattr(cfg, "COMMISSIONING_OCBUS_CONFIRM_MODE", "current"))
@@ -349,7 +378,7 @@ def _instant_off_ref_mv_and_restore(
             return None
         return _snapshot_bus_v(_sensor_readings(sim_state))
 
-    def _one_cut_and_sample(cut_ch: int | None) -> float:
+    def _one_cut_and_sample(cut_ch: int | None) -> tuple[float, float]:
         pre_bus = _pre_bus_snapshot()
         if cut_ch is None:
             controller._pwm.all_off()
@@ -366,33 +395,60 @@ def _instant_off_ref_mv_and_restore(
                 log(w)
         if curve_on:
             samples = reference.collect_oc_decay_samples()
-            return float(find_oc_inflection_mv(samples))
+            inf, rate = find_oc_curve_metrics(samples)
+            return float(inf), float(rate)
         time.sleep(INSTANT_OFF_WINDOW_S)
-        return float(reference.read())
+        return float(reference.read()), 0.0
+
+    def _restore_saved_pwm() -> None:
+        for ch, duty in saved_duties.items():
+            controller._pwm.set_duty(ch, duty)
+        if sim_state is not None:
+            sim_state.duties = dict(saved_duties)
+
+    raw_inst: float
+    depol_rate: float = 0.0
 
     with _commissioning_pwm_hz_context(controller):
         if sequential:
             raw_vals: list[float] = []
             for cut_ch in range(cfg.NUM_CHANNELS):
-                raw_vals.append(_one_cut_and_sample(cut_ch))
+                inf_mv, _rate = _one_cut_and_sample(cut_ch)
+                raw_vals.append(inf_mv)
                 if log is not None:
                     log(
                         f"  OC sequential CH{cut_ch}: inflection {raw_vals[-1]:.1f} mV "
                         f"(using min across CH for shift)"
                     )
-                for ch, duty in saved_duties.items():
-                    controller._pwm.set_duty(ch, duty)
-                if sim_state is not None:
-                    sim_state.duties = dict(saved_duties)
+                _restore_saved_pwm()
                 readings = _sensor_readings(sim_state)
                 controller.update(readings)
                 if sim_state is not None:
                     sim_state.duties = controller.duties()
             raw_inst = min(raw_vals)
         else:
-            raw_inst = _one_cut_and_sample(None)
-            for ch, duty in saved_duties.items():
-                controller._pwm.set_duty(ch, duty)
+            raws: list[float] = []
+            rates: list[float] = []
+            use_repeat = repeats > 1 and not sequential
+            ncuts = repeats if use_repeat else 1
+            for cut_i in range(ncuts):
+                inf_mv, rate_mv_s = _one_cut_and_sample(None)
+                raws.append(inf_mv)
+                rates.append(rate_mv_s)
+                if log is not None and use_repeat:
+                    log(
+                        f"  OC cut {cut_i + 1}/{ncuts}: inflection {inf_mv:.1f} mV "
+                        f"depol_slope={rate_mv_s:.3f} mV/s"
+                    )
+                _restore_saved_pwm()
+                if cut_i + 1 < ncuts and repol_s > 0.0:
+                    _pump_control(controller, sim_state, repol_s)
+            if use_repeat:
+                raw_inst = float(statistics.median(raws))
+                depol_rate = float(statistics.median(rates))
+            else:
+                raw_inst = raws[0]
+                depol_rate = rates[0]
 
     if sim_state is not None:
         sim_state.duties = dict(saved_duties)
@@ -404,7 +460,33 @@ def _instant_off_ref_mv_and_restore(
     shift: float | None = None
     if reference.native_mv is not None:
         shift = round(float(reference.native_mv) - raw_inst, 2)
-    return raw_inst, shift
+    return raw_inst, shift, depol_rate
+
+
+def instant_off_ref_measurement(
+    controller: Any,
+    reference: ReferenceElectrode,
+    sim_state: Any | None = None,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> tuple[float, float | None, float]:
+    """
+    Same instant-off / OC-curve path as commissioning (for runtime outer-loop monitoring).
+    Returns ``(raw_mv, shift_mv, ref_depol_rate_mv_s)``.
+
+    Uses ``OUTER_LOOP_OC_REPEAT_CUTS`` / ``OUTER_LOOP_OC_REPOLARIZE_S`` so the slow loop
+    stays responsive; commissioning keeps its own repeat/repolarize settings.
+    """
+    rpt = int(getattr(cfg, "OUTER_LOOP_OC_REPEAT_CUTS", 1))
+    rep = float(getattr(cfg, "OUTER_LOOP_OC_REPOLARIZE_S", 0.0))
+    return _instant_off_ref_mv_and_restore(
+        controller,
+        reference,
+        sim_state,
+        log=log,
+        repeat_cuts=rpt,
+        repolarize_s=rep,
+    )
 
 
 def _pump_control(
@@ -518,7 +600,7 @@ def run(
         _pump_control(controller, sim_state, RAMP_SETTLE_S)
 
         log(f"  instant-off ({oc_desc}) …")
-        raw, shift = _instant_off_ref_mv_and_restore(
+        raw, shift, _depol = _instant_off_ref_mv_and_restore(
             controller, reference, sim_state, log=log if verbose else None
         )
         shift_str = f"{shift:.1f}" if shift is not None else "N/A"
@@ -537,8 +619,19 @@ def run(
         elif shift is not None and shift >= thr * tol:
             pass
         else:
+            # Decay streak on bad samples (no hard reset) — noisy tap water.
             confirm_count = max(0, confirm_count - 1)
-            current_target_ma = round(current_target_ma + TARGET_RAMP_STEP_MA, 3)
+            ramp_coarse = float(getattr(cfg, "COMMISSIONING_RAMP_STEP_MA", 0.15))
+            ramp_fine = float(getattr(cfg, "COMMISSIONING_RAMP_FINE_STEP_MA", 0.05))
+            near_frac = float(
+                getattr(cfg, "COMMISSIONING_RAMP_FINE_NEAR_SHIFT_FRAC", 0.5)
+            )
+            step = (
+                ramp_fine
+                if shift is not None and shift > thr * near_frac
+                else ramp_coarse
+            )
+            current_target_ma = round(current_target_ma + step, 3)
     else:
         log(
             "WARNING: reached MAX_MA without achieving target shift — "
@@ -552,7 +645,7 @@ def run(
     )
     log(f"  final regulate / settle {phase3_s:.0f}s before last instant-off …")
     _pump_control(controller, sim_state, phase3_s)
-    _final_raw, final_shift = _instant_off_ref_mv_and_restore(
+    _final_raw, final_shift, _f_depol = _instant_off_ref_mv_and_restore(
         controller, reference, sim_state, log=log if verbose else None
     )
     _update_comm_file(

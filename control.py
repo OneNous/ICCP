@@ -201,10 +201,44 @@ class Controller:
         self._states = [ChannelState(i) for i in range(cfg.NUM_CHANNELS)]
         self._fault_latched = False
         self._faults: list[str] = []
+        self._thermal_pause: bool = False
+
+    def set_thermal_pause(self, active: bool) -> None:
+        """When True, `update()` keeps all PWM off but still evaluates read errors and FAULT recovery."""
+        self._thermal_pause = bool(active)
 
     def update(self, readings: dict[int, dict]) -> tuple[list[str], bool]:
         self._faults = []
         self._check_clear_fault()
+
+        if self._thermal_pause:
+            self._pwm.all_off()
+            for ch, state in enumerate(self._states):
+                r = readings.get(ch, {})
+                if state.status == ChannelState.FAULT:
+                    self._pwm.set_duty(ch, 0.0)
+                    if state.latch_message:
+                        self._faults.append(state.latch_message)
+                    self._maybe_auto_clear_fault(ch, state, r)
+                elif not r.get("ok"):
+                    self._pwm.set_duty(ch, 0.0)
+                    extra = ""
+                    if "bus_v" in r or "shunt_mv" in r:
+                        extra = (
+                            f"  last bus_v={r.get('bus_v', '—')}  "
+                            f"shunt_mv={r.get('shunt_mv', '—')}"
+                        )
+                    self._faults.append(
+                        f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
+                    )
+                    if state.status != ChannelState.FAULT:
+                        state.status = ChannelState.OPEN
+                else:
+                    self._pwm.set_duty(ch, 0.0)
+            self._fault_latched = any(
+                s.status == ChannelState.FAULT for s in self._states
+            )
+            return self._faults, self._fault_latched
 
         protect_ceiling = min(
             float(cfg.DUTY_PROTECT_MAX), float(cfg.PWM_MAX_DUTY)
@@ -428,7 +462,9 @@ class Controller:
     def update_potential_target(self, shift_mv: float | None) -> None:
         """
         Outer loop: nudge TARGET_MA to keep polarization in the safe window.
-        shift_mv is native_mv − ref reading (positive when reading falls under CP).
+        ``shift_mv`` should be **native_mv − instant-off ref** (IR-free) when the runtime
+        uses ``OUTER_LOOP_INSTANT_OFF``; legacy callers may pass live on-potential shift.
+        Positive shift means the reference reading fell under CP vs native.
         Call once per LOG_INTERVAL_S tick, not every SAMPLE_INTERVAL_S.
         """
         if shift_mv is None:

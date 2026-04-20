@@ -93,6 +93,10 @@ def test_api_live_includes_feed_envelope(log_and_dashboard_client) -> None:
     assert "target_ma" in data
     assert isinstance(data["target_ma"], (int, float))
     assert isinstance(data.get("system_alerts"), list)
+    tp = data.get("telemetry_paths")
+    assert isinstance(tp, dict)
+    assert "latest_json" in tp and "log_dir" in tp and "log_dir_source" in tp
+    assert tp["latest_json"].endswith("latest.json")
 
 
 def test_api_stats_includes_ref_and_temp(log_and_dashboard_client) -> None:

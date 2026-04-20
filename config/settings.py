@@ -3,11 +3,35 @@ CoilShield — single source of truth for all tunables.
 Import as: import config.settings as cfg  (never from config.settings import *)
 """
 
+from __future__ import annotations
+
+import os
 from pathlib import Path
+
+
+def _resolve_log_dir(project_root: Path, environ: dict[str, str] | None = None) -> Path:
+    """
+    Single place for telemetry directory: controller, dashboard, CLI, and tests.
+
+    Override with absolute path (recommended) or path relative to PROJECT_ROOT:
+      COILSHIELD_LOG_DIR=/var/lib/iccp/logs
+      ICCP_LOG_DIR=...   (alias)
+
+    If unset, defaults to ``<project>/logs`` (same layout as a git checkout).
+    """
+    env = os.environ if environ is None else environ
+    raw = (env.get("COILSHIELD_LOG_DIR") or env.get("ICCP_LOG_DIR") or "").strip()
+    if not raw:
+        return (project_root / "logs").resolve()
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = project_root / p
+    return p.resolve()
+
 
 # --- Project paths ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOG_DIR = PROJECT_ROOT / "logs"
+LOG_DIR = _resolve_log_dir(PROJECT_ROOT)
 CLEAR_FAULT_FILE = PROJECT_ROOT / "clear_fault"
 
 # --- I2C ---
@@ -106,8 +130,9 @@ STATE_RECHECK_RESET_PROTECT_STREAKS = False
 PROTECTING_ENTER_DELTA_MA = 0.2
 PROTECTING_ENTER_HOLD_TICKS = 3
 # PROTECTING → REGULATE: |error| above this (or weak path) for PROTECTING_EXIT_HOLD_TICKS.
-PROTECTING_EXIT_DELTA_MA = 0.35
-PROTECTING_EXIT_HOLD_TICKS = 3
+# Wider band + longer hold reduces oscillation in condensate where film Z swings current.
+PROTECTING_EXIT_DELTA_MA = 0.5
+PROTECTING_EXIT_HOLD_TICKS = 5
 
 # Minimum I (A) when computing R = V/I for display and Z windows (noise floor).
 Z_COMPUTE_I_A_MIN = 1e-6
@@ -172,6 +197,12 @@ MAX_BUS_V = 6.0
 # --- Timing ---
 SAMPLE_INTERVAL_S = 0.5
 LOG_INTERVAL_S = 60
+# Outer-loop potential feedback: use commissioning-style instant-off (not live IR-corrupted ref).
+OUTER_LOOP_INSTANT_OFF = True
+# Single cut + no repolarize soak keeps each LOG_INTERVAL tick short (commissioning uses
+# COMMISSIONING_OC_REPEAT_CUTS / COMMISSIONING_OC_REPOLARIZE_S for median measurements).
+OUTER_LOOP_OC_REPEAT_CUTS = 1
+OUTER_LOOP_OC_REPOLARIZE_S = 0.0
 
 # --- Logging ---
 LOG_BASE_NAME = "iccp"
@@ -205,7 +236,10 @@ COMMISSIONING_RAMP_SETTLE_S = 80.0
 # cleaner open-circuit scalar but longer CP interruption; tune per rig (default 2.0 s).
 COMMISSIONING_INSTANT_OFF_S = 2.0
 # Phase 2: current increment per ramp step (mA). Larger steps → fewer instant-offs per mA range.
-COMMISSIONING_RAMP_STEP_MA = 0.1
+COMMISSIONING_RAMP_STEP_MA = 0.15
+# When shift is above this fraction of TARGET_SHIFT_MV, use finer steps near goal.
+COMMISSIONING_RAMP_FINE_STEP_MA = 0.05
+COMMISSIONING_RAMP_FINE_NEAR_SHIFT_FRAC = 0.5
 # Phase 1 native baseline: sample count and spacing (e.g. 30 × 2 s ≈ 60 s).
 COMMISSIONING_NATIVE_SAMPLE_COUNT = 30
 COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S = 2.0
@@ -220,19 +254,28 @@ COMMISSIONING_SHIFT_CONFIRM_TOLERANCE = 0.9
 # cannot inject current. Set False to skip (e.g. unusual bench wiring).
 COMMISSIONING_PHASE1_OFF_VERIFY = True
 COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S = 3.0
+# Stricter ceiling (mA) for “at rest” before native averaging — abort if exceeded after long settle.
+COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA = 0.1
 # OC decay curve + inflection (Phase 2/3 instant-off).
 COMMISSIONING_OC_CURVE_ENABLED = True
-COMMISSIONING_OC_BURST_SAMPLES = 20
-# Extra delay between OC samples; 0 = back-to-back when ALRT/poll paces conversion (faster curve).
-COMMISSIONING_OC_BURST_INTERVAL_S = 0.0
-# Alternative to fixed burst count: sample for a wall-time window (slow OC knees / tap water).
+# Post-cutoff potential spike: industry practice treats ~0.3 s of inductive/capacitive
+# artifact before the decay curve is meaningful. `COMMISSIONING_OC_INFLECTION_SKIP_RATES`
+# skips the first N pairwise |dV/dt| segments; keep N * COMMISSIONING_OC_BURST_INTERVAL_S
+# >= ~0.3 s (and total samples * interval >= ~1 s capture for the knee).
+COMMISSIONING_OC_BURST_SAMPLES = 50
+COMMISSIONING_OC_BURST_INTERVAL_S = 0.02
+# Alternative to fixed burst count: sample for a wall-time window (tap water / fast depolarization).
+# Enable with e.g. COMMISSIONING_OC_CURVE_DURATION_S = 2.0 and COMMISSIONING_OC_CURVE_POLL_S = 0.025.
 COMMISSIONING_OC_DURATION_MODE = False
-COMMISSIONING_OC_CURVE_DURATION_S = 3.0
-COMMISSIONING_OC_CURVE_POLL_S = 0.002
+COMMISSIONING_OC_CURVE_DURATION_S = 2.0
+COMMISSIONING_OC_CURVE_POLL_S = 0.025
 COMMISSIONING_ADS1115_DR = 7
 COMMISSIONING_OC_ADS_MEDIAN_SAMPLES = 1
-COMMISSIONING_OC_INFLECTION_SKIP_RATES = 3
+COMMISSIONING_OC_INFLECTION_SKIP_RATES = 15
 COMMISSIONING_OC_INFLECTION_TAIL_EXCLUDE = 0.2
+# Multiple instant-off cuts per step; median scalar + repolarize between cuts (s).
+COMMISSIONING_OC_REPEAT_CUTS = 3
+COMMISSIONING_OC_REPOLARIZE_S = 10.0
 # Per-channel cut → ref curve (diagnostics); False = all channels off together.
 COMMISSIONING_OC_SEQUENTIAL_CHANNELS = False
 # INA219 gate before ADS curve: none | current | delta_v | both
@@ -257,3 +300,25 @@ SIM_CH_MA_BIAS_DRY = (0.006, 0.020, 0.034, 0.011)
 SIM_CH_MA_BIAS_WET = (0.0, 0.07, -0.055, 0.045)
 SIM_CH_DRY_NOISE_SCALE = (1.0, 1.4, 0.75, 1.2)
 SIM_CH_WET_NOISE_SCALE = (1.0, 1.25, 0.85, 1.1)
+
+
+def resolved_telemetry_paths() -> dict[str, str]:
+    """Absolute paths shared by main, dashboard, and `iccp live` (see `/api/live` ``telemetry_paths``)."""
+    root = PROJECT_ROOT.resolve()
+    logd = LOG_DIR.resolve()
+    src = (
+        "COILSHIELD_LOG_DIR"
+        if os.environ.get("COILSHIELD_LOG_DIR", "").strip()
+        else (
+            "ICCP_LOG_DIR"
+            if os.environ.get("ICCP_LOG_DIR", "").strip()
+            else "default (<project>/logs)"
+        )
+    )
+    return {
+        "project_root": str(root),
+        "log_dir": str(logd),
+        "latest_json": str((logd / LATEST_JSON_NAME).resolve()),
+        "sqlite_db": str((logd / SQLITE_DB_NAME).resolve()),
+        "log_dir_source": src,
+    }

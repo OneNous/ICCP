@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from reference import find_oc_inflection_mv
+from reference import find_oc_curve_metrics, find_oc_inflection_mv
 
 
 def test_find_oc_inflection_short_returns_last() -> None:
@@ -32,6 +32,13 @@ def test_find_oc_inflection_returns_valid_sample_index() -> None:
     s = [(i * 0.001, 100.0 - i * 0.1) for i in range(30)]
     v = find_oc_inflection_mv(s, skip_rates=0, tail_exclude=0.05)
     assert any(abs(v - p[1]) < 1e-6 for p in s)
+
+
+def test_find_oc_curve_metrics_returns_inflection_and_slope() -> None:
+    s = [(i * 0.01, 300.0 - i * 2.0) for i in range(20)]
+    inf, slope = find_oc_curve_metrics(s, skip_rates=1, tail_exclude=0.2)
+    assert inf == find_oc_inflection_mv(s, skip_rates=1, tail_exclude=0.2)
+    assert slope != 0.0
 
 
 def test_find_oc_inflection_flat_tail_excluded() -> None:

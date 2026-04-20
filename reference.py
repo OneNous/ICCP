@@ -345,20 +345,40 @@ def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> floa
     return round(native - shift + random.gauss(0, 1.5), 2)
 
 
-def find_oc_inflection_mv(
+def _linear_regression_slope_mv_s(points: list[tuple[float, float]]) -> float:
+    """Signed dV/dt (mV/s) for V(t); t may be absolute, shifted internally."""
+    if len(points) < 2:
+        return 0.0
+    t0 = float(points[0][0])
+    t = [float(p[0]) - t0 for p in points]
+    v = [float(p[1]) for p in points]
+    n = len(points)
+    sum_t = sum(t)
+    sum_v = sum(v)
+    sum_tt = sum(x * x for x in t)
+    sum_tv = sum(t[i] * v[i] for i in range(n))
+    den = n * sum_tt - sum_t * sum_t
+    if abs(den) < 1e-18:
+        return 0.0
+    return (n * sum_tv - sum_t * sum_v) / den
+
+
+def find_oc_curve_metrics(
     samples: list[tuple[float, float]],
     *,
     skip_rates: int | None = None,
     tail_exclude: float | None = None,
-) -> float:
+) -> tuple[float, float]:
     """
-    Pick mV at the decay-curve knee: minimum |dV/dt| over a guarded window of
-    finite-difference rates (avoids IR-collapse tail and final flat tail).
+    Open-circuit decay curve: inflection mV (knee) and signed depolarization slope (mV/s).
+
+    The slope is a linear regression on the same time window used to score |dV/dt|
+    for the knee (post-spike / pre-flat-tail segment), for logging and diagnostics.
     """
     if not samples:
-        return 0.0
+        return (0.0, 0.0)
     if len(samples) < 4:
-        return float(samples[-1][1])
+        return (float(samples[-1][1]), 0.0)
 
     skip = int(
         skip_rates
@@ -382,15 +402,36 @@ def find_oc_inflection_mv(
     tail_n = max(0, int(n_rates * tail))
     k_hi = max(k_lo + 1, n_rates - tail_n)
     if k_hi <= k_lo:
-        return float(samples[len(samples) // 2][1])
+        mid = float(samples[len(samples) // 2][1])
+        seg = samples[max(0, len(samples) // 4) :]
+        return (mid, _linear_regression_slope_mv_s(seg))
 
     sub = rates[k_lo:k_hi]
-    # Round so near-identical |dV/dt| from float noise does not pick a late
-    # segment; then prefer the earliest index on ties (first knee in window).
     best = min(range(len(sub)), key=lambda j: (round(sub[j], 6), j))
     k = k_lo + best
     idx = min(k + 1, len(samples) - 1)
-    return float(samples[idx][1])
+    inf_mv = float(samples[idx][1])
+
+    lo_s = k_lo
+    hi_s = min(k_hi, len(samples) - 1)
+    seg = samples[lo_s : hi_s + 1]
+    depol = _linear_regression_slope_mv_s(seg)
+    return (inf_mv, round(depol, 6))
+
+
+def find_oc_inflection_mv(
+    samples: list[tuple[float, float]],
+    *,
+    skip_rates: int | None = None,
+    tail_exclude: float | None = None,
+) -> float:
+    """
+    Pick mV at the decay-curve knee: minimum |dV/dt| over a guarded window of
+    finite-difference rates (avoids IR-collapse tail and final flat tail).
+    """
+    return find_oc_curve_metrics(
+        samples, skip_rates=skip_rates, tail_exclude=tail_exclude
+    )[0]
 
 
 def _ensure_ads_alrt_gpio() -> int | None:

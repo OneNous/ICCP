@@ -82,6 +82,8 @@ def _cmd_live() -> int:
     import config.settings as cfg
 
     p = cfg.LOG_DIR / cfg.LATEST_JSON_NAME
+    tp = cfg.resolved_telemetry_paths()
+    print(f"# Reading: {tp['latest_json']} (log_dir_source={tp['log_dir_source']})")
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except Exception as e:

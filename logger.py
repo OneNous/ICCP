@@ -14,7 +14,8 @@ cooling_cycles: one row per completed ICCP temperature band segment (same window
   temp.in_operating_range): duration_s, avg_temp_f, chN_protect_s (PROTECTING dwell
   within that segment). Correlates wet dwell with coil cooling cycles.
   latest.json reference keys (every tick): ref_raw_mv, ref_shift_mv, ref_status, ref_hw_ok,
-  ref_hw_message, ref_hint, ref_baseline_set (SQLite/CSV also carry raw/hw_ok/hint; hw_message and baseline_set are CSV + JSON).
+  ref_hw_message, ref_hint, ref_baseline_set, ref_depol_rate_mv_s (SQLite/CSV also carry
+  raw/hw_ok/hint; hw_message, baseline_set, depol rate are CSV + JSON).
 
 wet_sessions: one row per PROTECTING episode (open until exit PROTECTING/FAULT).
   Session opens on any transition into PROTECTING.
@@ -256,7 +257,8 @@ class DataLogger:
                     temp_f          REAL,
                     ref_raw_mv      REAL,
                     ref_hw_ok       INTEGER,
-                    ref_hint        TEXT
+                    ref_hint        TEXT,
+                    ref_depol_rate_mv_s REAL
                 )
                 """
             )
@@ -343,6 +345,7 @@ class DataLogger:
             ("ref_raw_mv", "REAL"),
             ("ref_hw_ok", "INTEGER"),
             ("ref_hint", "TEXT"),
+            ("ref_depol_rate_mv_s", "REAL"),
         ):
             if name not in cols:
                 alters.append(f"ALTER TABLE readings ADD COLUMN {name} {decl}")
@@ -453,6 +456,35 @@ class DataLogger:
             self._db.execute(sql, vals)
             self._db.commit()
 
+    def recovery_touch_latest(self, message: str, exc: BaseException | None = None) -> None:
+        """
+        Best-effort merge into latest.json when a full record() cannot run.
+
+        Keeps dashboards from showing multi-hour stale ages when the control tick
+        crashes after the last successful record().
+        """
+        suffix = ""
+        if exc is not None:
+            detail = str(exc).strip().replace("\n", " ")[:400]
+            suffix = f" ({type(exc).__name__}: {detail})" if detail else f" ({type(exc).__name__})"
+        line = (message + suffix).strip()[:900]
+        try:
+            cur = json.loads(self._latest_path.read_text(encoding="utf-8"))
+        except Exception:
+            cur = {}
+        prev = cur.get("system_alerts")
+        alerts = list(prev) if isinstance(prev, list) else []
+        if line not in alerts:
+            alerts.append(line)
+        cur["system_alerts"] = alerts[-25:]
+        cur["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+        cur["ts_unix"] = time.time()
+        cur["tick_writer_error"] = line[:500]
+        try:
+            _atomic_write_same_dir(self._latest_path, json.dumps(cur))
+        except OSError:
+            pass
+
     def record(
         self,
         readings: dict[int, dict],
@@ -470,7 +502,9 @@ class DataLogger:
         ref_hint: str | None = None,
         ref_hw_message: str | None = None,
         ref_baseline_set: bool | None = None,
+        ref_depol_rate_mv_s: float | None = None,
         diag_extra: dict[str, object] | None = None,
+        runtime_alerts: list[str] | None = None,
     ) -> dict[str, object]:
         wet = any_wet
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -635,6 +669,7 @@ class DataLogger:
             ref_raw_mv,
             ref_hw_ok,
             ref_hint,
+            ref_depol_rate_mv_s,
         )
         self._maybe_periodic_purge()
 
@@ -666,6 +701,11 @@ class DataLogger:
                     line = f"Ref diagnostics: {rie}"
                     if line not in system_alerts:
                         system_alerts.append(str(line)[:500])
+        if runtime_alerts:
+            for line in runtime_alerts:
+                s = str(line).strip()
+                if s and s not in system_alerts:
+                    system_alerts.append(s[:500])
 
         payload: dict = {
             "ts": ts,
@@ -696,6 +736,7 @@ class DataLogger:
         payload["ref_baseline_set"] = (
             bool(ref_baseline_set) if ref_baseline_set is not None else False
         )
+        payload["ref_depol_rate_mv_s"] = ref_depol_rate_mv_s
         payload["temp_f"] = temp_f
         if diag_extra:
             payload["diag"] = diag_extra
@@ -771,6 +812,9 @@ class DataLogger:
         row["ref_hw_message"] = (ref_hw_message or "").strip()
         row["ref_baseline_set"] = (
             int(bool(ref_baseline_set)) if ref_baseline_set is not None else 0
+        )
+        row["ref_depol_rate_mv_s"] = (
+            ref_depol_rate_mv_s if ref_depol_rate_mv_s is not None else ""
         )
         self._csv_rows.append(row)
 
@@ -896,6 +940,7 @@ class DataLogger:
         ref_raw_mv: float | None,
         ref_hw_ok: bool | None,
         ref_hint: str | None,
+        ref_depol_rate_mv_s: float | None,
     ) -> None:
         ch_col_names = ", ".join(
             f"ch{i}_state, ch{i}_ma, ch{i}_duty, ch{i}_bus_v, ch{i}_status, "
@@ -924,10 +969,10 @@ class DataLogger:
         col_names = (
             f"ts,ts_unix,wet,fault_latched,faults,{ch_col_names},total_ma,"
             f"supply_v_avg,total_power_w,cross_i_cv,cross_z_cv,ref_shift_mv,ref_status,temp_f,"
-            f"ref_raw_mv,ref_hw_ok,ref_hint"
+            f"ref_raw_mv,ref_hw_ok,ref_hint,ref_depol_rate_mv_s"
         )
         n_ch_cols = 9
-        n_params = 5 + cfg.NUM_CHANNELS * n_ch_cols + 3 + 2 + 3 + 3
+        n_params = 5 + cfg.NUM_CHANNELS * n_ch_cols + 3 + 2 + 3 + 3 + 1
         placeholders = ",".join(["?"] * n_params)
         ref_hw_sql = None if ref_hw_ok is None else (1 if ref_hw_ok else 0)
         with self._db_lock:
@@ -951,6 +996,7 @@ class DataLogger:
                     ref_raw_mv,
                     ref_hw_sql,
                     ref_hint,
+                    ref_depol_rate_mv_s,
                 ),
             )
             self._db.commit()

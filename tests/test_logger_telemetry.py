@@ -140,6 +140,21 @@ def test_sensor_error_and_system_alerts_when_read_fails(
     assert any(x.startswith("Reference:") and "ADS1115" in x for x in sa)
 
 
+def test_recovery_touch_latest_merges_alert(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "SQLITE_PURGE_EVERY_N_INSERTS", 999_999_999)
+    from logger import DataLogger
+
+    log = DataLogger()
+    log.recovery_touch_latest("first banner")
+    log.recovery_touch_latest("second banner", ValueError("x"))
+    log.close()
+    latest = json.loads((tmp_path / cfg.LATEST_JSON_NAME).read_text(encoding="utf-8"))
+    assert "first banner" in latest["system_alerts"]
+    assert any("second banner" in x for x in latest["system_alerts"])
+    assert "tick_writer_error" in latest
+
+
 def test_cooling_cycle_row_on_band_exit(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

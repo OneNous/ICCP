@@ -8,7 +8,7 @@ Run alongside main.py:
 Access from any device on the same network:
     http://<pi-ip>:8080
 
-Reads from:
+Reads from (same ``config.settings`` as ``main.py``; override dir with ``COILSHIELD_LOG_DIR`` / ``ICCP_LOG_DIR``):
     logs/latest.json   — live data (atomic writes from main.py)
     logs/coilshield.db — history (SQLite WAL, written from main.py)
 
@@ -98,6 +98,7 @@ def _live_envelope() -> dict:
     # If main.py stops, latest.json stops updating; UI treats age above this as stale.
     data["feed_stale_threshold_s"] = max(3.0, 3.0 * float(cfg.SAMPLE_INTERVAL_S))
     data["target_ma"] = float(cfg.TARGET_MA)
+    data["telemetry_paths"] = cfg.resolved_telemetry_paths()
     return data
 
 
@@ -418,23 +419,234 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     animation: pulse 2s infinite;
   }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
-  .header-stats {
-    margin-left: auto;
+  main { max-width: 1400px; margin: 0 auto; padding: 20px; }
+
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: auto;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+  .skip-link:focus {
+    position: fixed;
+    left: 12px;
+    top: 12px;
+    width: auto;
+    height: auto;
+    padding: 8px 14px;
+    background: var(--csp-btn-dark);
+    color: var(--csp-btn-dark-text);
+    z-index: 10000;
+    border-radius: 6px;
+  }
+
+  .dash-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--csp-surface);
+    border-bottom: 1px solid var(--csp-border);
+    padding: 8px 20px;
     display: flex;
     flex-wrap: wrap;
-    gap: 16px;
-    font-size: 13px;
-    opacity: .92;
+    gap: 6px 14px;
+    align-items: center;
+    box-shadow: 0 1px 0 rgba(43,43,43,0.06);
   }
-  .hdr-ref-sub {
+  .dash-nav a {
+    font-size: 12px;
+    font-weight: 600;
+    color: #0369a1;
+    text-decoration: none;
+    padding: 4px 2px;
+    border-radius: 4px;
+  }
+  .dash-nav a:hover { text-decoration: underline; }
+  .dash-nav a:focus-visible {
+    outline: 2px solid var(--csp-accent);
+    outline-offset: 2px;
+  }
+
+  .status-pill {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.25);
+  }
+  .header-ts { font-size: 13px; opacity: 0.88; margin-left: auto; }
+
+  .kpi-section .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 14px;
+    margin-top: 4px;
+  }
+  .kpi-tile {
+    background: var(--gray-bg);
+    border: 1px solid var(--csp-border);
+    border-radius: var(--csp-radius);
+    padding: 14px 16px;
+    box-shadow: 0 1px 2px rgba(43,43,43,0.04);
+  }
+  .kpi-tile h3 {
     font-size: 11px;
-    opacity: 0.88;
-    max-width: 28rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--csp-text-muted);
+    margin-bottom: 8px;
+  }
+  .kpi-tile .kpi-value {
+    font-size: 1.65rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+  }
+  .kpi-tile .kpi-caption {
+    font-size: 11px;
+    color: var(--csp-text-muted);
+    margin-top: 6px;
     line-height: 1.35;
   }
-  .header-fault { color: #fca5a5; font-weight: 600; }
 
-  main { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  .health-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin-top: 8px;
+  }
+  .health-card {
+    border: 1px solid var(--csp-border);
+    border-radius: var(--csp-radius);
+    padding: 12px 14px;
+    background: var(--gray-bg);
+  }
+  .health-card h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #075985;
+    margin-bottom: 6px;
+  }
+  .health-card p {
+    font-size: 13px;
+    color: var(--csp-text);
+    line-height: 1.45;
+  }
+  .health-card.telemetry-paths-card {
+    grid-column: 1 / -1;
+  }
+  .telemetry-paths-line code {
+    font-size: 12px;
+    word-break: break-all;
+    color: var(--csp-text);
+  }
+
+  .alerts-section .alert-block {
+    margin-top: 10px;
+    padding: 12px 14px;
+    border-radius: var(--csp-radius);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .alerts-section .alert-block:first-of-type { margin-top: 0; }
+  .alert-fault {
+    background: var(--red-bg);
+    color: var(--red);
+    border: 1px solid rgba(185, 28, 28, 0.25);
+    font-weight: 600;
+  }
+  .alert-feed {
+    background: var(--red-bg);
+    color: var(--red);
+    border: 1px solid rgba(185, 28, 28, 0.25);
+    font-weight: 600;
+  }
+  .alert-none {
+    color: var(--csp-text-muted);
+    font-size: 13px;
+    padding: 8px 0;
+  }
+
+  .ref-dl, .ch-dl {
+    display: grid;
+    gap: 0;
+    margin: 0;
+  }
+  .ref-dl .dl-row, .ch-dl .dl-row {
+    display: grid;
+    grid-template-columns: minmax(10rem, 42%) 1fr;
+    gap: 8px 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--csp-border);
+    font-size: 13px;
+    align-items: baseline;
+  }
+  .ref-dl .dl-row:last-child, .ch-dl .dl-row:last-child { border-bottom: none; }
+  .ch-dl dt, .ref-dl dt {
+    color: var(--csp-text-muted);
+    font-weight: 500;
+  }
+  .ch-dl dd, .ref-dl dd {
+    margin: 0;
+    text-align: right;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .ch-ma-row dt { font-weight: 700; color: var(--csp-text); }
+  .ch-ma-row dd .ch-ma { font-size: 1.75rem; }
+
+  .ch-adv {
+    margin-top: 12px;
+    border: 1px solid var(--csp-border);
+    border-radius: var(--csp-radius);
+    padding: 0 10px 8px;
+    background: #fafbfc;
+  }
+  .ch-adv summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 12px;
+    padding: 10px 4px;
+    color: #075985;
+  }
+  .ch-adv summary:focus-visible { outline: 2px solid var(--csp-accent); border-radius: 4px; }
+  .ch-adv .ch-dl { padding: 4px 4px 0; }
+
+  .ref-hint {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: var(--gray-bg);
+    border-radius: var(--csp-radius);
+    font-size: 12px;
+    line-height: 1.45;
+    border-left: 3px solid var(--amber);
+  }
+
+  .site-footer {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 16px 20px 32px;
+    font-size: 12px;
+    color: var(--csp-text-muted);
+    border-top: 1px solid var(--csp-border);
+  }
+  .site-footer code { font-size: 11px; }
+
+  table.data-table td.num,
+  table.data-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody.striped tr:nth-child(even) { background: rgba(241, 245, 249, 0.65); }
+  .muted { font-size: 11px; font-weight: 400; color: var(--csp-text-muted); }
+
+  .alerts-section .system-alerts {
+    margin-top: 0;
+    border-radius: var(--csp-radius);
+    border-bottom: none;
+  }
 
   .ch-grid {
     display: grid;
@@ -474,7 +686,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .state-UNKNOWN { background: var(--gray-bg); color: var(--gray-text); }
   .ch-ma { font-size: 26px; font-weight: 700; line-height: 1; margin-bottom: 4px; }
   .ch-ma small { font-size: 13px; font-weight: 400; color: var(--csp-text-muted); }
-  .ch-meta { font-size: 12px; color: var(--csp-text-muted); line-height: 1.8; }
+  .ch-meta { margin-top: 4px; }
 
   .section {
     background: var(--csp-surface);
@@ -482,6 +694,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border-radius: var(--csp-radius);
     padding: 18px;
     margin-bottom: 24px;
+    box-shadow: 0 1px 3px rgba(43, 43, 43, 0.06);
   }
   .section-header {
     display: flex;
@@ -495,6 +708,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-size: 15px;
     font-weight: 600;
     letter-spacing: -0.02em;
+  }
+  .section h2.section-title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 0;
   }
   .time-btns { display: flex; gap: 6px; flex-wrap: wrap; }
   .time-btns button {
@@ -517,7 +736,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     color: var(--csp-btn-dark-text);
     border-color: var(--csp-btn-dark);
   }
-  .chart-wrap { position: relative; height: 260px; }
+  .chart-wrap { position: relative; height: 280px; }
+  @media (min-width: 900px) {
+    .chart-wrap { height: 360px; }
+  }
   .export-links { display: flex; gap: 10px; }
   .export-links a {
     font-size: 12px;
@@ -565,21 +787,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     padding: 2px 8px;
     border-radius: 999px;
   }
-  .ux-banner {
-    background: var(--amber-bg);
-    color: var(--amber);
-    padding: 10px 20px;
-    font-size: 13px;
-    border-bottom: 1px solid var(--csp-border);
-  }
-  .feed-error {
-    background: var(--red-bg);
-    color: var(--red);
-    padding: 10px 20px;
-    font-size: 13px;
-    font-weight: 600;
-    border-bottom: 1px solid var(--csp-border);
-  }
   .system-alerts {
     background: var(--red-bg);
     color: var(--red);
@@ -607,27 +814,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-weight: 500;
     word-break: break-word;
   }
-  .subhdr {
-    background: var(--csp-surface);
-    border-bottom: 1px solid var(--csp-border);
-    padding: 10px 20px;
-    font-size: 12px;
-    color: var(--csp-text-muted);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px 18px;
-    align-items: baseline;
-  }
-  .subhdr strong { color: var(--csp-text); font-weight: 600; }
-  .subhdr .stale { color: var(--red); font-weight: 700; }
-  .ch-extra {
-    font-size: 11px;
-    line-height: 1.65;
-    color: var(--csp-text-muted);
-    margin-top: 10px;
-    border-top: 1px solid var(--csp-border);
-    padding-top: 10px;
-  }
+  .stale { color: var(--red); font-weight: 700; }
   .ch-extra .sensor-ok { color: var(--green); font-weight: 600; }
   .ch-extra .sensor-bad { color: var(--red); font-weight: 600; }
   .ch-extra .elec-zero {
@@ -650,40 +837,141 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </head>
 <body>
 
+<a class="skip-link" href="#main">Skip to content</a>
+
 <header>
-  <div class="status-dot" id="dot"></div>
+  <div class="status-dot" id="dot" title="Controller / feed health"></div>
   <h1>CoilShield ICCP</h1>
+  <span id="status-pill" class="status-pill">—</span>
   <span id="sim-badge"></span>
-  <span id="ts" style="font-size:13px; opacity:.85"></span>
-  <div class="header-stats">
-    <span id="hdr-supply"></span>
-    <span id="hdr-total"></span>
-    <span id="hdr-wet"></span>
-    <span id="hdr-ref"></span>
-    <span id="hdr-ref-hw" class="hdr-ref-sub"></span>
-    <span id="hdr-temp"></span>
-    <span id="hdr-fault" class="header-fault" style="display:none">⚠ FAULT LATCHED</span>
-  </div>
+  <span id="ts" class="header-ts"></span>
 </header>
 
-<div id="feed-error" class="feed-error" role="alert" style="display:none"></div>
-<div id="system-alerts" class="system-alerts" role="alert" style="display:none"></div>
-<div class="subhdr" id="subhdr">
-  <span id="hdr-feed"></span>
-  <span id="hdr-cross"></span>
-  <span id="hdr-anywet"></span>
-  <span id="hdr-faults"></span>
-  <span id="hdr-refhw"></span>
-</div>
+<nav class="dash-nav" aria-label="Page sections">
+  <a href="#kpi">Overview</a>
+  <a href="#alerts">Alerts</a>
+  <a href="#health">Health</a>
+  <a href="#reference">Reference</a>
+  <a href="#channels">Channels</a>
+  <a href="#trends">Trends</a>
+  <a href="#sessions">Wet sessions</a>
+  <a href="#today">Today</a>
+  <a href="#stats">Statistics</a>
+</nav>
 
-<div id="ux-banner" class="ux-banner" role="status" style="display:none"></div>
-
-<main>
-  <div class="ch-grid" id="ch-grid"></div>
-
-  <div class="section">
+<main id="main">
+  <section id="kpi" class="section kpi-section">
     <div class="section-header">
-      <span class="section-title" id="chart-section-title">Channel history</span>
+      <h2 class="section-title">At a glance</h2>
+    </div>
+    <div class="kpi-grid">
+      <article class="kpi-tile">
+        <h3>Total output</h3>
+        <p class="kpi-value" id="kpi-total-ma">—</p>
+        <p class="kpi-caption" id="kpi-total-cap">Sum of all channel currents</p>
+      </article>
+      <article class="kpi-tile">
+        <h3>Total power</h3>
+        <p class="kpi-value" id="kpi-total-pw">—</p>
+        <p class="kpi-caption">Σ V×I (control proxy)</p>
+      </article>
+      <article class="kpi-tile">
+        <h3>PROTECTING</h3>
+        <p class="kpi-value" id="kpi-wet-ch">—</p>
+        <p class="kpi-caption">Channels in PROTECTING / __NUM_CH__</p>
+      </article>
+      <article class="kpi-tile">
+        <h3>Supply (avg)</h3>
+        <p class="kpi-value" id="kpi-supply">—</p>
+        <p class="kpi-caption">Bus V, channels with bus &gt; 0</p>
+      </article>
+      <article class="kpi-tile">
+        <h3>Temperature</h3>
+        <p class="kpi-value" id="kpi-temp">—</p>
+        <p class="kpi-caption">Controller sensor</p>
+      </article>
+      <article class="kpi-tile">
+        <h3>Ref polarization</h3>
+        <p class="kpi-value" id="kpi-ref-short">—</p>
+        <p class="kpi-caption">Shift · band</p>
+      </article>
+      <article class="kpi-tile">
+        <h3>Data feed</h3>
+        <p class="kpi-value" id="kpi-feed-age">—</p>
+        <p class="kpi-caption" id="kpi-feed-cap">latest.json age</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="alerts" class="section alerts-section" aria-live="polite">
+    <div class="section-header">
+      <h2 class="section-title">Alerts &amp; notices</h2>
+    </div>
+    <div id="alert-fault" class="alert-block alert-fault" style="display:none"></div>
+    <div id="alert-feed" class="alert-block alert-feed" style="display:none"></div>
+    <div id="alert-system" class="system-alerts" style="display:none"></div>
+    <p id="alert-none" class="alert-none">No active alerts.</p>
+  </section>
+
+  <section id="health" class="section">
+    <div class="section-header">
+      <h2 class="section-title">System health</h2>
+    </div>
+    <div class="health-grid">
+      <article class="health-card">
+        <h3>Data feed</h3>
+        <p id="health-feed"></p>
+      </article>
+      <article class="health-card">
+        <h3>Cross-channel balance</h3>
+        <p id="health-cross"></p>
+      </article>
+      <article class="health-card">
+        <h3>Anode wet (sense)</h3>
+        <p id="health-anywet"></p>
+      </article>
+      <article class="health-card">
+        <h3>Active faults</h3>
+        <p id="health-faults"></p>
+      </article>
+      <article class="health-card">
+        <h3>Reference hardware</h3>
+        <p id="health-refhw"></p>
+      </article>
+      <article class="health-card telemetry-paths-card">
+        <h3>Telemetry files (this dashboard)</h3>
+        <p class="telemetry-paths-line">live: <code id="health-latest-path">—</code></p>
+        <p class="telemetry-paths-line">database: <code id="health-sqlite-path">—</code></p>
+        <p id="health-telemetry-meta" style="font-size:12px;color:var(--csp-text-muted);margin-top:8px">—</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="reference" class="section">
+    <div class="section-header">
+      <h2 class="section-title">Reference electrode</h2>
+    </div>
+    <dl class="ref-dl">
+      <div class="dl-row"><dt title="ADC or front-end reading used for polarization tracking.">Raw reading</dt><dd id="ref-raw">—</dd></div>
+      <div class="dl-row"><dt title="mV vs commissioned baseline; null until baseline exists.">Polarization shift</dt><dd id="ref-shift">—</dd></div>
+      <div class="dl-row"><dt title="Classification band for shift vs expected range.">Shift band</dt><dd id="ref-band">—</dd></div>
+      <div class="dl-row"><dt title="Whether a commissioning baseline has been stored.">Baseline</dt><dd id="ref-baseline">—</dd></div>
+      <div class="dl-row"><dt title="Reference ADC / wiring status from firmware.">Hardware</dt><dd id="ref-hwmsg">—</dd></div>
+    </dl>
+    <p id="ref-hint-callout" class="ref-hint" style="display:none"></p>
+  </section>
+
+  <section id="channels" class="section">
+    <div class="section-header">
+      <h2 class="section-title">Channels</h2>
+      <span style="font-size:12px;color:var(--csp-text-muted)">Live from latest.json</span>
+    </div>
+    <div class="ch-grid" id="ch-grid"></div>
+  </section>
+
+  <div class="section" id="trends">
+    <div class="section-header">
+      <span class="section-title" id="chart-section-title">Trends — current (mA)</span>
       <div class="time-btns">
         <button type="button" onclick="setMetric('ma')" id="btn-metric-ma" class="active">mA</button>
         <button type="button" onclick="setMetric('impedance')" id="btn-metric-z">Ω</button>
@@ -700,57 +988,92 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <a href="/api/sessions?hours=720&amp;limit=5000" download="wet_sessions.json">↓ Wet sessions JSON</a>
       </div>
     </div>
-    <p class="chart-note">The line trace is loaded from the database (auto downsampled). The same chart is pushed forward on each live poll (~400&nbsp;ms) from <code>latest.json</code>, so the right edge tracks the controller between DB refreshes. In mA mode, <strong>Total mA</strong> is the sum of all channels. Legend click-to-hide is disabled so traces stay visible.</p>
+    <p class="chart-legend" style="font-size:12px;color:var(--csp-text-muted);margin:0 0 8px"><strong>Legend:</strong> Target = setpoint (mA mode); CH1–CH__NUM_CH__ = per-channel; Total mA = sum of channels. DB series is downsampled; the live tail updates from <code>latest.json</code> between refreshes.</p>
+    <p class="chart-note">Downsampled from SQLite for performance. Legend toggling is disabled so lines stay visible.</p>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
   </div>
 
-  <div class="section">
+  <section id="sessions" class="section">
+    <div class="section-header">
+      <h2 class="section-title">Recent wet sessions</h2>
+      <span style="font-size:12px;color:var(--csp-text-muted)">Last 24h, newest first</span>
+    </div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Channel</th>
+          <th>Started</th>
+          <th>Ended</th>
+          <th>Duration</th>
+          <th class="num">Avg mA</th>
+          <th class="num">Peak mA</th>
+          <th class="num">Avg Z (Ω)</th>
+        </tr>
+      </thead>
+      <tbody id="sessions-body" class="striped"></tbody>
+    </table>
+  </section>
+
+  <div class="section" id="today">
     <div class="section-header">
       <span class="section-title">Today's cumulative protection</span>
       <span style="font-size:12px;color:var(--csp-text-muted)">mA·s while PROTECTING; charge (C) = mA·s ÷ 1000</span>
     </div>
-    <table>
+    <table class="data-table">
       <thead>
         <tr>
           <th>Channel</th>
           <th>Wet time today</th>
-          <th>mA·s (protecting)</th>
-          <th>Charge (C)</th>
+          <th class="num">mA·s (protecting)</th>
+          <th class="num">Charge (C)</th>
         </tr>
       </thead>
-      <tbody id="daily-body"></tbody>
+      <tbody id="daily-body" class="striped"></tbody>
     </table>
   </div>
 
-  <div class="section">
+  <div class="section" id="stats">
     <div class="section-header">
       <span class="section-title">Statistics — today</span>
       <span id="stats-since" style="font-size:12px;color:var(--csp-text-muted)"></span>
       <span style="font-size:11px;color:var(--csp-text-muted)">† Ref Δ / temp: today’s average across all ticks (same value per row).</span>
     </div>
-    <table>
+    <table class="data-table">
       <thead>
         <tr>
           <th>Channel</th>
           <th>State</th>
           <th>Protecting today</th>
-          <th>Avg mA</th>
-          <th>Coverage</th>
-          <th>Wet cycles</th>
-          <th>Bus V avg</th>
-          <th>Avg Z (Ω)</th>
-          <th>Ref shift (mV)†</th>
-          <th>Temp (°F)†</th>
+          <th class="num">Avg mA</th>
+          <th class="num">Coverage</th>
+          <th class="num">Wet cycles</th>
+          <th class="num">Bus V avg</th>
+          <th class="num">Avg Z (Ω)</th>
+          <th class="num">Ref shift (mV)†</th>
+          <th class="num">Temp (°F)†</th>
         </tr>
       </thead>
-      <tbody id="stats-body"></tbody>
+      <tbody id="stats-body" class="striped"></tbody>
     </table>
   </div>
 </main>
 
+<footer class="site-footer">
+  Telemetry: <code>logs/latest.json</code> (live) and <code>logs/</code> SQLite / CSV (history).
+  Exports: use links under Trends. Operator docs: see project <code>README.md</code>.
+</footer>
+
 <script>
 const CH_COLORS = ['var(--ch0)','var(--ch1)','var(--ch2)','var(--ch3)','var(--ch4)'];
 const NUM_CH = __NUM_CH__;
+const STATUS_HINT = {
+  OK: 'On target: current and path look healthy for this tick.',
+  LOW: 'Marginal: current or path is below expectations; monitor.',
+  ERR: 'Sensor or read failed for this channel; values may not reflect the anode.',
+  DRY: 'Treated as dry / non-conductive path by the state machine.',
+  OPEN: 'Output path open or not in closed regulation.',
+  OPEN_CIRCUIT: 'Very low current; treated as open path.',
+};
 let chart = null;
 let activeMinutes = 60;
 let chartMetric = 'ma';
@@ -763,24 +1086,89 @@ for (let i = 0; i < NUM_CH; i++) {
         <span class="ch-dot" style="background:${CH_COLORS[i]}"></span>Channel ${i+1}
       </div>
       <div class="ch-state state-OPEN" id="state-${i}">OPEN</div>
-      <div class="ch-ma" id="ma-${i}">— <small>mA</small></div>
-      <div class="ch-meta">
-        Duty: <span id="duty-${i}">—</span>%<br>
-        Bus: <span id="busv-${i}">—</span> V<br>
-        Z: <span id="z-${i}">—</span> Ω · Vcell: <span id="vcell-${i}">—</span> V<br>
-        P: <span id="pow-${i}">—</span> W · E: <span id="enj-${i}">—</span> J<br>
-        η: <span id="eff-${i}">—</span> mA/% · Status: <span id="status-${i}">—</span>
-      </div>
-      <div class="ch-extra">
-        <span id="sens-line-${i}">Sensor: <span id="sens-${i}">—</span></span>
-        <div class="ch-sensor-err" id="ch-err-${i}"></div>
-        · Q today: <span id="coul-${i}">—</span> C<br>
-        ΔZ: <span id="dz-${i}">—</span> Ω · Zσ: <span id="zstd-${i}">—</span> Ω<br>
-        σ*: <span id="sigma-${i}">—</span> s · FQI: <span id="fqi-${i}">—</span> (raw <span id="fqir-${i}">—</span>)<br>
-        dZ/dt: <span id="zrate-${i}">—</span> Ω/s · dV/dI: <span id="dvd-${i}">—</span> Ω<br>
-        <span id="surf-${i}">—</span>
-        <span id="zero-flag-${i}" style="display:none" class="elec-zero"></span>
-      </div>
+      <dl class="ch-dl ch-meta">
+        <div class="dl-row ch-ma-row">
+          <dt title="Servo-controlled cathodic current for this anode path; compare to per-channel target in the controller.">Output current</dt>
+          <dd><span class="ch-ma" id="ma-${i}">— <small>mA</small></span></dd>
+        </div>
+        <div class="dl-row">
+          <dt title="Fraction of time the output is on; the controller uses duty to regulate current.">PWM duty</dt>
+          <dd><span id="duty-${i}">—</span><span class="muted"> %</span></dd>
+        </div>
+        <div class="dl-row">
+          <dt title="Voltage at the channel bus sense (INA219); reflects supply and electrical path health.">Bus voltage</dt>
+          <dd><span id="busv-${i}">—</span><span class="muted"> V</span></dd>
+        </div>
+        <div class="dl-row">
+          <dt title="Approximate effective V/I in ohms for this tick; very high Z often means dry or weak conduction path.">Effective impedance</dt>
+          <dd><span id="z-${i}">—</span><span class="muted"> Ω</span></dd>
+        </div>
+        <div class="dl-row">
+          <dt title="Estimated average cell terminal voltage during PWM (bus × duty%).">Cell voltage (est.)</dt>
+          <dd><span id="vcell-${i}">—</span><span class="muted"> V</span></dd>
+        </div>
+        <div class="dl-row">
+          <dt title="Electrical power proxy: bus voltage × output current.">DC power</dt>
+          <dd><span id="pow-${i}">—</span><span class="muted"> W</span></dd>
+        </div>
+        <div class="dl-row">
+          <dt title="Integrated electrical energy in joules for this channel today (valid sensor reads only).">Energy today</dt>
+          <dd><span id="enj-${i}">—</span><span class="muted"> J</span></dd>
+        </div>
+        <div class="dl-row">
+          <dt title="How much current changes per percentage point of duty change when computable; em dash when not available this tick.">mA per % duty (η)</dt>
+          <dd><span id="eff-${i}">—</span><span class="muted"> mA/%</span></dd>
+        </div>
+        <div class="dl-row">
+          <dt title="Controller health flag: OK on target; LOW marginal; ERR bad read; DRY/OPEN not in closed conducting path.">Channel health</dt>
+          <dd><span id="status-${i}">—</span></dd>
+        </div>
+      </dl>
+      <details class="ch-adv">
+        <summary>Advanced telemetry</summary>
+        <dl class="ch-dl ch-extra">
+          <div class="dl-row">
+            <dt title="Whether the INA219 sample for this channel succeeded on this tick.">Sensor sample</dt>
+            <dd><span id="sens-${i}">—</span></dd>
+          </div>
+          <div class="ch-sensor-err" id="ch-err-${i}"></div>
+          <div class="dl-row">
+            <dt title="Coulombs delivered today while PROTECTING (∫I·dt / 1000).">Charge today (Q)</dt>
+            <dd><span id="coul-${i}">—</span><span class="muted"> C</span></dd>
+          </div>
+          <div class="dl-row">
+            <dt title="Change in effective impedance vs the previous control tick.">Impedance change (ΔZ)</dt>
+            <dd><span id="dz-${i}">—</span><span class="muted"> Ω</span></dd>
+          </div>
+          <div class="dl-row">
+            <dt title="Rolling spread of recent impedance (variability / noise).">Impedance spread (Zσ)</dt>
+            <dd><span id="zstd-${i}">—</span><span class="muted"> Ω</span></dd>
+          </div>
+          <div class="dl-row">
+            <dt title="Conductance proxy (order of 1/Z); higher values suggest an easier current path.">σ proxy</dt>
+            <dd><span id="sigma-${i}">—</span><span class="muted"> s</span></dd>
+          </div>
+          <div class="dl-row">
+            <dt title="Current-to-voltage ratio I/V; raw tick vs exponentially smoothed value (process proxy).">FQI (smooth / raw)</dt>
+            <dd><span id="fqi-${i}">—</span> <span class="muted">(</span><span id="fqir-${i}">—</span><span class="muted"> raw)</span></dd>
+          </div>
+          <div class="dl-row">
+            <dt title="Rate of change of impedance over this control interval.">dZ/dt</dt>
+            <dd><span id="zrate-${i}">—</span><span class="muted"> Ω/s</span></dd>
+          </div>
+          <div class="dl-row">
+            <dt title="Small-signal resistance estimate from bus voltage and current deltas vs the previous tick.">dV/dI</dt>
+            <dd><span id="dvd-${i}">—</span><span class="muted"> Ω</span></dd>
+          </div>
+          <div class="dl-row" style="grid-template-columns:1fr">
+            <dt title="Mapped film/wet hint from the controller (DRY, STABLE_WET, etc.).">Surface hint</dt>
+            <dd style="text-align:left;font-weight:500;margin-top:4px"><span id="surf-${i}">—</span></dd>
+          </div>
+          <div class="dl-row" style="grid-template-columns:1fr">
+            <dd style="grid-column:1;text-align:left"><span id="zero-flag-${i}" style="display:none" class="elec-zero"></span></dd>
+          </div>
+        </dl>
+      </details>
     </div>`;
 }
 
@@ -920,6 +1308,7 @@ function paintChannelUnknown(i) {
   const st = document.getElementById(`status-${i}`);
   st.textContent = '—';
   st.className = '';
+  st.title = '';
   document.getElementById(`pow-${i}`).textContent = '—';
   document.getElementById(`enj-${i}`).textContent = '—';
   document.getElementById(`eff-${i}`).textContent = '—';
@@ -944,96 +1333,154 @@ function paintChannelUnknown(i) {
   }
 }
 
+function setAlertNoneVisible(show) {
+  const el = document.getElementById('alert-none');
+  if (el) el.style.display = show ? '' : 'none';
+}
+
 async function fetchLive() {
   try {
     const d = await fetch('/api/live', { cache: 'no-store' }).then(r => r.json());
-    const errEl = document.getElementById('feed-error');
+    const alertFeed = document.getElementById('alert-feed');
+    const alertFault = document.getElementById('alert-fault');
+    const alertSys = document.getElementById('alert-system');
     if (d.error) {
-      errEl.style.display = '';
-      errEl.textContent = d.error;
+      alertFeed.style.display = '';
+      alertFeed.textContent = d.error;
+      if (alertFault) { alertFault.style.display = 'none'; alertFault.textContent = ''; }
+      if (alertSys) { alertSys.style.display = 'none'; alertSys.innerHTML = ''; }
+      setAlertNoneVisible(false);
       window._dashLastLive = null;
-      document.getElementById('hdr-feed').textContent = '';
-      document.getElementById('hdr-cross').textContent = '';
-      document.getElementById('hdr-anywet').textContent = '';
-      document.getElementById('hdr-faults').textContent = '';
-      document.getElementById('hdr-refhw').textContent = '';
+      document.getElementById('status-pill').textContent = 'No feed';
+      document.getElementById('health-feed').textContent = '—';
+      document.getElementById('health-cross').textContent = '—';
+      document.getElementById('health-anywet').textContent = '—';
+      document.getElementById('health-faults').textContent = '—';
+      document.getElementById('health-refhw').textContent = '—';
+      const hlp = document.getElementById('health-latest-path');
+      const hsp = document.getElementById('health-sqlite-path');
+      const hm = document.getElementById('health-telemetry-meta');
+      if (hlp) hlp.textContent = '—';
+      if (hsp) hsp.textContent = '—';
+      if (hm) hm.textContent = '—';
       document.getElementById('dot').style.background = '#94a3b8';
-      const sal0 = document.getElementById('system-alerts');
-      sal0.style.display = 'none';
-      sal0.innerHTML = '';
       for (let i = 0; i < NUM_CH; i++) paintChannelUnknown(i);
       return;
     }
-    errEl.style.display = 'none';
-    errEl.textContent = '';
+    alertFeed.style.display = 'none';
+    alertFeed.textContent = '';
     window._dashLastLive = d;
 
     const age = d.feed_age_s;
     const thr = d.feed_stale_threshold_s ?? 3;
     const stale = typeof age === 'number' && age > thr;
-    const feedSpan = document.getElementById('hdr-feed');
+    const pill = document.getElementById('status-pill');
+    if (d.fault_latched) pill.textContent = 'Fault latched';
+    else if (stale) pill.textContent = 'Stale feed';
+    else pill.textContent = 'Live';
+
     if (typeof age === 'number') {
-      feedSpan.innerHTML = '<strong>Feed</strong> · last write to latest.json <strong>' + age.toFixed(2) + 's</strong> ago' +
-        (stale ? ' <span class="stale">· STALE — controller may be stopped</span>' : '');
+      document.getElementById('health-feed').innerHTML =
+        'last write to <code>latest.json</code> <strong>' + age.toFixed(2) + 's</strong> ago' +
+        (stale ? ' <span class="stale">(controller may be stopped)</span>' : '');
+      document.getElementById('kpi-feed-age').textContent = age.toFixed(2) + 's';
+      document.getElementById('kpi-feed-cap').textContent =
+        stale ? 'Stale — check main.py' : 'OK — within threshold';
     } else {
-      feedSpan.textContent = 'Feed: —';
+      document.getElementById('health-feed').textContent = '—';
+      document.getElementById('kpi-feed-age').textContent = '—';
+      document.getElementById('kpi-feed-cap').textContent = 'latest.json age';
     }
+
     const dot = document.getElementById('dot');
     dot.style.background = stale ? '#fbbf24' : (d.fault_latched ? '#f87171' : '#4ade80');
 
     const cr = d.cross || {};
     const icv = cr.i_cv, zcv = cr.z_cv;
-    document.getElementById('hdr-cross').textContent =
+    document.getElementById('health-cross').textContent =
       (icv != null && icv !== '') || (zcv != null && zcv !== '')
-        ? `Cross-channel · I_CV ${fmtOpt(icv, 4)} · Z_CV ${fmtOpt(zcv, 4)}`
-        : 'Cross-channel · —';
-    document.getElementById('hdr-anywet').textContent =
-      'Any anode wet (sense): ' + (d.wet ? 'yes' : 'no');
+        ? `I_CV ${fmtOpt(icv, 4)} · Z_CV ${fmtOpt(zcv, 4)} (spread across channels)`
+        : '—';
+    document.getElementById('health-anywet').textContent =
+      d.wet ? 'Yes — at least one anode reads wet' : 'No';
     const fl = Array.isArray(d.faults) ? d.faults : [];
-    document.getElementById('hdr-faults').textContent =
-      fl.length ? ('Active faults: ' + fl.join(' · ')) : 'Active faults: none';
-    document.getElementById('hdr-refhw').textContent =
-      d.ref_hw_ok === true ? 'Ref HW: OK' : d.ref_hw_ok === false ? 'Ref HW: problem' : 'Ref HW: —';
+    document.getElementById('health-faults').textContent =
+      fl.length ? fl.join(' · ') : 'None';
+    document.getElementById('health-refhw').textContent =
+      d.ref_hw_ok === true ? 'OK' : d.ref_hw_ok === false ? 'Problem — see Reference' : '—';
+
+    const tp = d.telemetry_paths;
+    const hLatest = document.getElementById('health-latest-path');
+    const hSql = document.getElementById('health-sqlite-path');
+    const hMeta = document.getElementById('health-telemetry-meta');
+    if (tp && hLatest && hSql && hMeta) {
+      hLatest.textContent = tp.latest_json || '—';
+      hSql.textContent = tp.sqlite_db || '—';
+      hMeta.textContent =
+        'LOG_DIR from ' + (tp.log_dir_source || '—') +
+        '. Start main.py with the same COILSHIELD_LOG_DIR/ICCP_LOG_DIR and the same Python package checkout so paths match.';
+    }
 
     const tsExtra = (d.ts_unix != null && d.ts_unix !== '')
-      ? ' · tick unix ' + d.ts_unix : '';
+      ? ' · unix ' + d.ts_unix : '';
     document.getElementById('ts').textContent = (d.ts || '—') + tsExtra;
+
+    document.getElementById('kpi-total-ma').textContent =
+      (d.total_ma != null && d.total_ma !== '') ? `${fmtOpt(d.total_ma, 4)} mA` : '—';
+    document.getElementById('kpi-total-cap').textContent =
+      `Target (global) ${fmtOpt(d.target_ma, 3)} mA`;
+    const tpw = d.total_power_w;
+    document.getElementById('kpi-total-pw').textContent =
+      (tpw != null && tpw !== '') ? `${Number(tpw).toFixed(3)} W` : '—';
+    document.getElementById('kpi-wet-ch').textContent =
+      `${d.wet_channels != null ? d.wet_channels : '—'} / ${NUM_CH}`;
     const sup = d.supply_v_avg;
-    document.getElementById('hdr-supply').textContent =
-      (sup != null && sup !== '') ? `Supply: ${fmtOpt(sup, 3)}V avg (channels with bus>0)` : 'Supply: —';
-    document.getElementById('hdr-total').textContent =
-      `Total: ${fmtOpt(d.total_ma, 4)}mA · ${(d.total_power_w != null && d.total_power_w !== '') ? Number(d.total_power_w).toFixed(3) + 'W' : '—'}`;
-    document.getElementById('hdr-wet').textContent =
-      `PROTECTING count: ${d.wet_channels}/__NUM_CH__`;
+    document.getElementById('kpi-supply').textContent =
+      (sup != null && sup !== '') ? `${fmtOpt(sup, 3)} V` : '—';
+    document.getElementById('kpi-temp').textContent =
+      d.temp_f != null && d.temp_f !== '' ? `${d.temp_f} °F` : '—';
     const raw = (d.ref_raw_mv != null && d.ref_raw_mv !== '')
       ? `${Number(d.ref_raw_mv).toFixed(1)} mV` : '—';
     const sh = (d.ref_shift_mv != null && d.ref_shift_mv !== '')
       ? `${Number(d.ref_shift_mv).toFixed(1)} mV` : '—';
     const bd = d.ref_status || '—';
-    document.getElementById('hdr-ref').textContent =
-      `Ref ${raw} · shift ${sh} · band ${bd}`;
-    const hwEl = document.getElementById('hdr-ref-hw');
-    const hw = d.ref_hw_message || '';
-    const bl = d.ref_baseline_set ? 'baseline: yes' : 'baseline: no';
-    hwEl.textContent = hw ? `${hw} · ${bl}` : bl;
-    const ban = document.getElementById('ux-banner');
-    if (d.ref_hint) {
-      ban.style.display = '';
-      ban.textContent = d.ref_hint;
-    } else {
-      ban.style.display = 'none';
-      ban.textContent = '';
-    }
-    document.getElementById('hdr-temp').textContent =
-      d.temp_f != null && d.temp_f !== '' ? `${d.temp_f}°F` : '';
-    const faultEl = document.getElementById('hdr-fault');
-    faultEl.style.display = d.fault_latched ? '' : 'none';
+    document.getElementById('kpi-ref-short').textContent = `${sh} · ${bd}`;
+    document.getElementById('ref-raw').textContent = raw;
+    document.getElementById('ref-shift').textContent = sh;
+    document.getElementById('ref-band').textContent = bd;
+    document.getElementById('ref-baseline').textContent =
+      d.ref_baseline_set ? 'Yes' : 'No';
+    const hw = (d.ref_hw_message || '').trim();
+    document.getElementById('ref-hwmsg').textContent = hw || '—';
 
-    const sal = document.getElementById('system-alerts');
+    const hintEl = document.getElementById('ref-hint-callout');
+    const rh = (d.ref_hint || '').trim();
+    if (rh) {
+      hintEl.style.display = '';
+      hintEl.textContent = rh;
+    } else {
+      hintEl.style.display = 'none';
+      hintEl.textContent = '';
+    }
+
+    let anyAlert = false;
+    if (alertFault) {
+      if (d.fault_latched) {
+        alertFault.style.display = '';
+        alertFault.textContent = 'Fault latch is active — clear faults per operator procedure before continuing.';
+        anyAlert = true;
+      } else {
+        alertFault.style.display = 'none';
+        alertFault.textContent = '';
+      }
+    }
+
+    const sal = alertSys;
     sal.innerHTML = '';
     const alerts = Array.isArray(d.system_alerts) ? d.system_alerts.filter(Boolean) : [];
     if (alerts.length) {
       sal.style.display = '';
+      anyAlert = true;
       const t = document.createElement('strong');
       t.textContent = 'Component alerts';
       sal.appendChild(t);
@@ -1047,6 +1494,7 @@ async function fetchLive() {
     } else {
       sal.style.display = 'none';
     }
+    setAlertNoneVisible(!anyAlert);
 
     const badge = document.getElementById('sim-badge');
     if (d.sim_time) {
@@ -1082,6 +1530,7 @@ async function fetchLive() {
       const st = document.getElementById(`status-${i}`);
       const stt = ch.status || '—';
       st.textContent = stt;
+      st.title = STATUS_HINT[stt] || 'Channel status from the controller.';
       st.className = stt === 'OK' ? 'ok'
         : stt === 'ERR' ? 'err'
         : (stt === 'DRY' || stt === 'OPEN') ? 'dry' : 'low';
@@ -1135,14 +1584,17 @@ async function fetchLive() {
     }
     syncChartLiveTail(d);
   } catch (e) {
-    const errEl = document.getElementById('feed-error');
-    errEl.style.display = '';
-    errEl.textContent = 'Network error loading /api/live';
+    const af = document.getElementById('alert-feed');
+    if (af) {
+      af.style.display = '';
+      af.textContent = 'Network error loading /api/live';
+    }
+    setAlertNoneVisible(false);
     window._dashLastLive = null;
+    document.getElementById('status-pill').textContent = 'No feed';
     document.getElementById('dot').style.background = '#94a3b8';
-    const salE = document.getElementById('system-alerts');
-    salE.style.display = 'none';
-    salE.innerHTML = '';
+    const salE = document.getElementById('alert-system');
+    if (salE) { salE.style.display = 'none'; salE.innerHTML = ''; }
   }
 }
 
@@ -1151,7 +1603,7 @@ function setMetric(m) {
   document.getElementById('btn-metric-ma').className = m === 'ma' ? 'active' : '';
   document.getElementById('btn-metric-z').className = m === 'impedance' ? 'active' : '';
   document.getElementById('chart-section-title').textContent =
-    m === 'impedance' ? 'Channel history (impedance Ω)' : 'Channel history (current mA)';
+    m === 'impedance' ? 'Trends — impedance (Ω)' : 'Trends — current (mA)';
   chart.options.scales.y.title.text = m === 'impedance' ? 'Ω' : 'mA';
   if (m === 'impedance') {
     delete chart.options.scales.y.min;
@@ -1200,6 +1652,50 @@ function fmtSecs(s) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+function fmtUnixTs(u) {
+  if (u == null || u === '' || !Number.isFinite(Number(u))) return '—';
+  try {
+    const d = new Date(Number(u) * 1000);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' });
+  } catch (e) { return '—'; }
+}
+
+async function fetchSessions() {
+  try {
+    const d = await fetch('/api/sessions?hours=24&limit=20', { cache: 'no-store' }).then(r => r.json());
+    if (d.error) return;
+    const tb = document.getElementById('sessions-body');
+    if (!tb) return;
+    const rows = d.sessions || [];
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="7">No wet sessions in the last 24h.</td></tr>';
+      return;
+    }
+    tb.innerHTML = rows.map((s) => {
+      const chIdx = (s.channel != null && s.channel !== '') ? Number(s.channel) : NaN;
+      const chNum = Number.isFinite(chIdx) ? chIdx + 1 : NaN;
+      const dotColor = (Number.isFinite(chNum) && chNum >= 1 && chNum <= NUM_CH)
+        ? CH_COLORS[chNum - 1] : '#64748b';
+      const chLabel = Number.isFinite(chNum) ? `CH${chNum}` : '—';
+      const dur = (s.duration_s != null && Number.isFinite(Number(s.duration_s)))
+        ? fmtSecs(Number(s.duration_s)) : '—';
+      const avg = (s.avg_ma != null) ? Number(s.avg_ma).toFixed(3) : '—';
+      const peak = (s.peak_ma != null) ? Number(s.peak_ma).toFixed(3) : '—';
+      const z = (s.avg_impedance_ohm != null) ? Number(s.avg_impedance_ohm).toFixed(0) : '—';
+      return `<tr>
+        <td><span class="ch-dot" style="background:${dotColor}"></span>${chLabel}</td>
+        <td>${fmtUnixTs(s.started_at)}</td>
+        <td>${fmtUnixTs(s.ended_at)}</td>
+        <td>${dur}</td>
+        <td class="num">${avg}</td>
+        <td class="num">${peak}</td>
+        <td class="num">${z}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {}
+}
+
 async function fetchStats() {
   try {
     const d = await fetch('/api/stats').then(r => r.json());
@@ -1213,13 +1709,13 @@ async function fetchStats() {
         <td><span class="ch-dot" style="background:${CH_COLORS[s.ch-1]}"></span>CH${s.ch}</td>
         <td id="stat-state-${s.ch}">—</td>
         <td>${fmtSecs(s.protecting_s)}</td>
-        <td>${s.avg_ma.toFixed(3)} mA</td>
-        <td>${s.protecting_pct}%</td>
-        <td>${s.wet_cycles}</td>
-        <td>${s.avg_bus_v.toFixed(2)} V</td>
-        <td>${Number(s.avg_impedance_ohm ?? 0).toFixed(0)}</td>
-        <td>${s.ref_shift_mv != null ? Number(s.ref_shift_mv).toFixed(1) : '—'}</td>
-        <td>${s.temp_f != null ? Number(s.temp_f).toFixed(1) : '—'}</td>
+        <td class="num">${s.avg_ma.toFixed(3)} <span class="muted">mA</span></td>
+        <td class="num">${s.protecting_pct}<span class="muted">%</span></td>
+        <td class="num">${s.wet_cycles}</td>
+        <td class="num">${s.avg_bus_v.toFixed(2)} <span class="muted">V</span></td>
+        <td class="num">${Number(s.avg_impedance_ohm ?? 0).toFixed(0)}</td>
+        <td class="num">${s.ref_shift_mv != null ? Number(s.ref_shift_mv).toFixed(1) : '—'}</td>
+        <td class="num">${s.temp_f != null ? Number(s.temp_f).toFixed(1) : '—'}</td>
       </tr>
     `).join('');
   } catch (e) {}
@@ -1240,8 +1736,8 @@ async function fetchDaily() {
       return `<tr>
         <td><span class="ch-dot" style="background:${CH_COLORS[i]}"></span>CH${i+1}</td>
         <td>${fmtSecs(c.wet_s || 0)}</td>
-        <td>${(c.ma_s || 0).toFixed(0)}</td>
-        <td>${q.toFixed(4)}</td>
+        <td class="num">${(c.ma_s || 0).toFixed(0)}</td>
+        <td class="num">${q.toFixed(4)}</td>
       </tr>`;
     }).join('');
   } catch (e) {}
@@ -1251,10 +1747,12 @@ setInterval(fetchLive, 400);
 setInterval(() => loadHistory(activeMinutes), 2000);
 setInterval(fetchStats, 5000);
 setInterval(fetchDaily, 15000);
+setInterval(fetchSessions, 45000);
 fetchLive();
 loadHistory(60);
 fetchStats();
 fetchDaily();
+fetchSessions();
 </script>
 </body>
 </html>
@@ -1276,8 +1774,10 @@ def main() -> None:
 
     cfg.LOG_DIR.mkdir(parents=True, exist_ok=True)
     _warn_sqlite_lag_support()
+    _tp = cfg.resolved_telemetry_paths()
     print(f"CoilShield dashboard: http://127.0.0.1:{args.port} (bind {args.host}:{args.port})")
-    print(f"Reading from: {cfg.LOG_DIR}")
+    print(f"Telemetry paths (must match main.py): latest.json ← {_tp['latest_json']}")
+    print(f"  LOG_DIR={_tp['log_dir']} (source: {_tp['log_dir_source']})")
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
 
 

@@ -29,6 +29,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(commissioning, "RAMP_SETTLE_S", 0.0)
     monkeypatch.setattr(commissioning, "CONFIRM_TICKS", 1)
     monkeypatch.setattr(commissioning, "TARGET_RAMP_STEP_MA", 0.05)
+    monkeypatch.setattr(cfg, "COMMISSIONING_OC_REPEAT_CUTS", 1)
 
     monkeypatch.setattr(commissioning, "_pump_control", lambda *a, **k: None)
     monkeypatch.setattr(time, "sleep", lambda _s: None)
@@ -42,7 +43,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         commissioning,
         "_instant_off_ref_mv_and_restore",
-        lambda *a, **k: (100.0, 110.0),
+        lambda *a, **k: (100.0, 110.0, 0.0),
     )
 
     ctrl = SimpleNamespace(
