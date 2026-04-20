@@ -82,6 +82,9 @@ I2C_MUX_CHANNEL_ADS1115: int | None = 4
 I2C_MUX_CHANNEL_INA219: int | None = None
 # Per anode index 0..NUM_CHANNELS-1: TCA9548A port before that INA219 (bytes 0x01,0x02,0x04,0x08).
 I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
+# After selecting a mux downstream port, optional settle time before talking to INA219/ADS.
+# Leave 0 unless you see sporadic ``[Errno 5] Input/output error`` on I2C; try 0.0002–0.001.
+I2C_MUX_POST_SELECT_DELAY_S: float = 0.0
 
 # Dedicated INA219 for reference electrode.
 # On the SAME bus as anodes: address must not collide with INA219_ADDRESSES (e.g. 0x42,

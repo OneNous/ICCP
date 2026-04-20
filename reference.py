@@ -269,62 +269,97 @@ def ref_ux_hint(*, baseline_set: bool, hw_ok: bool, skip_commission: bool) -> st
 
 
 def _read_raw_mv_hw() -> float:
+    from i2c_bench import (
+        ads1115_read_single_ended,
+        i2c_bus_lock,
+        ina219_diag_snapshot,
+        mux_select_on_bus,
+    )
+
     if _REF_BACKEND == "ina219":
         if _ref_ina is None:
             raise RuntimeError("[reference] INA219 unavailable — check I2C wiring and address")
+        bus_lock = int(_REF_I2C_BUS)
         try:
-            src = getattr(cfg, "REF_INA219_SOURCE", "bus_v")
-            n = max(1, int(getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1)))
-            if n == 1:
-                return _ina219_scalar_mv(_ref_ina, src)
-            samples = [_ina219_scalar_mv(_ref_ina, src) for _ in range(n)]
-            return float(statistics.median(samples))
+            for attempt in range(2):
+                try:
+                    with i2c_bus_lock(bus_lock):
+                        src = getattr(cfg, "REF_INA219_SOURCE", "bus_v")
+                        n = max(1, int(getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1)))
+                        if n == 1:
+                            return _ina219_scalar_mv(_ref_ina, src)
+                        samples = [_ina219_scalar_mv(_ref_ina, src) for _ in range(n)]
+                        return float(statistics.median(samples))
+                except OSError as e:
+                    if getattr(e, "errno", None) == 5 and attempt == 0:
+                        time.sleep(0.003)
+                        continue
+                    raise
         except Exception as e:
             print(f"[reference] INA219 read failed: {e}")
             try:
                 import smbus2
 
-                from i2c_bench import ina219_diag_snapshot
-
-                sm = smbus2.SMBus(int(_REF_I2C_BUS))
-                try:
-                    snap = ina219_diag_snapshot(
-                        sm,
-                        int(cfg.REF_INA219_ADDRESS),
-                        shunt_ohm=float(cfg.REF_INA219_SHUNT_OHMS),
-                    )
-                    print(f"[reference] DIAG INA219 ref snapshot: {snap!r}")
-                finally:
-                    sm.close()
+                with i2c_bus_lock(bus_lock):
+                    sm = smbus2.SMBus(bus_lock)
+                    try:
+                        snap = ina219_diag_snapshot(
+                            sm,
+                            int(cfg.REF_INA219_ADDRESS),
+                            shunt_ohm=float(cfg.REF_INA219_SHUNT_OHMS),
+                        )
+                        print(f"[reference] DIAG INA219 ref snapshot: {snap!r}")
+                    finally:
+                        sm.close()
             except Exception as snap_e:
                 print(f"[reference] DIAG INA219 ref snapshot skipped: {snap_e}")
             return 0.0
 
     if _ref_smbus is None:
         raise RuntimeError("[reference] ADS1115 unavailable — check I2C wiring and address")
-    try:
-        from i2c_bench import ads1115_read_single_ended, mux_select_on_bus
-
-        mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
-        mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
-        mux_select_on_bus(_ref_smbus, mux_addr, mux_ch)
-        addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
-        ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
-        fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
-        scale = float(getattr(cfg, "REF_ADS_SCALE", 1.0))
-        n = max(1, int(getattr(cfg, "REF_ADS_MEDIAN_SAMPLES", getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1))))
-        dr = int(getattr(cfg, "REF_ADS1115_DR", 5))
-        if n == 1:
-            v = ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr)
-            return v * 1000.0 * scale
-        samples = [
-            ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr) * 1000.0 * scale
-            for _ in range(n)
-        ]
-        return float(statistics.median(samples))
-    except Exception as e:
-        print(f"[reference] ADS1115 read failed: {e}")
-        return 0.0
+    busnum = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))
+    mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+    mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
+    addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
+    ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
+    fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
+    scale = float(getattr(cfg, "REF_ADS_SCALE", 1.0))
+    n = max(
+        1,
+        int(
+            getattr(
+                cfg,
+                "REF_ADS_MEDIAN_SAMPLES",
+                getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1),
+            )
+        ),
+    )
+    dr = int(getattr(cfg, "REF_ADS1115_DR", 5))
+    for attempt in range(2):
+        try:
+            with i2c_bus_lock(busnum):
+                mux_select_on_bus(_ref_smbus, mux_addr, mux_ch)
+                if n == 1:
+                    v = ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr)
+                    return v * 1000.0 * scale
+                samples = [
+                    ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr)
+                    * 1000.0
+                    * scale
+                    for _ in range(n)
+                ]
+                return float(statistics.median(samples))
+        except OSError as e:
+            if getattr(e, "errno", None) == 5 and attempt == 0:
+                time.sleep(0.003)
+                continue
+            print(f"[reference] ADS1115 read failed: {e}")
+            return 0.0
+        except Exception as e:
+            print(f"[reference] ADS1115 read failed: {e}")
+            return 0.0
+    print("[reference] ADS1115 read failed: repeated I/O error (errno 5)")
+    return 0.0
 
 
 def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> float:

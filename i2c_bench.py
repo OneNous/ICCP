@@ -6,8 +6,24 @@ No pi-ina219 / Blinka dependency — works under `sudo` and user venv alike.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
+
+# One lock per /dev/i2c-N adapter. Multiple SMBus() handles + mux (TCA9548A) on the
+# same adapter can produce errno 5 (EIO) on Raspberry Pi kernels; serialize hot-path
+# traffic with :func:`i2c_bus_lock`.
+_I2C_BUS_LOCKS: dict[int, threading.Lock] = {}
+
+
+def i2c_bus_lock(bus: int) -> threading.Lock:
+    """Return a process-wide reentrant-safe lock for ``bus`` (adapter number)."""
+    b = int(bus)
+    lock = _I2C_BUS_LOCKS.get(b)
+    if lock is None:
+        lock = threading.Lock()
+        _I2C_BUS_LOCKS[b] = lock
+    return lock
 
 
 def word_in(raw: int) -> int:
@@ -52,6 +68,19 @@ def mux_select_on_bus(bus: Any, mux_addr: int | None, mux_ch: int | None) -> Non
     if mux_ch < 0 or mux_ch > 7:
         raise ValueError("mux channel must be 0..7")
     bus.write_byte(int(mux_addr), 1 << int(mux_ch))
+    mux_post_select_stabilize()
+
+
+def mux_post_select_stabilize() -> None:
+    """Optional short sleep after mux select (``config.settings.I2C_MUX_POST_SELECT_DELAY_S``)."""
+    try:
+        import config.settings as _cfg
+
+        d = float(getattr(_cfg, "I2C_MUX_POST_SELECT_DELAY_S", 0.0) or 0.0)
+    except Exception:
+        d = 0.0
+    if d > 0:
+        time.sleep(d)
 
 
 def ads1115_behind_i2c_mux(mux_addr: int | None, mux_channel_ads: int | None) -> bool:

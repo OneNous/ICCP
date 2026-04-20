@@ -8,9 +8,12 @@ Run alongside main.py:
 Access from any device on the same network:
     http://<pi-ip>:8080
 
-Reads from (same ``config.settings`` as ``main.py``; override dir with ``COILSHIELD_LOG_DIR`` / ``ICCP_LOG_DIR``):
-    logs/latest.json   — live data (atomic writes from main.py)
-    logs/coilshield.db — history (SQLite WAL, written from main.py)
+Reads from (same ``config.settings`` as ``main.py``). Telemetry directory:
+
+- **Environment:** ``COILSHIELD_LOG_DIR`` or ``ICCP_LOG_DIR`` (absolute path recommended).
+- **CLI (before config import):** ``python3 dashboard.py --log-dir /abs/path/to/logs --host 0.0.0.0``
+
+If the dashboard shows **stale** ``latest.json`` while ``main.py`` is running, the controller is almost certainly writing to a **different** log directory—match env/``--log-dir`` to ``main.py``.
 
 HTTP: /api/live (Cache-Control: no-store; adds feed_age_s, feed_stale_threshold_s), /api/diagnostic, /api/history, /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
 
@@ -26,10 +29,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import time
 from pathlib import Path
+
+
+def _apply_dashboard_argv_log_dir() -> None:
+    """Set COILSHIELD_LOG_DIR from argv before ``import config.settings`` (LOG_DIR is fixed at import)."""
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--log-dir" and i + 1 < len(argv):
+            os.environ["COILSHIELD_LOG_DIR"] = argv[i + 1].strip().strip('"').strip("'")
+            return
+        if a.startswith("--log-dir="):
+            os.environ["COILSHIELD_LOG_DIR"] = a.split("=", 1)[1].strip().strip('"').strip("'")
+            return
+
+
+_apply_dashboard_argv_log_dir()
 
 from flask import Flask, Response, jsonify, make_response, request, send_file
 
@@ -566,39 +585,68 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border: 1px solid rgba(185, 28, 28, 0.25);
     font-weight: 600;
   }
+  .alert-stale {
+    background: var(--amber-bg);
+    color: var(--amber);
+    border: 1px solid rgba(180, 83, 9, 0.28);
+    font-weight: 500;
+  }
+  .alert-stale code { font-size: 12px; word-break: break-all; }
   .alert-none {
     color: var(--csp-text-muted);
     font-size: 13px;
     padding: 8px 0;
   }
 
+  /* Definition rows: use .dl-k / .dl-v (not dt/dd inside div wrappers — invalid dl
+     markup is repaired by browsers and breaks grid/flex in channel cards). */
   .ref-dl, .ch-dl {
     display: grid;
     gap: 0;
     margin: 0;
+    min-width: 0;
   }
   .ref-dl .dl-row, .ch-dl .dl-row {
     display: grid;
-    grid-template-columns: minmax(10rem, 42%) 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px 12px;
     padding: 6px 0;
     border-bottom: 1px solid var(--csp-border);
     font-size: 13px;
     align-items: baseline;
+    min-width: 0;
   }
   .ref-dl .dl-row:last-child, .ch-dl .dl-row:last-child { border-bottom: none; }
-  .ch-dl dt, .ref-dl dt {
+  .ch-dl .dl-k, .ref-dl .dl-k {
     color: var(--csp-text-muted);
     font-weight: 500;
+    min-width: 0;
+    overflow-wrap: break-word;
   }
-  .ch-dl dd, .ref-dl dd {
+  .ch-dl .dl-v, .ref-dl .dl-v {
     margin: 0;
     text-align: right;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
+    min-width: 0;
   }
-  .ch-ma-row dt { font-weight: 700; color: var(--csp-text); }
-  .ch-ma-row dd .ch-ma { font-size: 1.75rem; }
+  .ch-ma-row .dl-k { font-weight: 700; color: var(--csp-text); }
+  .ch-ma-row .dl-v .ch-ma { font-size: 1.75rem; }
+  .ch-dl .dl-row.dl-row-stack {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ch-dl .dl-row.dl-row-stack .dl-v {
+    text-align: left;
+    font-weight: 500;
+    margin-top: 4px;
+  }
+  .ch-dl .dl-row.dl-row-banner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ch-dl .dl-row.dl-row-banner .dl-v {
+    grid-column: 1;
+    text-align: left;
+  }
 
   .ch-adv {
     margin-top: 12px;
@@ -650,15 +698,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   .ch-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 12px;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    /* Equal columns; minmax(0,1fr) prevents content min-width from blowing the grid */
+    grid-template-columns: repeat(var(--ch-cols, 4), minmax(0, 1fr));
+    gap: 16px;
     margin-bottom: 24px;
+  }
+  @media (max-width: 1020px) {
+    .ch-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 520px) {
+    .ch-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
   .ch-card {
     background: var(--csp-surface);
     border: 1px solid var(--csp-border);
     border-radius: var(--csp-radius);
     padding: 14px;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
   }
   .ch-card .ch-label {
     font-size: 11px;
@@ -909,6 +974,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <div id="alert-fault" class="alert-block alert-fault" style="display:none"></div>
     <div id="alert-feed" class="alert-block alert-feed" style="display:none"></div>
+    <div id="alert-stale" class="alert-block alert-stale" style="display:none"></div>
     <div id="alert-system" class="system-alerts" style="display:none"></div>
     <p id="alert-none" class="alert-none">No active alerts.</p>
   </section>
@@ -951,13 +1017,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="section-header">
       <h2 class="section-title">Reference electrode</h2>
     </div>
-    <dl class="ref-dl">
-      <div class="dl-row"><dt title="ADC or front-end reading used for polarization tracking.">Raw reading</dt><dd id="ref-raw">—</dd></div>
-      <div class="dl-row"><dt title="mV vs commissioned baseline; null until baseline exists.">Polarization shift</dt><dd id="ref-shift">—</dd></div>
-      <div class="dl-row"><dt title="Classification band for shift vs expected range.">Shift band</dt><dd id="ref-band">—</dd></div>
-      <div class="dl-row"><dt title="Whether a commissioning baseline has been stored.">Baseline</dt><dd id="ref-baseline">—</dd></div>
-      <div class="dl-row"><dt title="Reference ADC / wiring status from firmware.">Hardware</dt><dd id="ref-hwmsg">—</dd></div>
-    </dl>
+    <div class="ref-dl" role="list">
+      <div class="dl-row"><span class="dl-k" title="ADC or front-end reading used for polarization tracking.">Raw reading</span><span class="dl-v" id="ref-raw">—</span></div>
+      <div class="dl-row"><span class="dl-k" title="mV vs commissioned baseline; null until baseline exists.">Polarization shift</span><span class="dl-v" id="ref-shift">—</span></div>
+      <div class="dl-row"><span class="dl-k" title="Classification band for shift vs expected range.">Shift band</span><span class="dl-v" id="ref-band">—</span></div>
+      <div class="dl-row"><span class="dl-k" title="Whether a commissioning baseline has been stored.">Baseline</span><span class="dl-v" id="ref-baseline">—</span></div>
+      <div class="dl-row"><span class="dl-k" title="Reference ADC / wiring status from firmware.">Hardware</span><span class="dl-v" id="ref-hwmsg">—</span></div>
+    </div>
     <p id="ref-hint-callout" class="ref-hint" style="display:none"></p>
   </section>
 
@@ -966,7 +1032,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <h2 class="section-title">Channels</h2>
       <span style="font-size:12px;color:var(--csp-text-muted)">Live from latest.json</span>
     </div>
-    <div class="ch-grid" id="ch-grid"></div>
+    <div class="ch-grid" id="ch-grid" style="--ch-cols: __NUM_CH__"></div>
   </section>
 
   <div class="section" id="trends">
@@ -1086,88 +1152,88 @@ for (let i = 0; i < NUM_CH; i++) {
         <span class="ch-dot" style="background:${CH_COLORS[i]}"></span>Channel ${i+1}
       </div>
       <div class="ch-state state-OPEN" id="state-${i}">OPEN</div>
-      <dl class="ch-dl ch-meta">
+      <div class="ch-dl ch-meta" role="list">
         <div class="dl-row ch-ma-row">
-          <dt title="Servo-controlled cathodic current for this anode path; compare to per-channel target in the controller.">Output current</dt>
-          <dd><span class="ch-ma" id="ma-${i}">— <small>mA</small></span></dd>
+          <span class="dl-k" title="Servo-controlled cathodic current for this anode path; compare to per-channel target in the controller.">Output current</span>
+          <span class="dl-v"><span class="ch-ma" id="ma-${i}">— <small>mA</small></span></span>
         </div>
         <div class="dl-row">
-          <dt title="Fraction of time the output is on; the controller uses duty to regulate current.">PWM duty</dt>
-          <dd><span id="duty-${i}">—</span><span class="muted"> %</span></dd>
+          <span class="dl-k" title="Fraction of time the output is on; the controller uses duty to regulate current.">PWM duty</span>
+          <span class="dl-v"><span id="duty-${i}">—</span><span class="muted"> %</span></span>
         </div>
         <div class="dl-row">
-          <dt title="Voltage at the channel bus sense (INA219); reflects supply and electrical path health.">Bus voltage</dt>
-          <dd><span id="busv-${i}">—</span><span class="muted"> V</span></dd>
+          <span class="dl-k" title="Voltage at the channel bus sense (INA219); reflects supply and electrical path health.">Bus voltage</span>
+          <span class="dl-v"><span id="busv-${i}">—</span><span class="muted"> V</span></span>
         </div>
         <div class="dl-row">
-          <dt title="Approximate effective V/I in ohms for this tick; very high Z often means dry or weak conduction path.">Effective impedance</dt>
-          <dd><span id="z-${i}">—</span><span class="muted"> Ω</span></dd>
+          <span class="dl-k" title="Approximate effective V/I in ohms for this tick; very high Z often means dry or weak conduction path.">Effective impedance</span>
+          <span class="dl-v"><span id="z-${i}">—</span><span class="muted"> Ω</span></span>
         </div>
         <div class="dl-row">
-          <dt title="Estimated average cell terminal voltage during PWM (bus × duty%).">Cell voltage (est.)</dt>
-          <dd><span id="vcell-${i}">—</span><span class="muted"> V</span></dd>
+          <span class="dl-k" title="Estimated average cell terminal voltage during PWM (bus × duty%).">Cell voltage (est.)</span>
+          <span class="dl-v"><span id="vcell-${i}">—</span><span class="muted"> V</span></span>
         </div>
         <div class="dl-row">
-          <dt title="Electrical power proxy: bus voltage × output current.">DC power</dt>
-          <dd><span id="pow-${i}">—</span><span class="muted"> W</span></dd>
+          <span class="dl-k" title="Electrical power proxy: bus voltage × output current.">DC power</span>
+          <span class="dl-v"><span id="pow-${i}">—</span><span class="muted"> W</span></span>
         </div>
         <div class="dl-row">
-          <dt title="Integrated electrical energy in joules for this channel today (valid sensor reads only).">Energy today</dt>
-          <dd><span id="enj-${i}">—</span><span class="muted"> J</span></dd>
+          <span class="dl-k" title="Integrated electrical energy in joules for this channel today (valid sensor reads only).">Energy today</span>
+          <span class="dl-v"><span id="enj-${i}">—</span><span class="muted"> J</span></span>
         </div>
         <div class="dl-row">
-          <dt title="How much current changes per percentage point of duty change when computable; em dash when not available this tick.">mA per % duty (η)</dt>
-          <dd><span id="eff-${i}">—</span><span class="muted"> mA/%</span></dd>
+          <span class="dl-k" title="How much current changes per percentage point of duty change when computable; em dash when not available this tick.">mA per % duty (η)</span>
+          <span class="dl-v"><span id="eff-${i}">—</span><span class="muted"> mA/%</span></span>
         </div>
         <div class="dl-row">
-          <dt title="Controller health flag: OK on target; LOW marginal; ERR bad read; DRY/OPEN not in closed conducting path.">Channel health</dt>
-          <dd><span id="status-${i}">—</span></dd>
+          <span class="dl-k" title="Controller health flag: OK on target; LOW marginal; ERR bad read; DRY/OPEN not in closed conducting path.">Channel health</span>
+          <span class="dl-v"><span id="status-${i}">—</span></span>
         </div>
-      </dl>
+      </div>
       <details class="ch-adv">
         <summary>Advanced telemetry</summary>
-        <dl class="ch-dl ch-extra">
+        <div class="ch-dl ch-extra" role="list">
           <div class="dl-row">
-            <dt title="Whether the INA219 sample for this channel succeeded on this tick.">Sensor sample</dt>
-            <dd><span id="sens-${i}">—</span></dd>
+            <span class="dl-k" title="Whether the INA219 sample for this channel succeeded on this tick.">Sensor sample</span>
+            <span class="dl-v"><span id="sens-${i}">—</span></span>
           </div>
           <div class="ch-sensor-err" id="ch-err-${i}"></div>
           <div class="dl-row">
-            <dt title="Coulombs delivered today while PROTECTING (∫I·dt / 1000).">Charge today (Q)</dt>
-            <dd><span id="coul-${i}">—</span><span class="muted"> C</span></dd>
+            <span class="dl-k" title="Coulombs delivered today while PROTECTING (∫I·dt / 1000).">Charge today (Q)</span>
+            <span class="dl-v"><span id="coul-${i}">—</span><span class="muted"> C</span></span>
           </div>
           <div class="dl-row">
-            <dt title="Change in effective impedance vs the previous control tick.">Impedance change (ΔZ)</dt>
-            <dd><span id="dz-${i}">—</span><span class="muted"> Ω</span></dd>
+            <span class="dl-k" title="Change in effective impedance vs the previous control tick.">Impedance change (ΔZ)</span>
+            <span class="dl-v"><span id="dz-${i}">—</span><span class="muted"> Ω</span></span>
           </div>
           <div class="dl-row">
-            <dt title="Rolling spread of recent impedance (variability / noise).">Impedance spread (Zσ)</dt>
-            <dd><span id="zstd-${i}">—</span><span class="muted"> Ω</span></dd>
+            <span class="dl-k" title="Rolling spread of recent impedance (variability / noise).">Impedance spread (Zσ)</span>
+            <span class="dl-v"><span id="zstd-${i}">—</span><span class="muted"> Ω</span></span>
           </div>
           <div class="dl-row">
-            <dt title="Conductance proxy (order of 1/Z); higher values suggest an easier current path.">σ proxy</dt>
-            <dd><span id="sigma-${i}">—</span><span class="muted"> s</span></dd>
+            <span class="dl-k" title="Conductance proxy (order of 1/Z); higher values suggest an easier current path.">σ proxy</span>
+            <span class="dl-v"><span id="sigma-${i}">—</span><span class="muted"> s</span></span>
           </div>
           <div class="dl-row">
-            <dt title="Current-to-voltage ratio I/V; raw tick vs exponentially smoothed value (process proxy).">FQI (smooth / raw)</dt>
-            <dd><span id="fqi-${i}">—</span> <span class="muted">(</span><span id="fqir-${i}">—</span><span class="muted"> raw)</span></dd>
+            <span class="dl-k" title="Current-to-voltage ratio I/V; raw tick vs exponentially smoothed value (process proxy).">FQI (smooth / raw)</span>
+            <span class="dl-v"><span id="fqi-${i}">—</span> <span class="muted">(</span><span id="fqir-${i}">—</span><span class="muted"> raw)</span></span>
           </div>
           <div class="dl-row">
-            <dt title="Rate of change of impedance over this control interval.">dZ/dt</dt>
-            <dd><span id="zrate-${i}">—</span><span class="muted"> Ω/s</span></dd>
+            <span class="dl-k" title="Rate of change of impedance over this control interval.">dZ/dt</span>
+            <span class="dl-v"><span id="zrate-${i}">—</span><span class="muted"> Ω/s</span></span>
           </div>
           <div class="dl-row">
-            <dt title="Small-signal resistance estimate from bus voltage and current deltas vs the previous tick.">dV/dI</dt>
-            <dd><span id="dvd-${i}">—</span><span class="muted"> Ω</span></dd>
+            <span class="dl-k" title="Small-signal resistance estimate from bus voltage and current deltas vs the previous tick.">dV/dI</span>
+            <span class="dl-v"><span id="dvd-${i}">—</span><span class="muted"> Ω</span></span>
           </div>
-          <div class="dl-row" style="grid-template-columns:1fr">
-            <dt title="Mapped film/wet hint from the controller (DRY, STABLE_WET, etc.).">Surface hint</dt>
-            <dd style="text-align:left;font-weight:500;margin-top:4px"><span id="surf-${i}">—</span></dd>
+          <div class="dl-row dl-row-stack">
+            <span class="dl-k" title="Mapped film/wet hint from the controller (DRY, STABLE_WET, etc.).">Surface hint</span>
+            <span class="dl-v"><span id="surf-${i}">—</span></span>
           </div>
-          <div class="dl-row" style="grid-template-columns:1fr">
-            <dd style="grid-column:1;text-align:left"><span id="zero-flag-${i}" style="display:none" class="elec-zero"></span></dd>
+          <div class="dl-row dl-row-banner">
+            <span class="dl-v"><span id="zero-flag-${i}" style="display:none" class="elec-zero"></span></span>
           </div>
-        </dl>
+        </div>
       </details>
     </div>`;
 }
@@ -1347,6 +1413,8 @@ async function fetchLive() {
     if (d.error) {
       alertFeed.style.display = '';
       alertFeed.textContent = d.error;
+      const ast = document.getElementById('alert-stale');
+      if (ast) { ast.style.display = 'none'; ast.innerHTML = ''; }
       if (alertFault) { alertFault.style.display = 'none'; alertFault.textContent = ''; }
       if (alertSys) { alertSys.style.display = 'none'; alertSys.innerHTML = ''; }
       setAlertNoneVisible(false);
@@ -1369,6 +1437,7 @@ async function fetchLive() {
     }
     alertFeed.style.display = 'none';
     alertFeed.textContent = '';
+    const alertStale = document.getElementById('alert-stale');
     window._dashLastLive = d;
 
     const age = d.feed_age_s;
@@ -1472,6 +1541,24 @@ async function fetchLive() {
       } else {
         alertFault.style.display = 'none';
         alertFault.textContent = '';
+      }
+    }
+
+    if (alertStale) {
+      if (stale && typeof age === 'number') {
+        const p = (d.telemetry_paths && d.telemetry_paths.latest_json)
+          ? d.telemetry_paths.latest_json : '';
+        alertStale.style.display = '';
+        alertStale.innerHTML =
+          '<strong>Live feed is stale</strong> — <code>latest.json</code> has not been updated in ' +
+          '<strong>' + age.toFixed(0) + 's</strong>. The numbers below are from the last successful write, not real time. ' +
+          'Start <code>main.py</code> on this host (or fix systemd) and use the <strong>same</strong> telemetry directory as this dashboard. ' +
+          (p ? 'This instance reads: <code>' + p + '</code>' : '') +
+          '<br><span style="font-size:12px;opacity:.95">Tip: <code>export COILSHIELD_LOG_DIR=/abs/path</code> for both processes, or <code>python3 dashboard.py --log-dir /abs/path/logs ...</code></span>';
+        anyAlert = true;
+      } else {
+        alertStale.style.display = 'none';
+        alertStale.innerHTML = '';
       }
     }
 
@@ -1585,6 +1672,8 @@ async function fetchLive() {
     syncChartLiveTail(d);
   } catch (e) {
     const af = document.getElementById('alert-feed');
+    const ast = document.getElementById('alert-stale');
+    if (ast) { ast.style.display = 'none'; ast.innerHTML = ''; }
     if (af) {
       af.style.display = '';
       af.textContent = 'Network error loading /api/live';
@@ -1770,6 +1859,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description="CoilShield web dashboard")
     p.add_argument("--port", type=int, default=8080)
     p.add_argument("--host", default="0.0.0.0")
+    p.add_argument(
+        "--log-dir",
+        metavar="DIR",
+        default=None,
+        help="Telemetry directory (absolute path). Same as COILSHIELD_LOG_DIR; applied from argv before config import.",
+    )
     args = p.parse_args()
 
     cfg.LOG_DIR.mkdir(parents=True, exist_ok=True)
