@@ -7,6 +7,12 @@ CoilShield `iccp` CLI — entry point for console_scripts `iccp`.
   iccp probe [args ...]    Full hardware probe (see hw_probe.py)
   iccp clear-fault         Touch clear_fault (uses config CLEAR_FAULT_FILE)
   iccp version             Package / install version
+
+  iccp live                Print logs/latest.json (pretty JSON; run while main.py is active).
+
+  iccp diag [--request]    Print logs/diagnostic_snapshot.json if present.
+                             --request touches logs/request_diag (main loop writes snapshot).
+
   iccp --help              Usage
 """
 
@@ -68,6 +74,46 @@ def _cmd_clear_fault() -> int:
     except OSError as e:
         print(f"ERROR: could not write {path}: {e}", file=sys.stderr)
         return 1
+
+
+def _cmd_live() -> int:
+    import json
+
+    import config.settings as cfg
+
+    p = cfg.LOG_DIR / cfg.LATEST_JSON_NAME
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"ERROR reading {p}: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(data, indent=2))
+    return 0
+
+
+def _cmd_diag(rest: list[str]) -> int:
+    import config.settings as cfg
+
+    snap = cfg.LOG_DIR / getattr(cfg, "DIAGNOSTIC_SNAPSHOT_JSON", "diagnostic_snapshot.json")
+    if "--request" in rest:
+        req = cfg.LOG_DIR / getattr(cfg, "DIAGNOSTIC_REQUEST_FILE", "request_diag")
+        try:
+            cfg.LOG_DIR.mkdir(parents=True, exist_ok=True)
+            req.touch()
+        except OSError as e:
+            print(f"ERROR: could not touch {req}: {e}", file=sys.stderr)
+            return 1
+        print(
+            f"OK: {req} — start or keep main.py running; snapshot → "
+            f"{snap.name} (rate-limited)."
+        )
+        return 0
+    try:
+        print(snap.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(f"No snapshot at {snap} yet.", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _cmd_version() -> int:
@@ -180,6 +226,12 @@ def main() -> int:
 
     if cmd in ("version", "-V", "--version"):
         return _cmd_version()
+
+    if cmd == "live":
+        return _cmd_live()
+
+    if cmd == "diag":
+        return _cmd_diag(rest)
 
     print(f"Unknown command: {cmd!r}. Try: iccp --help", file=sys.stderr)
     return 2

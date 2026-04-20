@@ -25,7 +25,7 @@ daily_totals: per-calendar-day chN_ma_s (mA·s), chN_wet_s (seconds PROTECTING),
 Per-channel derived telemetry (latest.json + CSV; see also readings.cross_*):
   σ_proxy = 1/Z, smoothed FQI ≈ EMA(I/V), z_std_ohm, z_rate_ohm_s, dV_dI_ohm,
   efficiency_ma_per_pct, surface_hint (DRY / FILM_FORMING / STABLE_WET / SATURATED),
-  energy_today_j. System cross-channel: i_cv, z_cv (pstdev/mean when ≥2 channels OK).
+  energy_today_j, reading_ok (INA219 sample succeeded). System cross-channel: i_cv, z_cv (pstdev/mean when ≥2 channels OK).
 
 CSV vs SQLite/latest.json:
   SQLite and latest.json are written every control tick (near real-time).
@@ -470,6 +470,7 @@ class DataLogger:
         ref_hint: str | None = None,
         ref_hw_message: str | None = None,
         ref_baseline_set: bool | None = None,
+        diag_extra: dict[str, object] | None = None,
     ) -> dict[str, object]:
         wet = any_wet
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -553,11 +554,18 @@ class DataLogger:
                 else "UNKNOWN"
             )
 
+            sensor_err = ""
+            if not ok:
+                raw_err = r.get("error")
+                if raw_err is not None:
+                    sensor_err = str(raw_err).strip()[:400]
+
             channels[i] = {
                 "state": state,
                 "ma": ma,
                 "duty": duty,
                 "bus_v": bus_v,
+                "sensor_error": sensor_err,
                 "status": status,
                 "impedance_ohm": z_ohm,
                 "cell_voltage_v": v_cell,
@@ -631,11 +639,33 @@ class DataLogger:
         self._maybe_periodic_purge()
 
         def _ch_public(d: dict) -> dict:
-            return {k: v for k, v in d.items() if not k.startswith("_")}
+            out = {k: v for k, v in d.items() if not k.startswith("_")}
+            if "_reading_ok" in d:
+                out["reading_ok"] = bool(d["_reading_ok"])
+            return out
 
         public_channels: dict[str, dict] = {
             str(i): _ch_public(d) for i, d in channels.items()
         }
+
+        system_alerts: list[str] = []
+        if faults:
+            system_alerts.extend(str(x) for x in faults if str(x).strip())
+        for i in range(cfg.NUM_CHANNELS):
+            se = (channels[i].get("sensor_error") or "").strip()
+            if se:
+                system_alerts.append(f"CH{i + 1} sensor: {se}")
+        if ref_hw_ok is False:
+            rh = (ref_hw_message or "").strip() or "reference ADC not reachable"
+            system_alerts.append(f"Reference: {rh}")
+        if diag_extra and isinstance(diag_extra, dict):
+            refd = diag_extra.get("ref")
+            if isinstance(refd, dict):
+                rie = refd.get("ref_init_error")
+                if rie:
+                    line = f"Ref diagnostics: {rie}"
+                    if line not in system_alerts:
+                        system_alerts.append(str(line)[:500])
 
         payload: dict = {
             "ts": ts,
@@ -644,6 +674,7 @@ class DataLogger:
             "wet_channels": wet_channels,
             "fault_latched": fault_latched,
             "faults": list(faults),
+            "system_alerts": system_alerts,
             "channels": public_channels,
             "total_ma": total_ma,
             "supply_v_avg": supply_v_avg,
@@ -666,6 +697,8 @@ class DataLogger:
             bool(ref_baseline_set) if ref_baseline_set is not None else False
         )
         payload["temp_f"] = temp_f
+        if diag_extra:
+            payload["diag"] = diag_extra
         _atomic_write_same_dir(self._latest_path, json.dumps(payload))
 
         pre_sig = self._fault_signature

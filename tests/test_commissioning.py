@@ -61,3 +61,31 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     assert "commissioned_at" in data
     assert isinstance(data["native_mv"], (int, float))
     assert data.get("final_shift_mv") == 110.0
+
+
+def test_ina_confirm_off_details_current_fail() -> None:
+    readings = {
+        i: {"ok": True, "current": 0.0, "bus_v": 5.0} for i in range(cfg.NUM_CHANNELS)
+    }
+    readings[1] = {"ok": True, "current": 9.0, "bus_v": 5.0}
+    ok, reasons = commissioning._ina_confirm_off_details(
+        readings,
+        None,
+        cut_ch=None,
+        mode="current",
+    )
+    assert ok is False
+    assert any("CH1" in r for r in reasons)
+    assert "9.0" in reasons[0]
+
+
+def test_ina_confirm_off_details_not_ok_shows_error() -> None:
+    readings = {0: {"ok": False, "error": "NACK", "current": 0.0, "bus_v": 0.0}}
+    ok, reasons = commissioning._ina_confirm_off_details(
+        readings,
+        None,
+        cut_ch=0,
+        mode="current",
+    )
+    assert ok is False
+    assert "NACK" in reasons[0]

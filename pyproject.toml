@@ -28,6 +28,8 @@ include = ["config*"]
 [tool.setuptools]
 py-modules = [
     "main",
+    "iccp_runtime",
+    "diagnostics",
     "iccp_cli",
     "hw_probe",
     "i2c_bench",

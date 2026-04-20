@@ -73,6 +73,68 @@ def _snapshot_bus_v(readings: dict[int, dict]) -> dict[int, float]:
     return out
 
 
+def _ina_confirm_off_details(
+    readings: dict[int, dict],
+    pre_bus: dict[int, float] | None,
+    *,
+    cut_ch: int | None,
+    mode: str,
+) -> tuple[bool, list[str]]:
+    """Return (all gates pass, human-readable failure lines for the checked channels)."""
+    mode_l = str(mode).lower().strip()
+    if mode_l in ("", "none"):
+        return True, []
+    chs = range(cfg.NUM_CHANNELS) if cut_ch is None else (cut_ch,)
+    i_max = float(getattr(cfg, "COMMISSIONING_OC_CONFIRM_I_MA", 0.15))
+    dv_min = float(getattr(cfg, "COMMISSIONING_OCBUS_MAX_DELTA_V", 0.05))
+    reasons: list[str] = []
+    for ch in chs:
+        r = readings.get(ch, {})
+        if not r.get("ok"):
+            err = r.get("error", "unknown")
+            reasons.append(f"CH{ch} INA219 not ok ({err})")
+            return False, reasons
+        cur = abs(float(r.get("current", 999.0)))
+        cur_ok = cur < i_max
+        if mode_l == "current":
+            if not cur_ok:
+                reasons.append(
+                    f"CH{ch} |I|={cur:.4f} mA >= {i_max:g} mA (mode=current)"
+                )
+                return False, reasons
+        elif mode_l == "delta_v":
+            if not pre_bus or ch not in pre_bus:
+                reasons.append(f"CH{ch} delta_v: missing pre_bus snapshot")
+                return False, reasons
+            dv = pre_bus[ch] - float(r.get("bus_v", 0.0))
+            if dv < dv_min:
+                reasons.append(
+                    f"CH{ch} bus delta {dv:.4f} V < {dv_min:g} V (mode=delta_v; "
+                    f"pre={pre_bus[ch]:.4f} V now={float(r.get('bus_v', 0.0)):.4f} V)"
+                )
+                return False, reasons
+        elif mode_l == "both":
+            if not cur_ok:
+                reasons.append(
+                    f"CH{ch} |I|={cur:.4f} mA >= {i_max:g} mA (mode=both)"
+                )
+                return False, reasons
+            if pre_bus and ch in pre_bus:
+                dv = pre_bus[ch] - float(r.get("bus_v", 0.0))
+                if dv < dv_min:
+                    reasons.append(
+                        f"CH{ch} bus delta {dv:.4f} V < {dv_min:g} V (mode=both)"
+                    )
+                    return False, reasons
+        else:
+            if not cur_ok:
+                reasons.append(
+                    f"CH{ch} |I|={cur:.4f} mA >= {i_max:g} mA (mode={mode_l!r})"
+                )
+                return False, reasons
+    return True, []
+
+
 def _ina_confirm_off(
     readings: dict[int, dict],
     pre_bus: dict[int, float] | None,
@@ -80,36 +142,7 @@ def _ina_confirm_off(
     cut_ch: int | None,
     mode: str,
 ) -> bool:
-    mode_l = str(mode).lower().strip()
-    if mode_l in ("", "none"):
-        return True
-    chs = range(cfg.NUM_CHANNELS) if cut_ch is None else (cut_ch,)
-    i_max = float(getattr(cfg, "COMMISSIONING_OC_CONFIRM_I_MA", 0.15))
-    dv_min = float(getattr(cfg, "COMMISSIONING_OCBUS_MAX_DELTA_V", 0.05))
-    for ch in chs:
-        r = readings.get(ch, {})
-        if not r.get("ok"):
-            return False
-        cur = abs(float(r.get("current", 999.0)))
-        cur_ok = cur < i_max
-        if mode_l == "current":
-            if not cur_ok:
-                return False
-        elif mode_l == "delta_v":
-            if not pre_bus or ch not in pre_bus:
-                return False
-            if (pre_bus[ch] - float(r.get("bus_v", 0.0))) < dv_min:
-                return False
-        elif mode_l == "both":
-            if not cur_ok:
-                return False
-            if pre_bus and ch in pre_bus:
-                if (pre_bus[ch] - float(r.get("bus_v", 0.0))) < dv_min:
-                    return False
-        else:
-            if not cur_ok:
-                return False
-    return True
+    return _ina_confirm_off_details(readings, pre_bus, cut_ch=cut_ch, mode=mode)[0]
 
 
 def _wait_ina_oc_confirm(
@@ -128,11 +161,37 @@ def _wait_ina_oc_confirm(
     deadline = time.monotonic() + float(
         getattr(cfg, "COMMISSIONING_OC_CONFIRM_TIMEOUT_S", 0.5)
     )
+    last_readings: dict[int, dict] = {}
+    last_reasons: list[str] = []
     while time.monotonic() < deadline:
         readings = _sensor_readings(sim_state)
-        if _ina_confirm_off(readings, pre_bus, cut_ch=cut_ch, mode=mode):
+        last_readings = readings
+        ok, reasons = _ina_confirm_off_details(
+            readings, pre_bus, cut_ch=cut_ch, mode=mode
+        )
+        last_reasons = reasons
+        if ok:
             return True
         time.sleep(0.005)
+    print(
+        f"[commission {time.strftime('%H:%M:%S')}] "
+        "INA219 OC confirm timeout — last gate failures:"
+    )
+    for ln in last_reasons:
+        print(f"    {ln}")
+    print("    last per-channel snapshot (ok, mA, bus_v, err):")
+    for ch in range(cfg.NUM_CHANNELS):
+        r = last_readings.get(ch, {})
+        print(
+            f"      CH{ch}: ok={r.get('ok')} I={r.get('current', '—')} "
+            f"bus_v={r.get('bus_v', '—')} err={r.get('error', '')!r}"
+        )
+    print(
+        f"    mode={mode!r}  COMMISSIONING_OC_CONFIRM_I_MA="
+        f"{getattr(cfg, 'COMMISSIONING_OC_CONFIRM_I_MA', 0.15)!r}  "
+        f"COMMISSIONING_OCBUS_MAX_DELTA_V="
+        f"{getattr(cfg, 'COMMISSIONING_OCBUS_MAX_DELTA_V', 0.05)!r}"
+    )
     return False
 
 
@@ -154,7 +213,8 @@ def _channels_shunt_below(
     for ch in range(cfg.NUM_CHANNELS):
         r = readings.get(ch, {})
         if not r.get("ok"):
-            issues.append(f"CH{ch} INA219 not ok")
+            err = r.get("error", "unknown")
+            issues.append(f"CH{ch} INA219 not ok ({err})")
             continue
         cur = abs(float(r.get("current", 999.0)))
         if cur >= i_max_ma:

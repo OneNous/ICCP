@@ -12,7 +12,7 @@ Reads from:
     logs/latest.json   — live data (atomic writes from main.py)
     logs/coilshield.db — history (SQLite WAL, written from main.py)
 
-HTTP: /api/live, /api/history, /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
+HTTP: /api/live (Cache-Control: no-store; adds feed_age_s, feed_stale_threshold_s), /api/diagnostic, /api/history, /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
 
 SQL column names for `readings` / `wet_sessions` / `daily_totals` MUST stay in sync with logger.py _init_schema.
 
@@ -31,7 +31,7 @@ import sys
 import time
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_file
+from flask import Flask, Response, jsonify, make_response, request, send_file
 
 import config.settings as cfg
 
@@ -39,6 +39,9 @@ app = Flask(__name__)
 
 DB_PATH = cfg.LOG_DIR / cfg.SQLITE_DB_NAME
 LATEST_PATH = cfg.LOG_DIR / cfg.LATEST_JSON_NAME
+DIAGNOSTIC_SNAPSHOT_PATH = cfg.LOG_DIR / getattr(
+    cfg, "DIAGNOSTIC_SNAPSHOT_JSON", "diagnostic_snapshot.json"
+)
 
 
 def _sqlite_version_tuple() -> tuple[int, int, int]:
@@ -81,9 +84,40 @@ def _latest() -> dict:
         return {"error": "no data yet — is main.py running?"}
 
 
+def _live_envelope() -> dict:
+    """Payload for /api/live: latest.json plus feed-health metadata for the UI."""
+    data = _latest()
+    try:
+        st = LATEST_PATH.stat()
+        data["feed_file_mtime_unix"] = round(st.st_mtime, 6)
+        data["feed_age_s"] = round(time.time() - st.st_mtime, 3)
+    except OSError:
+        data["feed_file_mtime_unix"] = None
+        data["feed_age_s"] = None
+    data["sample_interval_s"] = float(cfg.SAMPLE_INTERVAL_S)
+    # If main.py stops, latest.json stops updating; UI treats age above this as stale.
+    data["feed_stale_threshold_s"] = max(3.0, 3.0 * float(cfg.SAMPLE_INTERVAL_S))
+    data["target_ma"] = float(cfg.TARGET_MA)
+    return data
+
+
 @app.route("/api/live")
 def api_live():
-    return jsonify(_latest())
+    resp = make_response(jsonify(_live_envelope()))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/api/diagnostic")
+def api_diagnostic():
+    """Last deep I2C snapshot from `touch logs/request_diag` while main is running."""
+    try:
+        raw = DIAGNOSTIC_SNAPSHOT_PATH.read_text(encoding="utf-8")
+        return Response(raw, mimetype="application/json")
+    except FileNotFoundError:
+        return jsonify({"error": "no diagnostic_snapshot.json yet"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
 
 
 @app.route("/api/history")
@@ -94,15 +128,6 @@ def api_history():
         metric = "ma"
     since = time.time() - minutes * 60
 
-    if minutes <= 15:
-        step = 1
-    elif minutes <= 60:
-        step = 10
-    elif minutes <= 360:
-        step = 60
-    else:
-        step = 300
-
     try:
         with _db() as conn:
             rows = conn.execute(
@@ -112,7 +137,15 @@ def api_history():
     except Exception:
         return jsonify({"error": "database not ready"}), 503
 
-    sampled = rows[::step]
+    # Downsample to a bounded point count so the chart stays responsive, but keep
+    # full resolution when there are few rows (avoids an empty-looking 1h graph).
+    max_points = 1800
+    n = len(rows)
+    if n == 0:
+        sampled = []
+    else:
+        step = max(1, (n + max_points - 1) // max_points)
+        sampled = rows[::step]
     labels = [r["ts"][11:19] for r in sampled]
     channels = {str(i): [] for i in range(cfg.NUM_CHANNELS)}
     total: list[float | None] = []
@@ -131,17 +164,21 @@ def api_history():
         total.append(r["total_ma"])
 
     tgt = cfg.TARGET_MA if metric == "ma" else None
-    return jsonify(
-        {
-            "labels": labels,
-            "channels": channels,
-            "total": total,
-            "target": tgt,
-            "metric": metric,
-            "count": len(sampled),
-            "minutes": minutes,
-        }
+    resp = make_response(
+        jsonify(
+            {
+                "labels": labels,
+                "channels": channels,
+                "total": total,
+                "target": tgt,
+                "metric": metric,
+                "count": len(sampled),
+                "minutes": minutes,
+            }
+        )
     )
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/api/stats")
@@ -535,6 +572,80 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-size: 13px;
     border-bottom: 1px solid var(--csp-border);
   }
+  .feed-error {
+    background: var(--red-bg);
+    color: var(--red);
+    padding: 10px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--csp-border);
+  }
+  .system-alerts {
+    background: var(--red-bg);
+    color: var(--red);
+    padding: 12px 20px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--csp-border);
+    border-left: 4px solid var(--red);
+  }
+  .system-alerts strong {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 700;
+  }
+  .system-alerts ul {
+    margin: 0;
+    padding-left: 1.25rem;
+    line-height: 1.45;
+  }
+  .ch-sensor-err {
+    display: none;
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--red);
+    font-weight: 500;
+    word-break: break-word;
+  }
+  .subhdr {
+    background: var(--csp-surface);
+    border-bottom: 1px solid var(--csp-border);
+    padding: 10px 20px;
+    font-size: 12px;
+    color: var(--csp-text-muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    align-items: baseline;
+  }
+  .subhdr strong { color: var(--csp-text); font-weight: 600; }
+  .subhdr .stale { color: var(--red); font-weight: 700; }
+  .ch-extra {
+    font-size: 11px;
+    line-height: 1.65;
+    color: var(--csp-text-muted);
+    margin-top: 10px;
+    border-top: 1px solid var(--csp-border);
+    padding-top: 10px;
+  }
+  .ch-extra .sensor-ok { color: var(--green); font-weight: 600; }
+  .ch-extra .sensor-bad { color: var(--red); font-weight: 600; }
+  .ch-extra .elec-zero {
+    display: inline-block;
+    margin-top: 4px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--gray-bg);
+    font-weight: 600;
+    color: var(--gray-text);
+  }
+  .chart-note {
+    font-size: 12px;
+    color: var(--csp-text-muted);
+    line-height: 1.45;
+    margin: 0 0 14px;
+    max-width: 52rem;
+  }
 </style>
 </head>
 <body>
@@ -554,6 +665,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <span id="hdr-fault" class="header-fault" style="display:none">⚠ FAULT LATCHED</span>
   </div>
 </header>
+
+<div id="feed-error" class="feed-error" role="alert" style="display:none"></div>
+<div id="system-alerts" class="system-alerts" role="alert" style="display:none"></div>
+<div class="subhdr" id="subhdr">
+  <span id="hdr-feed"></span>
+  <span id="hdr-cross"></span>
+  <span id="hdr-anywet"></span>
+  <span id="hdr-faults"></span>
+  <span id="hdr-refhw"></span>
+</div>
 
 <div id="ux-banner" class="ux-banner" role="status" style="display:none"></div>
 
@@ -579,6 +700,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <a href="/api/sessions?hours=720&amp;limit=5000" download="wet_sessions.json">↓ Wet sessions JSON</a>
       </div>
     </div>
+    <p class="chart-note">The line trace is loaded from the database (auto downsampled). The same chart is pushed forward on each live poll (~400&nbsp;ms) from <code>latest.json</code>, so the right edge tracks the controller between DB refreshes. In mA mode, <strong>Total mA</strong> is the sum of all channels. Legend click-to-hide is disabled so traces stay visible.</p>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
   </div>
 
@@ -649,10 +771,23 @@ for (let i = 0; i < NUM_CH; i++) {
         P: <span id="pow-${i}">—</span> W · E: <span id="enj-${i}">—</span> J<br>
         η: <span id="eff-${i}">—</span> mA/% · Status: <span id="status-${i}">—</span>
       </div>
+      <div class="ch-extra">
+        <span id="sens-line-${i}">Sensor: <span id="sens-${i}">—</span></span>
+        <div class="ch-sensor-err" id="ch-err-${i}"></div>
+        · Q today: <span id="coul-${i}">—</span> C<br>
+        ΔZ: <span id="dz-${i}">—</span> Ω · Zσ: <span id="zstd-${i}">—</span> Ω<br>
+        σ*: <span id="sigma-${i}">—</span> s · FQI: <span id="fqi-${i}">—</span> (raw <span id="fqir-${i}">—</span>)<br>
+        dZ/dt: <span id="zrate-${i}">—</span> Ω/s · dV/dI: <span id="dvd-${i}">—</span> Ω<br>
+        <span id="surf-${i}">—</span>
+        <span id="zero-flag-${i}" style="display:none" class="elec-zero"></span>
+      </div>
     </div>`;
 }
 
 const ctx = document.getElementById('chart').getContext('2d');
+const TOTAL_DS = NUM_CH + 1;
+const MAX_CHART_POINTS = 2400;
+
 chart = new Chart(ctx, {
   type: 'line',
   data: {
@@ -661,21 +796,36 @@ chart = new Chart(ctx, {
       {
         label: 'Target', data: [], borderColor: '#94a3b8',
         borderDash: [5, 5], borderWidth: 1.5, pointRadius: 0,
-        fill: false, tension: 0,
+        fill: false, tension: 0, hidden: false,
       },
       ...Array.from({length: NUM_CH}, (_, i) => ({
         label: `CH${i+1}`,
         data: [], borderColor: CH_COLORS[i],
         backgroundColor: 'transparent',
-        borderWidth: 1.5, pointRadius: 0, tension: 0.2, fill: false,
+        borderWidth: 1.5, pointRadius: 0, tension: 0.2, fill: false, hidden: false,
       })),
+      {
+        label: 'Total mA',
+        data: [],
+        borderColor: '#475569',
+        borderWidth: 1.8,
+        pointRadius: 0,
+        tension: 0.15,
+        fill: false,
+        hidden: false,
+      },
     ]
   },
   options: {
     animation: false, responsive: true, maintainAspectRatio: false,
     interaction: { mode: 'index', intersect: false },
     plugins: {
-      legend: { position: 'top', labels: { boxWidth: 12, font: { size: 12 } } },
+      legend: {
+        position: 'top',
+        labels: { boxWidth: 12, font: { size: 12 } },
+        /* Avoid click-to-hide: an empty chart when all series are toggled off. */
+        onClick: () => {},
+      },
       tooltip: { callbacks: { label: ctx => {
         const u = chartMetric === 'impedance' ? 'Ω' : 'mA';
         const y = ctx.parsed.y;
@@ -683,10 +833,11 @@ chart = new Chart(ctx, {
       }}}
     },
     scales: {
-      x: { ticks: { maxTicksLimit: 10, font: { size: 11 }, color: '#5c5c5c' }, grid: { color: 'rgba(43,43,43,0.08)' } },
+      x: { ticks: { maxTicksLimit: 12, font: { size: 11 }, color: '#5c5c5c' }, grid: { color: 'rgba(43,43,43,0.08)' } },
       y: {
         title: { display: true, text: 'mA', font: { size: 11 }, color: '#5c5c5c' },
         min: 0,
+        grace: '8%',
         ticks: { font: { size: 11 }, color: '#5c5c5c' },
         grid: { color: 'rgba(43,43,43,0.08)' }
       }
@@ -694,17 +845,166 @@ chart = new Chart(ctx, {
   }
 });
 
+function syncChartLiveTail(d) {
+  if (!chart || !d.channels || d.error) return;
+  const lab = (d.ts && d.ts.length >= 19) ? d.ts.slice(11, 19) : '';
+  if (!lab) return;
+
+  const tgtMa = (d.target_ma != null && d.target_ma !== '')
+    ? Number(d.target_ma) : null;
+
+  function yForCh(ch) {
+    if (!ch) return null;
+    if (chartMetric === 'impedance') {
+      const z = ch.impedance_ohm;
+      return (typeof z === 'number' && Number.isFinite(z)) ? z : null;
+    }
+    const ma = Number(ch.ma);
+    return Number.isFinite(ma) ? ma : null;
+  }
+
+  function pushArrays(tgt, totMa) {
+    chart.data.labels.push(lab);
+    chart.data.datasets[0].data.push(chartMetric === 'ma' ? tgt : null);
+    for (let i = 0; i < NUM_CH; i++) {
+      chart.data.datasets[i + 1].data.push(yForCh(d.channels[String(i)]));
+    }
+    chart.data.datasets[TOTAL_DS].data.push(
+      chartMetric === 'ma' && totMa != null && Number.isFinite(totMa) ? totMa : null
+    );
+  }
+
+  function writeAt(idx, tgt, totMa) {
+    chart.data.datasets[0].data[idx] = chartMetric === 'ma' ? tgt : null;
+    for (let i = 0; i < NUM_CH; i++) {
+      chart.data.datasets[i + 1].data[idx] = yForCh(d.channels[String(i)]);
+    }
+    chart.data.datasets[TOTAL_DS].data[idx] =
+      chartMetric === 'ma' && totMa != null && Number.isFinite(totMa) ? totMa : null;
+  }
+
+  const n = chart.data.labels.length;
+  const totMa = Number(d.total_ma);
+  const tgt = chartMetric === 'ma' ? tgtMa : null;
+
+  if (n > 0 && chart.data.labels[n - 1] === lab) {
+    writeAt(n - 1, tgt, totMa);
+  } else {
+    pushArrays(tgt, totMa);
+    while (chart.data.labels.length > MAX_CHART_POINTS) {
+      chart.data.labels.shift();
+      for (let di = 0; di < chart.data.datasets.length; di++) {
+        chart.data.datasets[di].data.shift();
+      }
+    }
+  }
+  chart.update('none');
+}
+
+function fmtOpt(x, digits, suffix = '') {
+  if (x == null || x === '') return '—';
+  const n = Number(x);
+  if (!Number.isFinite(n)) return '—';
+  return n.toFixed(digits) + suffix;
+}
+
+function paintChannelUnknown(i) {
+  const stateEl = document.getElementById(`state-${i}`);
+  stateEl.textContent = 'UNKNOWN';
+  stateEl.className = 'ch-state state-UNKNOWN';
+  document.getElementById(`ma-${i}`).innerHTML = '— <small>mA</small>';
+  document.getElementById(`duty-${i}`).textContent = '—';
+  document.getElementById(`busv-${i}`).textContent = '—';
+  document.getElementById(`z-${i}`).textContent = '—';
+  document.getElementById(`vcell-${i}`).textContent = '—';
+  const st = document.getElementById(`status-${i}`);
+  st.textContent = '—';
+  st.className = '';
+  document.getElementById(`pow-${i}`).textContent = '—';
+  document.getElementById(`enj-${i}`).textContent = '—';
+  document.getElementById(`eff-${i}`).textContent = '—';
+  document.getElementById(`sens-${i}`).textContent = '—';
+  document.getElementById(`sens-${i}`).className = '';
+  document.getElementById(`coul-${i}`).textContent = '—';
+  document.getElementById(`dz-${i}`).textContent = '—';
+  document.getElementById(`zstd-${i}`).textContent = '—';
+  document.getElementById(`sigma-${i}`).textContent = '—';
+  document.getElementById(`fqi-${i}`).textContent = '—';
+  document.getElementById(`fqir-${i}`).textContent = '—';
+  document.getElementById(`zrate-${i}`).textContent = '—';
+  document.getElementById(`dvd-${i}`).textContent = '—';
+  document.getElementById(`surf-${i}`).textContent = '—';
+  const zf = document.getElementById(`zero-flag-${i}`);
+  zf.style.display = 'none';
+  zf.textContent = '';
+  const cerr = document.getElementById(`ch-err-${i}`);
+  if (cerr) {
+    cerr.style.display = 'none';
+    cerr.textContent = '';
+  }
+}
+
 async function fetchLive() {
   try {
-    const d = await fetch('/api/live').then(r => r.json());
-    if (d.error) return;
+    const d = await fetch('/api/live', { cache: 'no-store' }).then(r => r.json());
+    const errEl = document.getElementById('feed-error');
+    if (d.error) {
+      errEl.style.display = '';
+      errEl.textContent = d.error;
+      window._dashLastLive = null;
+      document.getElementById('hdr-feed').textContent = '';
+      document.getElementById('hdr-cross').textContent = '';
+      document.getElementById('hdr-anywet').textContent = '';
+      document.getElementById('hdr-faults').textContent = '';
+      document.getElementById('hdr-refhw').textContent = '';
+      document.getElementById('dot').style.background = '#94a3b8';
+      const sal0 = document.getElementById('system-alerts');
+      sal0.style.display = 'none';
+      sal0.innerHTML = '';
+      for (let i = 0; i < NUM_CH; i++) paintChannelUnknown(i);
+      return;
+    }
+    errEl.style.display = 'none';
+    errEl.textContent = '';
+    window._dashLastLive = d;
 
-    document.getElementById('ts').textContent = d.ts;
-    document.getElementById('hdr-supply').textContent = `Supply: ${d.supply_v_avg}V`;
+    const age = d.feed_age_s;
+    const thr = d.feed_stale_threshold_s ?? 3;
+    const stale = typeof age === 'number' && age > thr;
+    const feedSpan = document.getElementById('hdr-feed');
+    if (typeof age === 'number') {
+      feedSpan.innerHTML = '<strong>Feed</strong> · last write to latest.json <strong>' + age.toFixed(2) + 's</strong> ago' +
+        (stale ? ' <span class="stale">· STALE — controller may be stopped</span>' : '');
+    } else {
+      feedSpan.textContent = 'Feed: —';
+    }
+    const dot = document.getElementById('dot');
+    dot.style.background = stale ? '#fbbf24' : (d.fault_latched ? '#f87171' : '#4ade80');
+
+    const cr = d.cross || {};
+    const icv = cr.i_cv, zcv = cr.z_cv;
+    document.getElementById('hdr-cross').textContent =
+      (icv != null && icv !== '') || (zcv != null && zcv !== '')
+        ? `Cross-channel · I_CV ${fmtOpt(icv, 4)} · Z_CV ${fmtOpt(zcv, 4)}`
+        : 'Cross-channel · —';
+    document.getElementById('hdr-anywet').textContent =
+      'Any anode wet (sense): ' + (d.wet ? 'yes' : 'no');
+    const fl = Array.isArray(d.faults) ? d.faults : [];
+    document.getElementById('hdr-faults').textContent =
+      fl.length ? ('Active faults: ' + fl.join(' · ')) : 'Active faults: none';
+    document.getElementById('hdr-refhw').textContent =
+      d.ref_hw_ok === true ? 'Ref HW: OK' : d.ref_hw_ok === false ? 'Ref HW: problem' : 'Ref HW: —';
+
+    const tsExtra = (d.ts_unix != null && d.ts_unix !== '')
+      ? ' · tick unix ' + d.ts_unix : '';
+    document.getElementById('ts').textContent = (d.ts || '—') + tsExtra;
+    const sup = d.supply_v_avg;
+    document.getElementById('hdr-supply').textContent =
+      (sup != null && sup !== '') ? `Supply: ${fmtOpt(sup, 3)}V avg (channels with bus>0)` : 'Supply: —';
     document.getElementById('hdr-total').textContent =
-      `Total: ${d.total_ma}mA · ${(d.total_power_w != null && d.total_power_w !== '') ? Number(d.total_power_w).toFixed(3) + 'W' : '—'}`;
+      `Total: ${fmtOpt(d.total_ma, 4)}mA · ${(d.total_power_w != null && d.total_power_w !== '') ? Number(d.total_power_w).toFixed(3) + 'W' : '—'}`;
     document.getElementById('hdr-wet').textContent =
-      `Wet: ${d.wet_channels}/__NUM_CH__`;
+      `PROTECTING count: ${d.wet_channels}/__NUM_CH__`;
     const raw = (d.ref_raw_mv != null && d.ref_raw_mv !== '')
       ? `${Number(d.ref_raw_mv).toFixed(1)} mV` : '—';
     const sh = (d.ref_shift_mv != null && d.ref_shift_mv !== '')
@@ -728,7 +1028,25 @@ async function fetchLive() {
       d.temp_f != null && d.temp_f !== '' ? `${d.temp_f}°F` : '';
     const faultEl = document.getElementById('hdr-fault');
     faultEl.style.display = d.fault_latched ? '' : 'none';
-    document.getElementById('dot').style.background = d.fault_latched ? '#f87171' : '#4ade80';
+
+    const sal = document.getElementById('system-alerts');
+    sal.innerHTML = '';
+    const alerts = Array.isArray(d.system_alerts) ? d.system_alerts.filter(Boolean) : [];
+    if (alerts.length) {
+      sal.style.display = '';
+      const t = document.createElement('strong');
+      t.textContent = 'Component alerts';
+      sal.appendChild(t);
+      const ul = document.createElement('ul');
+      alerts.forEach((a) => {
+        const li = document.createElement('li');
+        li.textContent = a;
+        ul.appendChild(li);
+      });
+      sal.appendChild(ul);
+    } else {
+      sal.style.display = 'none';
+    }
 
     const badge = document.getElementById('sim-badge');
     if (d.sim_time) {
@@ -740,37 +1058,92 @@ async function fetchLive() {
     }
 
     for (let i = 0; i < NUM_CH; i++) {
-      const ch = d.channels[String(i)];
-      if (!ch) continue;
+      const ch = (d.channels && d.channels[String(i)]) ? d.channels[String(i)] : {};
+      let readingOk = ch.reading_ok;
+      if (readingOk === undefined) readingOk = ch.status !== 'ERR';
+
       const stateEl = document.getElementById(`state-${i}`);
-      stateEl.textContent = ch.state;
-      stateEl.className = `ch-state state-${ch.state}`;
+      const stName = ch.state || 'UNKNOWN';
+      stateEl.textContent = stName;
+      stateEl.className = 'ch-state state-' + stName;
+      const maNum = Number(ch.ma);
+      const maDisp = Number.isFinite(maNum) ? maNum : 0;
       document.getElementById(`ma-${i}`).innerHTML =
-        `${ch.ma.toFixed(3)} <small>mA</small>`;
-      document.getElementById(`duty-${i}`).textContent = ch.duty.toFixed(1);
-      document.getElementById(`busv-${i}`).textContent = ch.bus_v.toFixed(3);
+        `${maDisp.toFixed(3)} <small>mA</small>`;
+      document.getElementById(`duty-${i}`).textContent = fmtOpt(ch.duty, 1);
+      const busV = Number(ch.bus_v);
+      document.getElementById(`busv-${i}`).textContent = fmtOpt(ch.bus_v, 3);
       const z = ch.impedance_ohm;
       document.getElementById(`z-${i}`).textContent =
-        (typeof z === 'number') ? z.toFixed(0) : '—';
+        (typeof z === 'number' && Number.isFinite(z)) ? z.toFixed(0) : '—';
       const vc = ch.cell_voltage_v;
       document.getElementById(`vcell-${i}`).textContent =
-        (typeof vc === 'number') ? vc.toFixed(3) : '—';
+        (typeof vc === 'number' && Number.isFinite(vc)) ? vc.toFixed(3) : '—';
       const st = document.getElementById(`status-${i}`);
-      st.textContent = ch.status;
-      st.className = ch.status === 'OK' ? 'ok'
-        : ch.status === 'ERR' ? 'err'
-        : (ch.status === 'DRY' || ch.status === 'OPEN') ? 'dry' : 'low';
+      const stt = ch.status || '—';
+      st.textContent = stt;
+      st.className = stt === 'OK' ? 'ok'
+        : stt === 'ERR' ? 'err'
+        : (stt === 'DRY' || stt === 'OPEN') ? 'dry' : 'low';
       const pw = ch.power_w;
       document.getElementById(`pow-${i}`).textContent =
-        (typeof pw === 'number') ? pw.toFixed(4) : '—';
+        (typeof pw === 'number' && Number.isFinite(pw)) ? pw.toFixed(4) : '—';
       const ej = ch.energy_today_j;
       document.getElementById(`enj-${i}`).textContent =
-        (typeof ej === 'number') ? ej.toFixed(2) : '—';
+        (typeof ej === 'number' && Number.isFinite(ej)) ? ej.toFixed(2) : '—';
       const ef = ch.efficiency_ma_per_pct;
       document.getElementById(`eff-${i}`).textContent =
-        (typeof ef === 'number') ? ef.toFixed(3) : '—';
+        (typeof ef === 'number' && Number.isFinite(ef)) ? ef.toFixed(3) : '—';
+
+      const sens = document.getElementById(`sens-${i}`);
+      sens.textContent = readingOk ? 'OK' : 'NO READ';
+      sens.className = readingOk ? 'sensor-ok' : 'sensor-bad';
+      const se = (ch.sensor_error && String(ch.sensor_error).trim()) || '';
+      const cerr = document.getElementById(`ch-err-${i}`);
+      if (cerr) {
+        if (se) {
+          cerr.style.display = 'block';
+          cerr.textContent = se;
+        } else {
+          cerr.style.display = 'none';
+          cerr.textContent = '';
+        }
+      }
+      document.getElementById(`coul-${i}`).textContent = fmtOpt(ch.coulombs_today_c, 6);
+      document.getElementById(`dz-${i}`).textContent = fmtOpt(ch.z_delta_ohm, 2);
+      document.getElementById(`zstd-${i}`).textContent = fmtOpt(ch.z_std_ohm, 3);
+      document.getElementById(`sigma-${i}`).textContent = fmtOpt(ch.sigma_proxy_s, 2);
+      document.getElementById(`fqi-${i}`).textContent = fmtOpt(ch.fqi_smooth_s, 6);
+      document.getElementById(`fqir-${i}`).textContent = fmtOpt(ch.fqi_raw_s, 6);
+      document.getElementById(`zrate-${i}`).textContent = fmtOpt(ch.z_rate_ohm_s, 4);
+      document.getElementById(`dvd-${i}`).textContent = fmtOpt(ch.dV_dI_ohm, 2);
+      const hint = (ch.surface_hint && String(ch.surface_hint).trim()) || '—';
+      document.getElementById(`surf-${i}`).textContent = hint;
+
+      const zf = document.getElementById(`zero-flag-${i}`);
+      const busOk = Number.isFinite(busV);
+      if (readingOk && Math.abs(maDisp) < 0.001 && busOk && Math.abs(busV) < 0.05) {
+        zf.style.display = 'inline-block';
+        zf.textContent = 'Live: 0 mA and ~0 V bus (path open / supply off / INA219 idle)';
+      } else if (readingOk && Math.abs(maDisp) < 0.001) {
+        zf.style.display = 'inline-block';
+        zf.textContent = 'Live: 0 mA (sensor OK — check wet state and bus voltage)';
+      } else {
+        zf.style.display = 'none';
+        zf.textContent = '';
+      }
     }
-  } catch (e) {}
+    syncChartLiveTail(d);
+  } catch (e) {
+    const errEl = document.getElementById('feed-error');
+    errEl.style.display = '';
+    errEl.textContent = 'Network error loading /api/live';
+    window._dashLastLive = null;
+    document.getElementById('dot').style.background = '#94a3b8';
+    const salE = document.getElementById('system-alerts');
+    salE.style.display = 'none';
+    salE.innerHTML = '';
+  }
 }
 
 function setMetric(m) {
@@ -780,6 +1153,13 @@ function setMetric(m) {
   document.getElementById('chart-section-title').textContent =
     m === 'impedance' ? 'Channel history (impedance Ω)' : 'Channel history (current mA)';
   chart.options.scales.y.title.text = m === 'impedance' ? 'Ω' : 'mA';
+  if (m === 'impedance') {
+    delete chart.options.scales.y.min;
+    chart.options.scales.y.grace = '10%';
+  } else {
+    chart.options.scales.y.min = 0;
+    chart.options.scales.y.grace = '8%';
+  }
   loadHistory(activeMinutes);
 }
 
@@ -790,7 +1170,7 @@ async function loadHistory(minutes) {
     if (b) b.className = String(m) === String(minutes) ? 'active' : '';
   });
   try {
-    const d = await fetch(`/api/history?minutes=${minutes}&metric=${chartMetric}`).then(r => r.json());
+    const d = await fetch(`/api/history?minutes=${minutes}&metric=${chartMetric}`, { cache: 'no-store' }).then(r => r.json());
     if (d.error) return;
     chart.data.labels = d.labels;
     const tgt = d.target;
@@ -799,7 +1179,19 @@ async function loadHistory(minutes) {
     for (let i = 0; i < NUM_CH; i++) {
       chart.data.datasets[i + 1].data = d.channels[String(i)] || [];
     }
+    const totalArr = d.total || [];
+    if (chartMetric === 'ma') {
+      chart.data.datasets[TOTAL_DS].hidden = false;
+      chart.data.datasets[TOTAL_DS].data = d.labels.map((_, j) => {
+        const v = totalArr[j];
+        return (v != null && v !== '') ? Number(v) : null;
+      });
+    } else {
+      chart.data.datasets[TOTAL_DS].hidden = true;
+      chart.data.datasets[TOTAL_DS].data = d.labels.map(() => null);
+    }
     chart.update('none');
+    if (window._dashLastLive) syncChartLiveTail(window._dashLastLive);
   } catch (e) {}
 }
 
@@ -855,10 +1247,10 @@ async function fetchDaily() {
   } catch (e) {}
 }
 
-setInterval(fetchLive, 500);
-setInterval(() => loadHistory(activeMinutes), 5000);
-setInterval(fetchStats, 15000);
-setInterval(fetchDaily, 30000);
+setInterval(fetchLive, 400);
+setInterval(() => loadHistory(activeMinutes), 2000);
+setInterval(fetchStats, 5000);
+setInterval(fetchDaily, 15000);
 fetchLive();
 loadHistory(60);
 fetchStats();

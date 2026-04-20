@@ -63,7 +63,9 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     assert latest["ref_baseline_set"] is False
     assert latest["ref_hw_message"] == "sim"
     assert "total_power_w" in latest
+    assert latest.get("system_alerts") == []
     ch0 = latest["channels"]["0"]
+    assert ch0.get("reading_ok") is True
     assert "power_w" in ch0 and "z_delta_ohm" in ch0
     assert "coulombs_today_c" in ch0
     assert "energy_today_j" in ch0
@@ -71,6 +73,7 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     assert "sigma_proxy_s" in ch0
     assert "fqi_smooth_s" in ch0
     assert "cross" in latest and "i_cv" in latest["cross"]
+    assert ch0.get("sensor_error") in ("", None)
 
     conn = sqlite3.connect(str(tmp_path / cfg.SQLITE_DB_NAME))
     try:
@@ -101,6 +104,40 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     text = csv_files[0].read_text(encoding="utf-8")
     assert "ch1_state" in text
     assert "OPEN" in text
+
+
+def test_sensor_error_and_system_alerts_when_read_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "SQLITE_PURGE_EVERY_N_INSERTS", 999_999_999)
+
+    from logger import DataLogger
+
+    readings = _sample_readings()
+    readings[0] = {"ok": False, "error": "INA219 NACK at 0x40"}
+    duties = {i: 0.0 for i in range(cfg.NUM_CHANNELS)}
+    ch_status = {i: "OPEN" for i in range(cfg.NUM_CHANNELS)}
+    log = DataLogger()
+    log.record(
+        readings,
+        False,
+        ["CH2 OC"],
+        duties,
+        False,
+        ch_status,
+        ref_hw_ok=False,
+        ref_hw_message="ADS1115 offline",
+    )
+    log.close()
+
+    latest = json.loads((tmp_path / cfg.LATEST_JSON_NAME).read_text(encoding="utf-8"))
+    assert latest["channels"]["0"]["sensor_error"] == "INA219 NACK at 0x40"
+    assert latest["channels"]["1"].get("sensor_error") in ("", None)
+    sa = latest["system_alerts"]
+    assert "CH2 OC" in sa
+    assert any("CH1 sensor:" in x and "NACK" in x for x in sa)
+    assert any(x.startswith("Reference:") and "ADS1115" in x for x in sa)
 
 
 def test_cooling_cycle_row_on_band_exit(

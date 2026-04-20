@@ -33,6 +33,8 @@ ADS1115_ALRT_GPIO: int | None = 24
 # Stock RPi.GPIO often raises RuntimeError: Error waiting for edge — install `rpi-lgpio`
 # (same import name) or keep False and rely on OS polling below.
 ADS1115_ALRT_USE_WAIT_FOR_EDGE = False
+# When True (default), do not print DEBUG when edge wait is skipped because OS was already set.
+ADS1115_ALRT_SUPPRESS_EDGE_SKIP_LOG = True
 # Poll interval (s) while waiting on config register OS after single-shot (ALRT path).
 # This is the authoritative completion check; ALRT edges are optional (TI pulse ~µs).
 ADS1115_OS_POLL_INTERVAL_S = 0.0003
@@ -178,6 +180,14 @@ LOG_MAX_BYTES = 1_000_000
 LOG_ROTATION_KEEP = 5
 SQLITE_DB_NAME = "coilshield.db"
 LATEST_JSON_NAME = "latest.json"
+# Touch `LOG_DIR / DIAGNOSTIC_REQUEST_FILE` while main is running to write
+# `LOG_DIR / DIAGNOSTIC_SNAPSHOT_JSON` (rate-limited by DIAGNOSTIC_MIN_INTERVAL_S).
+DIAGNOSTIC_SNAPSHOT_JSON = "diagnostic_snapshot.json"
+DIAGNOSTIC_REQUEST_FILE = "request_diag"
+DIAGNOSTIC_MIN_INTERVAL_S = 60.0
+# When True, `latest.json` gains a `diag` object at most once per DIAG_THROTTLE_S (wall clock).
+LATEST_JSON_INCLUDE_DIAG = False
+DIAG_THROTTLE_S = 60.0
 TELEMETRY_RETENTION_DAYS = 30
 SQLITE_PURGE_EVERY_N_INSERTS = 10_000
 

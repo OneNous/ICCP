@@ -79,6 +79,22 @@ def log_and_dashboard_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
     return dashboard.app.test_client()
 
 
+def test_api_live_includes_feed_envelope(log_and_dashboard_client) -> None:
+    c = log_and_dashboard_client
+    r = c.get("/api/live")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data.get("error") is None
+    assert "feed_age_s" in data
+    assert "feed_stale_threshold_s" in data
+    assert "sample_interval_s" in data
+    assert r.headers.get("Cache-Control") == "no-store"
+    assert data["channels"]["0"].get("reading_ok") is True
+    assert "target_ma" in data
+    assert isinstance(data["target_ma"], (int, float))
+    assert isinstance(data.get("system_alerts"), list)
+
+
 def test_api_stats_includes_ref_and_temp(log_and_dashboard_client) -> None:
     c = log_and_dashboard_client
     r = c.get("/api/stats")
@@ -91,6 +107,25 @@ def test_api_stats_includes_ref_and_temp(log_and_dashboard_client) -> None:
         assert "temp_f" in s
         assert s["ref_shift_mv"] is not None
         assert s["temp_f"] is not None
+
+
+def test_api_diagnostic_404(log_and_dashboard_client) -> None:
+    c = log_and_dashboard_client
+    r = c.get("/api/diagnostic")
+    assert r.status_code == 404
+
+
+def test_api_diagnostic_ok(log_and_dashboard_client, tmp_path, monkeypatch) -> None:
+    import dashboard
+
+    p = tmp_path / "snap.json"
+    p.write_text('{"ok": true, "probe": 1}', encoding="utf-8")
+    monkeypatch.setattr(dashboard, "DIAGNOSTIC_SNAPSHOT_PATH", p)
+    c = log_and_dashboard_client
+    r = c.get("/api/diagnostic")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data.get("probe") == 1
 
 
 def test_api_daily_and_sessions(log_and_dashboard_client) -> None:

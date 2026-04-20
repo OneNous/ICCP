@@ -61,19 +61,36 @@ if not SIM_MODE:
             mux_bus = smbus2.SMBus(int(cfg.I2C_BUS))
         try:
             for idx, addr in enumerate(cfg.INA219_ADDRESSES):
-                if mux_bus is not None and mux_addr is not None:
-                    if per_mux is not None and idx < len(per_mux):
-                        mux_select_on_bus(mux_bus, int(mux_addr), int(per_mux[idx]))
-                    elif leg_mux is not None:
-                        mux_select_on_bus(mux_bus, int(mux_addr), int(leg_mux))
-                sensor = INA219(SHUNT_OHMS, address=addr, busnum=cfg.I2C_BUS)
-                sensor.configure(
-                    voltage_range=INA219.RANGE_16V,
-                    gain=INA219.GAIN_AUTO,
-                    bus_adc=INA219.ADC_128SAMP,
-                    shunt_adc=INA219.ADC_128SAMP,
-                )
-                _sensors.append(sensor)
+                try:
+                    if mux_bus is not None and mux_addr is not None:
+                        if per_mux is not None and idx < len(per_mux):
+                            mux_select_on_bus(
+                                mux_bus, int(mux_addr), int(per_mux[idx])
+                            )
+                            port_desc = f"TCA9548A ch{per_mux[idx]}"
+                        elif leg_mux is not None:
+                            mux_select_on_bus(
+                                mux_bus, int(mux_addr), int(leg_mux)
+                            )
+                            port_desc = f"TCA9548A ch{leg_mux}"
+                        else:
+                            port_desc = "mux configured but no INA219 port selected"
+                    else:
+                        port_desc = "no mux"
+                    sensor = INA219(SHUNT_OHMS, address=addr, busnum=cfg.I2C_BUS)
+                    sensor.configure(
+                        voltage_range=INA219.RANGE_16V,
+                        gain=INA219.GAIN_AUTO,
+                        bus_adc=INA219.ADC_128SAMP,
+                        shunt_adc=INA219.ADC_128SAMP,
+                    )
+                    _sensors.append(sensor)
+                except Exception as e:
+                    print(
+                        f"[sensors] CH{idx} INA219 @ {hex(addr)} init failed "
+                        f"({port_desc}, i2c-{cfg.I2C_BUS}): {e}"
+                    )
+                    raise
         finally:
             if mux_bus is not None:
                 mux_bus.close()
@@ -106,6 +123,33 @@ def _mux_select_ina219_bus() -> None:
             b.close()
     except OSError:
         pass
+
+
+def _ina219_one_off_diag(iccp_ch: int, addr: int) -> dict[str, Any] | None:
+    """Best-effort INA219 register snapshot after a read/init failure."""
+    if SIM_MODE:
+        return None
+    from i2c_bench import ina219_diag_snapshot, mux_select_on_bus
+
+    shunt = 0.1
+    try:
+        import smbus2
+
+        mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+        per_mux = getattr(cfg, "I2C_MUX_CHANNELS_INA219", None)
+        leg_mux = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
+        sm = smbus2.SMBus(int(cfg.I2C_BUS))
+        try:
+            if mux_addr is not None:
+                if per_mux is not None and iccp_ch < len(per_mux):
+                    mux_select_on_bus(sm, int(mux_addr), int(per_mux[iccp_ch]))
+                elif leg_mux is not None:
+                    mux_select_on_bus(sm, int(mux_addr), int(leg_mux))
+            return ina219_diag_snapshot(sm, int(addr), shunt_ohm=shunt)
+        finally:
+            sm.close()
+    except Exception as e:
+        return {"ok": False, "error": str(e), "errno": getattr(e, "errno", None)}
 
 
 def read_all_real() -> dict[int, ChannelReading]:
@@ -169,6 +213,7 @@ def read_all_real() -> dict[int, ChannelReading]:
                 }
 
             except DeviceRangeError as e:
+                diag = _ina219_one_off_diag(iccp_ch, int(cfg.INA219_ADDRESSES[iccp_ch]))
                 results[iccp_ch] = {
                     "bus_v": 0.0,
                     "shunt_mv": 0.0,
@@ -176,16 +221,21 @@ def read_all_real() -> dict[int, ChannelReading]:
                     "power": 0.0,
                     "ok": False,
                     "error": f"DeviceRangeError: {e}",
+                    "diag": diag,
                 }
 
             except Exception as e:
+                en = getattr(e, "errno", None)
+                extra = f" [errno {en}]" if en is not None else ""
+                diag = _ina219_one_off_diag(iccp_ch, int(cfg.INA219_ADDRESSES[iccp_ch]))
                 results[iccp_ch] = {
                     "bus_v": 0.0,
                     "shunt_mv": 0.0,
                     "current": 0.0,
                     "power": 0.0,
                     "ok": False,
-                    "error": str(e),
+                    "error": f"{type(e).__name__}: {e}{extra}",
+                    "diag": diag,
                 }
 
     finally:

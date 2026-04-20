@@ -152,6 +152,44 @@ def ina219_read(bus: Any, addr: int, shunt_ohm: float) -> dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+def ina219_diag_snapshot(bus: Any, addr: int, *, shunt_ohm: float = 0.1) -> dict[str, Any]:
+    """INA219 register dump for support logs (smbus2 only; no pi-ina219)."""
+    out: dict[str, Any] = {"address": int(addr), "ok": False}
+    try:
+        ina219_ensure_converting(bus, addr)
+        cfg = ina219_read_config(bus, addr)
+        pga = _ina219_pga_bits(cfg)
+        raw_s, raw_b = ina219_read_registers(bus, addr)
+        parsed = ina219_parse(raw_s, raw_b, shunt_ohm, pga_bits=pga)
+        out.update(
+            {
+                "ok": True,
+                "config_hex": f"0x{cfg & 0xFFFF:04X}",
+                "brng_32v": bool((cfg >> 13) & 1),
+                "pga_bits": int(pga),
+                "mode_bits": int(cfg & 7),
+                "shunt_raw": int(raw_s) & 0xFFFF,
+                "bus_raw": int(raw_b) & 0xFFFF,
+                "cnvr": parsed.get("cnvr"),
+                "ovf": parsed.get("ovf"),
+                "bus_v": round(float(parsed.get("bus_v", 0.0)), 6),
+                "current_ma": round(float(parsed.get("current_ma", 0.0)), 6),
+            }
+        )
+    except OSError as e:
+        out["error"] = str(e)
+        out["errno"] = getattr(e, "errno", None)
+    except Exception as e:
+        out["error"] = str(e)
+    return out
+
+
+def ads1115_read_config_word(bus: Any, addr: int) -> int:
+    """ADS1115 Pointer Register 0x01 — config/status 16-bit (big-endian on wire)."""
+    hi, lo = bus.read_i2c_block_data(addr, 0x01, 2)
+    return ((hi << 8) | lo) & 0xFFFF
+
+
 def _ads1115_dr_conversion_s(dr: int) -> float:
     """TI ADS1115: single-shot conversion time ≈ 1 / DR (Table 6-5, nominal)."""
     sps = (8.0, 16.0, 32.0, 64.0, 128.0, 250.0, 475.0, 860.0)[dr & 7]

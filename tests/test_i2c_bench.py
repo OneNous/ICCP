@@ -10,7 +10,10 @@ from i2c_bench import (
     _ads1115_config_word,
     _ads1115_dr_conversion_s,
     ads1115_behind_i2c_mux,
+    ads1115_read_config_word,
     ads1115_wait_os_ready,
+    ina219_diag_snapshot,
+    word_out,
 )
 
 
@@ -69,6 +72,43 @@ def test_ads1115_wait_os_ready_true_after_polls() -> None:
     bus = _FakeAds1115Bus(os_ready_after_cfg_reads=4)
     assert ads1115_wait_os_ready(bus, 0x48, deadline_s=1.0, poll_interval_s=0.001) is True
     assert bus._cfg_reads == 4
+
+
+def test_ads1115_read_config_word() -> None:
+    class _CfgBus:
+        def read_i2c_block_data(self, addr: int, reg: int, nbytes: int) -> list[int]:
+            assert reg == 0x01
+            return [0x85, 0x83]
+
+    assert ads1115_read_config_word(_CfgBus(), 0x48) == 0x8583
+
+
+def test_ina219_diag_snapshot_fake_bus() -> None:
+    """Linux smbus word order: host word_out when writing; read returns swapped."""
+
+    class _InaBus:
+        def __init__(self) -> None:
+            self._cfg = INA219_DEFAULT_CONFIG_WORD
+
+        def read_word_data(self, addr: int, reg: int) -> int:
+            if reg == 0:
+                return word_out(self._cfg)
+            if reg == 1:
+                return word_out(0)
+            if reg == 2:
+                return word_out(int(11.5 / 0.004) << 3)
+            return 0
+
+        def write_word_data(self, addr: int, reg: int, value: int) -> None:
+            if reg == 0:
+                from i2c_bench import word_in
+
+                self._cfg = word_in(value)
+
+    snap = ina219_diag_snapshot(_InaBus(), 0x40, shunt_ohm=0.1)
+    assert snap["ok"] is True
+    assert snap["config_hex"] == "0x07FF"
+    assert snap["pga_bits"] == 0
 
 
 def test_ads1115_wait_os_ready_false_on_timeout() -> None:

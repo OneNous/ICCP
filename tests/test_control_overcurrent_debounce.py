@@ -53,3 +53,15 @@ def test_overcurrent_latch_ticks_one_matches_legacy(monkeypatch: pytest.MonkeyPa
     hi = _all_channels(8.0)
     assert ctrl.update(hi)[1] is True
     assert ctrl._states[0].status == ChannelState.FAULT
+
+
+def test_read_error_fault_includes_bus_and_shunt_snapshot() -> None:
+    ctrl = Controller()
+    r = {
+        i: {"ok": True, "current": 0.1, "bus_v": 5.0} for i in range(cfg.NUM_CHANNELS)
+    }
+    r[0] = {"ok": False, "error": "I2C fail", "bus_v": 1.25, "shunt_mv": 0.5}
+    faults, _ = ctrl.update(r)
+    assert any("READ ERROR" in f for f in faults)
+    assert any("last bus_v=1.25" in f for f in faults)
+    assert any("shunt_mv=0.5" in f for f in faults)

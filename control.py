@@ -225,8 +225,14 @@ class Controller:
             if not r.get("ok"):
                 state.overcurrent_streak = 0
                 self._pwm.set_duty(ch, 0.0)
+                extra = ""
+                if "bus_v" in r or "shunt_mv" in r:
+                    extra = (
+                        f"  last bus_v={r.get('bus_v', '—')}  "
+                        f"shunt_mv={r.get('shunt_mv', '—')}"
+                    )
                 self._faults.append(
-                    f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}"
+                    f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
                 )
                 if state.status != ChannelState.FAULT:
                     state.status = ChannelState.OPEN

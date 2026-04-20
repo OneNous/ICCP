@@ -14,8 +14,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import platform
 import random
 import statistics
+import sys
 import time
 from typing import Any
 
@@ -36,6 +38,96 @@ _ADS_ALRT_GPIO_SETUP: bool = False
 # Set True after first GPIO.wait_for_edge RuntimeError; stays True for process lifetime
 # so we do not re-arm wait_for_edge on every OC burst (avoids log spam on Bookworm).
 _ADS_ALRT_WAIT_EDGE_BROKEN: bool = False
+_ALRT_DIAG_LOGGED_RUNTIME: bool = False
+_ALRT_DIAG_LOGGED_TIMEOUT: bool = False
+_OS_WAIT_FAIL_LOGGED: bool = False
+
+
+def ads_alrt_edge_wait_broken() -> bool:
+    """True after first GPIO.wait_for_edge RuntimeError on ADS1115 ALRT (process lifetime)."""
+    return _ADS_ALRT_WAIT_EDGE_BROKEN
+
+
+def _ads_gpio_module_hint() -> str:
+    try:
+        import RPi.GPIO as GPIO  # noqa: N814
+
+        return str(getattr(GPIO, "__file__", repr(GPIO)))
+    except Exception as e:
+        return f"(no RPi.GPIO: {e})"
+
+
+def _ads1115_config_comp_que_bits(bus: Any, addr: int) -> int | None:
+    try:
+        from i2c_bench import ads1115_read_config_word
+
+        w = ads1115_read_config_word(bus, addr)
+        return int(w & 3)
+    except Exception:
+        return None
+
+
+def _ads1115_alrt_diag_lines(
+    *,
+    pin: int,
+    addr: int,
+    ch: int,
+    dr: int,
+    timeout_ms: int,
+    bus: Any,
+    gpio_input_before: int | None = None,
+    gpio_input_after: int | None = None,
+    os_ready_before_edge: bool | None = None,
+    exc: BaseException | None = None,
+    timeout: bool = False,
+) -> list[str]:
+    lines = [
+        "[reference] DIAG: ADS1115 ALRT / wait_for_edge",
+        f"  sys.executable={sys.executable}",
+        f"  kernel={platform.release()}  RPi.GPIO={_ads_gpio_module_hint()}",
+        f"  ALRT_BCM={pin}  ADS1115_addr={hex(addr)}  channel=AIN{ch}  DR={dr}  timeout_ms={timeout_ms}",
+    ]
+    if gpio_input_before is not None:
+        lines.append(
+            f"  GPIO.input before wait={gpio_input_before} (1=idle high with pull-up)"
+        )
+    if os_ready_before_edge is not None:
+        lines.append(
+            f"  OS-ready before wait={os_ready_before_edge} (False expected to arm edge path)"
+        )
+    cq = _ads1115_config_comp_que_bits(bus, addr)
+    if cq is not None:
+        lines.append(
+            f"  ADS1115 config low bits COMP_QUE={cq} (0b00 = conversion-ready style per TI)"
+        )
+    if timeout:
+        lines.append(
+            "  wait_for_edge returned None (timeout) — no falling edge in window."
+        )
+    if gpio_input_after is not None:
+        lines.append(f"  GPIO.input after wait={gpio_input_after}")
+    if exc is not None:
+        lines.append(f"  exception={exc!r}")
+    lines.append(
+        "  hints: Bookworm/6.x often needs `rpi-lgpio` in the same venv as iccp; "
+        "set ADS1115_ALRT_USE_WAIT_FOR_EDGE=False to skip edges; verify ALRT wiring "
+        "and that threshold init printed OK (not skipped)."
+    )
+    return lines
+
+
+def _print_alrt_diag_bundle(lines: list[str], *, kind: str) -> None:
+    global _ALRT_DIAG_LOGGED_RUNTIME, _ALRT_DIAG_LOGGED_TIMEOUT
+    if kind == "runtime" and _ALRT_DIAG_LOGGED_RUNTIME:
+        return
+    if kind == "timeout" and _ALRT_DIAG_LOGGED_TIMEOUT:
+        return
+    for ln in lines:
+        print(ln)
+    if kind == "runtime":
+        _ALRT_DIAG_LOGGED_RUNTIME = True
+    elif kind == "timeout":
+        _ALRT_DIAG_LOGGED_TIMEOUT = True
 
 
 def _ina219_scalar_mv(sensor: object, source: str) -> float:
@@ -68,7 +160,12 @@ def _init_ref_ina219() -> None:
         )
     except Exception as _hw_err:
         _REF_INIT_ERROR = str(_hw_err)
-        print(f"[reference] INA219 ref init failed: {_hw_err}")
+        addrs = ", ".join(hex(a) for a in getattr(cfg, "INA219_ADDRESSES", ()))
+        print(
+            f"[reference] INA219 ref init failed: {_hw_err} "
+            f"(ref={hex(cfg.REF_INA219_ADDRESS)} i2c-{_REF_I2C_BUS}; "
+            f"anode INA219 addresses on same bus must differ: [{addrs}])"
+        )
         _ref_ina = None
 
 
@@ -93,6 +190,10 @@ def _init_ref_ads1115() -> None:
         try:
             sm.write_i2c_block_data(addr, 0x02, [0x7F, 0xFF])  # Lo_thresh
             sm.write_i2c_block_data(addr, 0x03, [0x80, 0x00])  # Hi_thresh
+            print(
+                "[reference] ADS1115 ALERT/RDY threshold registers OK "
+                "(Lo/Hi for TI conversion-ready ALERT pulsing; COMP_QUE≠11 in config word)"
+            )
         except Exception as _alrt_err:
             print(
                 f"[reference] ADS1115 ALERT/RDY threshold init skipped: {_alrt_err} "
@@ -180,6 +281,23 @@ def _read_raw_mv_hw() -> float:
             return float(statistics.median(samples))
         except Exception as e:
             print(f"[reference] INA219 read failed: {e}")
+            try:
+                import smbus2
+
+                from i2c_bench import ina219_diag_snapshot
+
+                sm = smbus2.SMBus(int(_REF_I2C_BUS))
+                try:
+                    snap = ina219_diag_snapshot(
+                        sm,
+                        int(cfg.REF_INA219_ADDRESS),
+                        shunt_ohm=float(cfg.REF_INA219_SHUNT_OHMS),
+                    )
+                    print(f"[reference] DIAG INA219 ref snapshot: {snap!r}")
+                finally:
+                    sm.close()
+            except Exception as snap_e:
+                print(f"[reference] DIAG INA219 ref snapshot skipped: {snap_e}")
             return 0.0
 
     if _ref_smbus is None:
@@ -325,35 +443,95 @@ def _read_ads_mv_scaled_once(
         if pin is not None and use_alrt:
             import RPi.GPIO as GPIO  # noqa: N814
 
-            global _ADS_ALRT_WAIT_EDGE_BROKEN
+            global _ADS_ALRT_WAIT_EDGE_BROKEN, _OS_WAIT_FAIL_LOGGED
 
             ads1115_start_single_shot(_ref_smbus, addr, ch, fsr, dr=dr)
             t_wait = _ads1115_dr_conversion_s(dr) * 2.0 + 0.005
             # RPi.GPIO wait_for_edge timeout is integer milliseconds, not seconds.
             timeout_ms = max(1, int(math.ceil(t_wait * 1000.0)))
             use_edge = bool(getattr(cfg, "ADS1115_ALRT_USE_WAIT_FOR_EDGE", False))
+            os_before = ads1115_config_os_ready(_ref_smbus, addr)
+            if use_edge and os_before:
+                if not getattr(cfg, "ADS1115_ALRT_SUPPRESS_EDGE_SKIP_LOG", True):
+                    print(
+                        "[reference] DEBUG: ALRT edge wait skipped (OS already set before "
+                        "wait_for_edge — conversion finished very early)"
+                    )
             if (
                 use_edge
                 and not _ADS_ALRT_WAIT_EDGE_BROKEN
-                and not ads1115_config_os_ready(_ref_smbus, addr)
+                and not os_before
             ):
+                gpio_in_before: int | None = None
                 try:
-                    GPIO.wait_for_edge(pin, GPIO.FALLING, timeout=timeout_ms)
+                    gpio_in_before = int(GPIO.input(pin))
+                except Exception:
+                    gpio_in_before = None
+                try:
+                    ret = GPIO.wait_for_edge(pin, GPIO.FALLING, timeout=timeout_ms)
                 except RuntimeError as exc:
                     _ADS_ALRT_WAIT_EDGE_BROKEN = True
                     print(
                         "[reference] WARNING: GPIO.wait_for_edge on ADS1115 ALRT failed "
-                        f"({exc!s}); using polled OS-bit timing for ADS1115 for the rest of "
-                        "this process (edge wait disabled). Set ADS1115_ALRT_USE_WAIT_FOR_EDGE=False "
-                        "or ADS1115_ALRT_GPIO=None to skip edge wait from the start; on Bookworm / "
-                        "6.x kernels install `rpi-lgpio` (same import as RPi.GPIO) or rely on polling."
+                        f"({exc!s}); using polled OS-bit timing for the rest of this process "
+                        "(edge wait disabled). Set ADS1115_ALRT_USE_WAIT_FOR_EDGE=False or "
+                        "ADS1115_ALRT_GPIO=None to skip; verify ALRT wiring / TI conversion-ready "
+                        "ALERT/RDY mode."
                     )
+                    _print_alrt_diag_bundle(
+                        _ads1115_alrt_diag_lines(
+                            pin=pin,
+                            addr=addr,
+                            ch=ch,
+                            dr=dr,
+                            timeout_ms=timeout_ms,
+                            bus=_ref_smbus,
+                            gpio_input_before=gpio_in_before,
+                            os_ready_before_edge=os_before,
+                            exc=exc,
+                        ),
+                        kind="runtime",
+                    )
+                else:
+                    if ret is None:
+                        gpio_in_after: int | None = None
+                        try:
+                            gpio_in_after = int(GPIO.input(pin))
+                        except Exception:
+                            gpio_in_after = None
+                        print(
+                            "[reference] WARNING: GPIO.wait_for_edge on ADS1115 ALRT timed out "
+                            "(no falling edge); continuing with OS polling."
+                        )
+                        _print_alrt_diag_bundle(
+                            _ads1115_alrt_diag_lines(
+                                pin=pin,
+                                addr=addr,
+                                ch=ch,
+                                dr=dr,
+                                timeout_ms=timeout_ms,
+                                bus=_ref_smbus,
+                                gpio_input_before=gpio_in_before,
+                                gpio_input_after=gpio_in_after,
+                                os_ready_before_edge=os_before,
+                                timeout=True,
+                            ),
+                            kind="timeout",
+                        )
             t_conv = _ads1115_dr_conversion_s(dr)
             deadline_s = t_conv * 1.25 + 0.001
             poll_iv = float(getattr(cfg, "ADS1115_OS_POLL_INTERVAL_S", 0.0003))
             if not ads1115_wait_os_ready(
                 _ref_smbus, addr, deadline_s=deadline_s, poll_interval_s=poll_iv
             ):
+                if not _OS_WAIT_FAIL_LOGGED:
+                    _OS_WAIT_FAIL_LOGGED = True
+                    cq = _ads1115_config_comp_que_bits(_ref_smbus, addr)
+                    print(
+                        "[reference] WARNING: ads1115_wait_os_ready timed out "
+                        f"(addr={hex(addr)} ch={ch} dr={dr} deadline_s={deadline_s:.4f} "
+                        f"COMP_QUE_read={cq!s}) — brief sleep fallback"
+                    )
                 time.sleep(max(0.0, t_conv * 1.25 + 5e-4))
             return float(ads1115_read_conversion_volts(_ref_smbus, addr, fsr))
         return float(ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr))
