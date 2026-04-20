@@ -182,6 +182,7 @@ class ChannelState:
         self.latch_message: str = ""
         self.fault_time: float = 0.0  # when the fault was latched
         self.fault_retry_count: int = 0  # consecutive failed retries
+        self.overcurrent_streak: int = 0  # consecutive ticks with I > MAX before latch
         self.last_state_recheck_monotonic: float = time.monotonic()
         wlen = max(4, int(getattr(cfg, "IMPEDANCE_MEDIAN_WINDOW", 32)))
         self._z_window: deque[float] = deque(maxlen=wlen)
@@ -222,6 +223,7 @@ class Controller:
                 continue
 
             if not r.get("ok"):
+                state.overcurrent_streak = 0
                 self._pwm.set_duty(ch, 0.0)
                 self._faults.append(
                     f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}"
@@ -236,11 +238,16 @@ class Controller:
             probe_duty = min(probe_floor, duty_cap)
 
             if current_ma > self._channel_max_ma(ch):
-                self._latch_fault(
-                    ch,
-                    f"CH{ch + 1} OVERCURRENT: {current_ma:.4f} mA (max {self._channel_max_ma(ch)} mA)",
-                )
+                state.overcurrent_streak += 1
+                need = max(1, int(getattr(cfg, "OVERCURRENT_LATCH_TICKS", 1)))
+                if state.overcurrent_streak >= need:
+                    self._latch_fault(
+                        ch,
+                        f"CH{ch + 1} OVERCURRENT: {current_ma:.4f} mA (max {self._channel_max_ma(ch)} mA)",
+                    )
+                    state.overcurrent_streak = 0
                 continue
+            state.overcurrent_streak = 0
             if bus_v < cfg.MIN_BUS_V:
                 self._latch_fault(
                     ch,
@@ -360,7 +367,7 @@ class Controller:
         - If FAULT_AUTO_CLEAR is False → never auto-clear (legacy behavior).
         - If retry count >= FAULT_RETRY_MAX → permanent latch, don't retry.
         - OVERCURRENT: clears immediately once current drops below
-          OVERCURRENT_RECOVERY_THRESHOLD (75% of MAX_MA by default).
+          OVERCURRENT_RECOVERY_THRESHOLD (90% of MAX_MA by default).
           Hysteresis prevents chattering when current hovers at the limit.
         - Other faults: cleared after FAULT_RETRY_INTERVAL_S for re-probe.
         """
@@ -391,6 +398,7 @@ class Controller:
                 )
                 state.status = ChannelState.OPEN
                 state.latch_message = ""
+                state.overcurrent_streak = 0
                 state.fault_retry_count += 1
                 return
             # Current still elevated — don't fall through to timed retry
@@ -408,6 +416,7 @@ class Controller:
         )
         state.status = ChannelState.OPEN
         state.latch_message = ""
+        state.overcurrent_streak = 0
         state.fault_retry_count += 1
 
     def update_potential_target(self, shift_mv: float | None) -> None:
@@ -502,6 +511,7 @@ class Controller:
                 state.status = ChannelState.OPEN
                 state.latch_message = ""
                 state.fault_retry_count = 0  # manual clear resets retry count
+                state.overcurrent_streak = 0
                 state.fault_time = 0.0
         self._fault_latched = False
         print("[control] Fault latch cleared.")

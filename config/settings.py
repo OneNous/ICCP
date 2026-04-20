@@ -28,11 +28,11 @@ ADS1115_FSR_V = 4.096
 # BCM pin for ADS1115 ALERT/RDY (conversion-ready, active low). None = poll config register only.
 ADS1115_ALRT_GPIO: int | None = 24
 # If True, try RPi.GPIO wait_for_edge on ALRT after starting a conversion; on failure
-# firmware falls back to polled OS bit + sleep. Set False to skip edge wait entirely.
-# On Debian 13 / Bookworm-class Pi images and 6.x rpi kernels, stock RPi.GPIO often raises
-# RuntimeError: Error waiting for edge; use the drop-in `rpi-lgpio` package (same import name)
-# or set False and rely on OS polling below.
-ADS1115_ALRT_USE_WAIT_FOR_EDGE = True
+# firmware falls back to polled OS bit + sleep. Default False avoids Bookworm / 6.x kernel
+# spam and matches safe polling; set True if you use `rpi-lgpio` and want ALRT edges.
+# Stock RPi.GPIO often raises RuntimeError: Error waiting for edge — install `rpi-lgpio`
+# (same import name) or keep False and rely on OS polling below.
+ADS1115_ALRT_USE_WAIT_FOR_EDGE = False
 # Poll interval (s) while waiting on config register OS after single-shot (ALRT path).
 # This is the authoritative completion check; ALRT edges are optional (TI pulse ~µs).
 ADS1115_OS_POLL_INTERVAL_S = 0.0003
@@ -140,6 +140,8 @@ PROBE_MAX_MA = 2.0
 FAULT_AUTO_CLEAR = True
 FAULT_RETRY_INTERVAL_S = 60.0
 FAULT_RETRY_MAX = 10
+# Consecutive over-threshold current samples before OVERCURRENT latch (1 = legacy single-tick).
+OVERCURRENT_LATCH_TICKS = 1
 
 # --- PWM ---
 # Anode drive: RPi.GPIO software PWM on all channels (`control.PWMBank`).

@@ -33,7 +33,8 @@ _ref_smbus: Any | None = None
 _REF_INIT_ERROR: str | None = None
 _REF_I2C_BUS: int = int(getattr(cfg, "REF_I2C_BUS", cfg.I2C_BUS))
 _ADS_ALRT_GPIO_SETUP: bool = False
-# Set True after first GPIO.wait_for_edge RuntimeError so we poll instead of retrying.
+# Set True after first GPIO.wait_for_edge RuntimeError; stays True for process lifetime
+# so we do not re-arm wait_for_edge on every OC burst (avoids log spam on Bookworm).
 _ADS_ALRT_WAIT_EDGE_BROKEN: bool = False
 
 
@@ -330,7 +331,7 @@ def _read_ads_mv_scaled_once(
             t_wait = _ads1115_dr_conversion_s(dr) * 2.0 + 0.005
             # RPi.GPIO wait_for_edge timeout is integer milliseconds, not seconds.
             timeout_ms = max(1, int(math.ceil(t_wait * 1000.0)))
-            use_edge = bool(getattr(cfg, "ADS1115_ALRT_USE_WAIT_FOR_EDGE", True))
+            use_edge = bool(getattr(cfg, "ADS1115_ALRT_USE_WAIT_FOR_EDGE", False))
             if (
                 use_edge
                 and not _ADS_ALRT_WAIT_EDGE_BROKEN
@@ -342,10 +343,10 @@ def _read_ads_mv_scaled_once(
                     _ADS_ALRT_WAIT_EDGE_BROKEN = True
                     print(
                         "[reference] WARNING: GPIO.wait_for_edge on ADS1115 ALRT failed "
-                        f"({exc!s}); using polled conversion timing for the rest of this "
-                        "OC capture. Each new `collect_oc_decay_samples()` run re-tries edge "
-                        "wait. Set ADS1115_ALRT_USE_WAIT_FOR_EDGE=False or ADS1115_ALRT_GPIO=None "
-                        "to skip; verify ALRT wiring / TI conversion-ready ALERT/RDY mode."
+                        f"({exc!s}); using polled OS-bit timing for ADS1115 for the rest of "
+                        "this process (edge wait disabled). Set ADS1115_ALRT_USE_WAIT_FOR_EDGE=False "
+                        "or ADS1115_ALRT_GPIO=None to skip edge wait from the start; on Bookworm / "
+                        "6.x kernels install `rpi-lgpio` (same import as RPi.GPIO) or rely on polling."
                     )
             t_conv = _ads1115_dr_conversion_s(dr)
             deadline_s = t_conv * 1.25 + 0.001
@@ -433,10 +434,6 @@ class ReferenceElectrode:
         INA219 ref backend → single sample (or time series in duration mode);
         SIM → synthetic decay; ADS1115 → burst or duration-window sampling.
         """
-        global _ADS_ALRT_WAIT_EDGE_BROKEN
-
-        _ADS_ALRT_WAIT_EDGE_BROKEN = False
-
         dr = int(getattr(cfg, "COMMISSIONING_ADS1115_DR", 7))
         med_sub = max(1, int(getattr(cfg, "COMMISSIONING_OC_ADS_MEDIAN_SAMPLES", 1)))
         use_alrt = bool(
