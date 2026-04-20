@@ -22,8 +22,8 @@ COMMISSIONING_SETTLE_S: int = getattr(cfg, "COMMISSIONING_SETTLE_S", 60)
 TARGET_RAMP_STEP_MA: float = float(getattr(cfg, "COMMISSIONING_RAMP_STEP_MA", 0.15))
 RAMP_SETTLE_S: float = float(getattr(cfg, "COMMISSIONING_RAMP_SETTLE_S", 60.0))
 CONFIRM_TICKS: int = 5
-# Brief PWM-off window before reference sample (IR-free / “instant-off” potential).
-INSTANT_OFF_WINDOW_S: float = float(getattr(cfg, "COMMISSIONING_INSTANT_OFF_S", 0.05))
+# Seconds at 0% PWM before reference ADC read (open-circuit / IR decay); tune in settings.
+INSTANT_OFF_WINDOW_S: float = float(getattr(cfg, "COMMISSIONING_INSTANT_OFF_S", 2.0))
 
 
 def needs_commissioning() -> bool:
@@ -68,18 +68,26 @@ def _instant_off_ref_mv_and_restore(
     sim_state: Any | None,
 ) -> tuple[float, float | None]:
     """
-    Cut PWM to 0 %, wait INSTANT_OFF_WINDOW_S, read reference at open-circuit instant,
-    then restore outputs via one controller.update() (same idea as LPR instant-off).
+    Snapshot PWM duties, all channels off, dwell at OC, read reference, restore exact
+    duties via set_duty, then one controller.update() tick (sim duties synced first).
+
+    The next FSM step still uses restored _pwm.duty(ch) as current_duty (control.py);
+    OPEN channels already had saved duty 0.
     Returns (raw_mv_at_instant, shift_mv) where shift = native_mv − raw.
     """
+    saved_duties = {
+        ch: float(controller._pwm.duty(ch)) for ch in range(cfg.NUM_CHANNELS)
+    }
     controller._pwm.all_off()
     time.sleep(INSTANT_OFF_WINDOW_S)
-    off_d = {i: 0.0 for i in range(cfg.NUM_CHANNELS)}
-    off_s = {i: "OPEN" for i in range(cfg.NUM_CHANNELS)}
-    raw_inst = float(reference.read(duties=off_d, statuses=off_s))
+    raw_inst = float(reference.read())
     shift: float | None = None
     if reference.native_mv is not None:
         shift = round(float(reference.native_mv) - raw_inst, 2)
+    for ch, duty in saved_duties.items():
+        controller._pwm.set_duty(ch, duty)
+    if sim_state is not None:
+        sim_state.duties = dict(saved_duties)
     readings = _sensor_readings(sim_state)
     controller.update(readings)
     if sim_state is not None:
@@ -156,7 +164,9 @@ def run(
         )
         _pump_control(controller, sim_state, RAMP_SETTLE_S)
 
-        log("  instant-off ref sample (PWM 0 %, then restore) …")
+        log(
+            f"  OC ref sample (0% PWM {INSTANT_OFF_WINDOW_S:.1f}s, read, restore duties) …"
+        )
         raw, shift = _instant_off_ref_mv_and_restore(
             controller, reference, sim_state
         )
