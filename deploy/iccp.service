@@ -2,37 +2,43 @@
 #
 # INSTALL (on the Pi):
 #   1. Copy this file:  sudo cp deploy/iccp.service /etc/systemd/system/iccp.service
-#   2. Edit User, Group, WorkingDirectory, and ExecStart to match your install.
+#   2. Edit User, Group, WorkingDirectory, and ExecStart if they differ (defaults: onenous, ~/coilshield).
 #      - WorkingDirectory = repo root (where commissioning.json / clear_fault live)
 #      - ExecStart = full path to venv's `iccp` after:  pip install -e .
 #   3. sudo systemctl daemon-reload
 #   4. sudo systemctl enable --now iccp
 #
-# Example paths (replace pi / paths with yours):
-#   User=pi
-#   Group=pi
-#   WorkingDirectory=/home/pi/coilshield
-#   ExecStart=/home/pi/coilshield/.venv/bin/iccp -start
+# Example paths (user onenous @ 0neNous-pi, repo ~/coilshield — edit if yours differs):
+#   User=onenous
+#   Group=onenous
+#   WorkingDirectory=/home/onenous/coilshield
+#   ExecStart=/home/onenous/coilshield/.venv/bin/iccp -start
 #
 # Strongly recommended: absolute telemetry dir so dashboard + controller always agree:
-#   Environment=COILSHIELD_LOG_DIR=/home/pi/coilshield/logs
-# Or pass on ExecStart: .../iccp -start --log-dir /home/pi/coilshield/logs
+#   Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
+# Or pass on ExecStart: .../iccp -start --log-dir /home/onenous/coilshield/logs
+#
+# Gate pins: ExecStartPre drives anode MOSFET BCM lines OUTPUT LOW before iccp starts
+# (and again on every service restart). Edit both paths if your install dir differs.
 
 [Unit]
 Description=CoilShield ICCP controller
 After=network-online.target
 Wants=network-online.target
+# If you use a separate early unit instead of ExecStartPre, add e.g.:
+#   After=network-online.target iccp-anode-gpio-init.service
 
 [Service]
 Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/coilshield
-ExecStart=/home/pi/coilshield/.venv/bin/iccp -start
+User=onenous
+Group=onenous
+WorkingDirectory=/home/onenous/coilshield
+ExecStartPre=/home/onenous/coilshield/.venv/bin/python3 /home/onenous/coilshield/scripts/anode_gates_hold_low.py
+ExecStart=/home/onenous/coilshield/.venv/bin/iccp -start
 Restart=on-failure
 RestartSec=10
 Environment=COILSHIELD_SIM=0
-# Environment=COILSHIELD_LOG_DIR=/home/pi/coilshield/logs
+# Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
 
 [Install]
 WantedBy=multi-user.target

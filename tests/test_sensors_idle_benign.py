@@ -83,4 +83,4 @@ def test_logger_idle_errno5_shows_off_not_sensor_alert(
     assert latest["channels"]["0"]["status"] == "OFF"
     assert latest["channels"]["0"].get("sensor_error") in ("", None)
     assert latest["channels"]["0"]["reading_ok"] is True
-    assert not any("CH1 sensor:" in x for x in latest.get("system_alerts", []))
+    assert not any("Anode 1 (idx 0) sensor:" in x for x in latest.get("system_alerts", []))

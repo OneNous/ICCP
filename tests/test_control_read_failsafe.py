@@ -20,8 +20,8 @@ def test_any_read_error_forces_all_channels_open(monkeypatch: pytest.MonkeyPatch
     faults, latched = ctrl.update(readings)
     assert latched is False
     assert all(ctrl.duties().get(i, -1) == 0.0 for i in range(cfg.NUM_CHANNELS))
-    assert any("CH3 READ ERROR" in f for f in faults)
-    assert any("forced OPEN" in f and "CH 3" in f for f in faults)
+    assert any("READ ERROR" in f and "Anode 3" in f and "idx 2" in f for f in faults)
+    assert any("forced OPEN" in f and "Anode 3" in f for f in faults)
 
 
 def test_failsafe_disabled_skips_aggregate_hold_message(
@@ -33,6 +33,6 @@ def test_failsafe_disabled_skips_aggregate_hold_message(
     bad = {"ok": False, "error": "EIO", "bus_v": 0.0, "shunt_mv": 0.0}
     readings = {0: ok, 1: ok, 2: bad, 3: ok}
     faults, _ = ctrl.update(readings)
-    assert any("CH3 READ ERROR" in f for f in faults)
+    assert any("READ ERROR" in f and "Anode 3" in f and "idx 2" in f for f in faults)
     assert not any("forced OPEN" in f for f in faults)
     assert ctrl.duties()[2] == 0.0

@@ -26,6 +26,7 @@ import time
 from collections import deque
 
 import config.settings as cfg
+from channel_labels import anode_hw_label, anode_label
 from sensors import ina219_read_failure_expected_idle
 
 _SIM = os.environ.get("COILSHIELD_SIM", "0") == "1"
@@ -377,7 +378,7 @@ class Controller:
                                 f"shunt_mv={r.get('shunt_mv', '—')}"
                             )
                         self._faults.append(
-                            f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
+                            f"{anode_hw_label(ch)} READ ERROR: {r.get('error', 'unknown')}{extra}"
                         )
                     if state.status != ChannelState.FAULT:
                         state.status = ChannelState.OPEN
@@ -432,14 +433,14 @@ class Controller:
                             f"shunt_mv={r.get('shunt_mv', '—')}"
                         )
                     self._faults.append(
-                        f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
+                        f"{anode_hw_label(ch)} READ ERROR: {r.get('error', 'unknown')}{extra}"
                     )
                 if state.status != ChannelState.FAULT:
                     state.status = ChannelState.OPEN
-            chs = ", ".join(str(c + 1) for c in failed_reads)
+            chs = ", ".join(anode_label(c) for c in failed_reads)
             self._faults.append(
                 "Outputs: all channels forced OPEN (0% PWM) — "
-                f"sensor read failed on CH {chs}; fix I2C before regulating."
+                f"sensor read failed on {chs}; fix I2C before regulating."
             )
             self._fault_latched = any(
                 s.status == ChannelState.FAULT for s in self._states
@@ -467,7 +468,7 @@ class Controller:
                             f"shunt_mv={r.get('shunt_mv', '—')}"
                         )
                     self._faults.append(
-                        f"CH{ch + 1} READ ERROR: {r.get('error', 'unknown')}{extra}"
+                        f"{anode_hw_label(ch)} READ ERROR: {r.get('error', 'unknown')}{extra}"
                     )
                 if state.status != ChannelState.FAULT:
                     state.status = ChannelState.OPEN
@@ -484,7 +485,7 @@ class Controller:
                 if state.overcurrent_streak >= need:
                     self._latch_fault(
                         ch,
-                        f"CH{ch + 1} OVERCURRENT: {current_ma:.4f} mA (max {self._channel_max_ma(ch)} mA)",
+                        f"{anode_hw_label(ch)} OVERCURRENT: {current_ma:.4f} mA (max {self._channel_max_ma(ch)} mA)",
                     )
                     state.overcurrent_streak = 0
                 continue
@@ -492,13 +493,13 @@ class Controller:
             if bus_v < cfg.MIN_BUS_V:
                 self._latch_fault(
                     ch,
-                    f"CH{ch + 1} UNDERVOLTAGE: {bus_v:.2f} V (min {cfg.MIN_BUS_V} V)",
+                    f"{anode_hw_label(ch)} UNDERVOLTAGE: {bus_v:.2f} V (min {cfg.MIN_BUS_V} V)",
                 )
                 continue
             if bus_v > cfg.MAX_BUS_V:
                 self._latch_fault(
                     ch,
-                    f"CH{ch + 1} OVERVOLTAGE: {bus_v:.2f} V (max {cfg.MAX_BUS_V} V)",
+                    f"{anode_hw_label(ch)} OVERVOLTAGE: {bus_v:.2f} V (max {cfg.MAX_BUS_V} V)",
                 )
                 continue
 
@@ -644,7 +645,7 @@ class Controller:
             )
             if current_ma < recovery_threshold:
                 print(
-                    f"[control] CH{ch + 1} OVERCURRENT recovered "
+                    f"[control] {anode_label(ch)} OVERCURRENT recovered "
                     f"({current_ma:.4f} mA < {recovery_threshold:.2f} mA): "
                     f"clearing fault"
                 )
@@ -663,7 +664,7 @@ class Controller:
 
         # Time to retry — clear fault and return to OPEN for re-classification
         print(
-            f"[control] CH{ch + 1} auto-retry "
+            f"[control] {anode_label(ch)} auto-retry "
             f"({state.fault_retry_count + 1}/{max_retries}): clearing fault"
         )
         state.status = ChannelState.OPEN

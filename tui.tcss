@@ -1,0 +1,106 @@
+/* CoilShield terminal control center — Textual tokens */
+
+Screen {
+    layout: vertical;
+}
+
+#rootcol {
+    height: 1fr;
+}
+
+#kpi_row {
+    layout: horizontal;
+    height: auto;
+    min-height: 3;
+    padding: 0 0 1 0;
+    margin: 0 1;
+}
+
+#feed_banner {
+    width: 1fr;
+    height: auto;
+    padding: 0 1;
+    margin-bottom: 1;
+    background: $error 15%;
+    color: $text;
+    border: round $error;
+}
+
+#kpi_row Static {
+    background: $panel;
+    border: round $border;
+    padding: 0 1;
+    margin-right: 1;
+    height: auto;
+    min-height: 3;
+    content-align: center middle;
+}
+
+#kpi_path {
+    width: 1fr;
+    max-height: 5;
+    content-align: left middle;
+}
+
+#tabs {
+    height: 1fr;
+    min-height: 8;
+}
+
+#header {
+    height: auto;
+    max-height: 28%;
+    border: round $border;
+    padding: 0 1;
+    background: $surface;
+    margin-bottom: 1;
+}
+
+#channels {
+    height: 1fr;
+    min-height: 6;
+}
+
+#diaglog {
+    height: 1fr;
+    min-height: 6;
+}
+
+#trends_hint {
+    height: auto;
+    padding: 0 1;
+    margin-bottom: 1;
+    color: $text 60%;
+}
+
+#trends_table {
+    height: 1fr;
+    min-height: 6;
+}
+
+#cmd_scroll {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#cmd_scroll Static {
+    margin-top: 1;
+    margin-bottom: 0;
+}
+
+#cmd_scroll Button {
+    margin: 0 0 1 0;
+    min-width: 28;
+}
+
+#status {
+    height: auto;
+    max-height: 4;
+    padding: 0 1;
+    background: $boost;
+    color: $text;
+}
+
+TabbedContent TabPane {
+    padding: 0 1;
+}

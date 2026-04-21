@@ -1,5 +1,16 @@
 # Verifying MOSFETs are fully off (high shunt at “0% PWM”)
 
+## 0. Pi powered, firmware not running — “software off” does not exist yet
+
+GPIO lines used for the MOSFET gates are **not configured** until a Python process runs `RPi.GPIO` (or another driver). On an **N-channel** low-side switch, a **floating gate** can sit undefined or high enough that the FET **conducts**, so you can measure **full bus voltage (~4.8–5 V)** on the anode path with the script stopped and only the Pi powered. That is **normal** for a gate network without a defined power-up default — and it **will** make commissioning Phase 1 fail (high shunt mA, “not at rest”) until either:
+
+1. **Hardware (required for safety):** **Gate-to-source** pull-downs (**tens of kΩ** from **gate to MOSFET source**, not a few Ω from “some” node to GND). A **100 Ω** path from a rail to ground does **not** turn off an N-FET and does **not** remove **VIN** on the INA219 breakout — that pin is your **stack / bus feed**; if the FET is on, you will still read ~**4.8 V** there until the gate is held **low vs source** and the channel is off.
+2. **Software (hold until iccp runs):** Run **`scripts/anode_gates_hold_low.py`** before the controller:
+   - **Recommended:** `deploy/iccp.service` uses **`ExecStartPre=`** so systemd runs the script **immediately before every** `iccp -start` (boot and restarts).
+   - **Optional:** `deploy/iccp-anode-gpio-init.service` as a separate **boot oneshot** if you need gates LOW even when the main `iccp` unit is **disabled**.
+
+The script sets BCM pins **OUTPUT LOW** and skips `GPIO.cleanup()` so pins may stay latched until `iccp` reopens them. Pull-downs still define behavior when the SoC is not driving the line.
+
 Firmware normally turns channels “off” with RPi.GPIO **soft-PWM** at **0% duty** (`ChangeDutyCycle(0)`). Shutdown uses **`pwm.stop()`** plus **`GPIO.output(LOW)`**, which can behave differently on the gate than soft-PWM at 0. Commissioning Phase 1 can optionally use **static LOW** (see `COMMISSIONING_PHASE1_STATIC_GATE_LOW` in `config/settings.py`).
 
 ## 1. Single process owns PWM
@@ -40,6 +51,12 @@ Only after hardware and concurrency are ruled out:
 - `COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA` / `COMMISSIONING_OC_CONFIRM_I_MA` — relax the “at rest” shunt threshold (weaker native baseline guarantee).
 - `COMMISSIONING_PHASE1_STATIC_GATE_LOW` — set **False** only if static mode causes problems on your board (default **True**).
 
-## 6. Automated tests vs. the Raspberry Pi
+## 6. Commissioning log: which anode is which?
+
+Phase 1 shunt messages list **only anodes that fail** the |I| gate. Any anode not named in that line had **|I| below the threshold** for that check (it was still read).
+
+Firmware uses **0-based indices** internally (`idx 0 … NUM_CHANNELS-1`). Logs and faults use **`Anode N (idx …)`** from `channel_labels.py` (`anode_hw_label` / `anode_label`): **Anode 1 = idx 0**, **Anode 4 = idx 3**, plus GPIO, INA219 address, and TCA9548A port from `config/settings.py`. The web dashboard and TUI use the same **Anode** wording. If you expected a “CH4” line in old output, that was **idx 3** — look for **`Anode 4 (idx 3, …)`**.
+
+## 7. Automated tests vs. the Raspberry Pi
 
 Unit tests run with **`COILSHIELD_SIM=1`**: `enter_static_gate_off` / `leave_static_gate_off` are **no-ops** so CI never touches `RPi.GPIO`. To compare **soft-PWM at 0%** vs **stop + static LOW** on real hardware, use the steps above on the Pi (scope or DMM), or a short throwaway script that toggles between the two and probes the pin.

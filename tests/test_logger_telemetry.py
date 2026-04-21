@@ -141,7 +141,7 @@ def test_sensor_error_and_system_alerts_when_read_fails(
     assert latest["channels"]["1"].get("sensor_error") in ("", None)
     sa = latest["system_alerts"]
     assert "CH2 OC" in sa
-    assert any("CH1 sensor:" in x and "NACK" in x for x in sa)
+    assert any("Anode 1 (idx 0) sensor:" in x and "NACK" in x for x in sa)
     assert any(x.startswith("Reference:") and "ADS1115" in x for x in sa)
 
 
@@ -240,7 +240,9 @@ def test_fault_log_signature_dedupe(tmp_path, monkeypatch: pytest.MonkeyPatch) -
     readings = _sample_readings()
     duties = {i: 0.0 for i in range(cfg.NUM_CHANNELS)}
     ch_status = {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)}
-    faults = ["CH1 OVERCURRENT: 3.0000 mA"]
+    from channel_labels import anode_hw_label
+
+    faults = [f"{anode_hw_label(0)} OVERCURRENT: 3.0000 mA"]
 
     log = DataLogger()
     log.record(readings, True, faults, duties, True, ch_status)

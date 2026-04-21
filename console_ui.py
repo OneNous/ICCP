@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+from channel_labels import anode_label
+
 
 def print_sim_schedule(sensor_module: object) -> None:
     scale = getattr(sensor_module, "SIM_REAL_S_PER_SIM_HOUR", 10.0)
@@ -24,7 +26,7 @@ def print_sim_schedule(sensor_module: object) -> None:
     params = getattr(sensor_module, "ANODE_WET_PARAMS", ())
     for ch, (wd, dd) in enumerate(params):
         print(
-            f"      CH{ch + 1}: wets {wd // 60} min after cycle start, "
+            f"      {anode_label(ch)}: wets {wd // 60} min after cycle start, "
             f"dries {dd // 60} min after cycle stop"
         )
     print()
@@ -87,7 +89,7 @@ def print_status_table(
         w = 152
         if ctrl is not None and hasattr(ctrl, "channel_target_ma"):
             parts = [
-                f"CH{i + 1}={ctrl.channel_target_ma(i):.3f}"
+                f"{anode_label(i)}={ctrl.channel_target_ma(i):.3f}"
                 for i in range(int(_cfg.NUM_CHANNELS))
             ]
             print(
@@ -96,7 +98,7 @@ def print_status_table(
             )
         print("─" * w)
         print(
-            f"{'CH':<4} {'State':<12} {'Path':<6} {'dI':>7}  {'BusV':<8} {'mA':>8}  "
+            f"{'A#':<4} {'State':<12} {'Path':<6} {'dI':>7}  {'BusV':<8} {'mA':>8}  "
             f"{'PWM%':<8} {'Ω imp':<10} {'Ω med':<10} {'Vc':<8} {'Prot':<5} "
             f"{'P(W)':<9} {'E(J)':<10} {'η':<10}"
         )

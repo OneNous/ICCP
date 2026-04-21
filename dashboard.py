@@ -48,12 +48,17 @@ _apply_dashboard_argv_log_dir()
 from flask import Flask, Response, jsonify, make_response, request, send_file
 
 import config.settings as cfg
+from telemetry_queries import (
+    HISTORY_MINUTES_DEFAULT as _HISTORY_MINUTES_DEFAULT,
+    HISTORY_MINUTES_MAX as _HISTORY_MINUTES_MAX,
+    history_payload as _telemetry_history_payload,
+)
 
 app = Flask(__name__)
 
 # /api/history: cap window so bad params cannot load unbounded rows into memory.
-_HISTORY_MINUTES_DEFAULT = 60
-_HISTORY_MINUTES_MAX = 60 * 24 * 366  # align with /api/sessions max horizon spirit
+_HISTORY_MINUTES_DEFAULT = _HISTORY_MINUTES_DEFAULT
+_HISTORY_MINUTES_MAX = _HISTORY_MINUTES_MAX
 
 DB_PATH = cfg.LOG_DIR / cfg.SQLITE_DB_NAME
 LATEST_PATH = cfg.LOG_DIR / cfg.LATEST_JSON_NAME
@@ -167,76 +172,15 @@ def api_history():
     metric = request.args.get("metric", "ma").lower()
     if metric not in ("ma", "impedance"):
         metric = "ma"
-    since = time.time() - minutes * 60
 
     try:
-        with _db() as conn:
-            rows = conn.execute(
-                "SELECT * FROM readings WHERE ts_unix >= ? ORDER BY ts_unix ASC",
-                (since,),
-            ).fetchall()
+        body = _telemetry_history_payload(minutes, metric=metric)
     except Exception:
         return jsonify({"error": "database not ready"}), 503
+    if body.get("error"):
+        return jsonify({"error": body["error"]}), 503
 
-    # Downsample to a bounded point count so the chart stays responsive, but keep
-    # full resolution when there are few rows (avoids an empty-looking 1h graph).
-    max_points = 1800
-    n = len(rows)
-    if n == 0:
-        sampled = []
-    else:
-        step = max(1, (n + max_points - 1) // max_points)
-        sampled = rows[::step]
-    labels = [r["ts"][11:19] for r in sampled]
-    channels = {str(i): [] for i in range(cfg.NUM_CHANNELS)}
-    total: list[float | None] = []
-    avg_target_ma: list[float] = []
-    fallback_tgt = float(cfg.TARGET_MA)
-
-    for r in sampled:
-        for i in range(cfg.NUM_CHANNELS):
-            if metric == "impedance":
-                key = f"ch{i + 1}_impedance_ohm"
-                try:
-                    val = r[key]
-                except (KeyError, IndexError):
-                    val = None
-                channels[str(i)].append(val)
-            else:
-                channels[str(i)].append(r[f"ch{i + 1}_ma"])
-        total.append(r["total_ma"])
-        if metric == "ma":
-            tvals: list[float] = []
-            for i in range(cfg.NUM_CHANNELS):
-                key = f"ch{i + 1}_target_ma"
-                if key not in r:
-                    continue
-                raw_t = r[key]
-                if raw_t is None or raw_t == "":
-                    continue
-                try:
-                    tvals.append(float(raw_t))
-                except (TypeError, ValueError):
-                    continue
-            avg_target_ma.append(
-                round(sum(tvals) / len(tvals), 4) if tvals else fallback_tgt
-            )
-
-    tgt = cfg.TARGET_MA if metric == "ma" else None
-    resp = make_response(
-        jsonify(
-            {
-                "labels": labels,
-                "channels": channels,
-                "total": total,
-                "target": tgt,
-                "avg_target_ma": avg_target_ma if metric == "ma" else [],
-                "metric": metric,
-                "count": len(sampled),
-                "minutes": minutes,
-            }
-        )
-    )
+    resp = make_response(jsonify(body))
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -1133,7 +1077,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <a href="/api/sessions?hours=720&amp;limit=5000" download="wet_sessions.json">↓ Wet sessions JSON</a>
       </div>
     </div>
-    <p class="chart-legend" style="font-size:12px;color:var(--csp-text-muted);margin:0 0 8px"><strong>Legend:</strong> Target = setpoint (mA mode); CH1–CH__NUM_CH__ = per-channel; Total mA = sum of channels. Click legend labels to show or hide series (at least one line stays on). DB is downsampled; the live tail updates from <code>latest.json</code> between refreshes.</p>
+    <p class="chart-legend" style="font-size:12px;color:var(--csp-text-muted);margin:0 0 8px"><strong>Legend:</strong> Target = setpoint (mA mode); one trace per anode (Anode 1–__NUM_CH__, firmware idx 0–__IDX_MAX__); Total mA = sum of channels. Click legend labels to show or hide series (at least one line stays on). DB is downsampled; the live tail updates from <code>latest.json</code> between refreshes.</p>
     <p class="chart-note">Downsampled from SQLite for performance.</p>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
   </div>
@@ -1234,7 +1178,7 @@ for (let i = 0; i < NUM_CH; i++) {
   grid.innerHTML += `
     <div class="ch-card" id="card-${i}">
       <div class="ch-label">
-        <span class="ch-dot" style="background:${CH_COLORS[i]}"></span>Channel ${i+1}
+        <span class="ch-dot" style="background:${CH_COLORS[i]}"></span>Anode ${i+1} <span class="muted">(idx ${i})</span>
       </div>
       <div class="ch-state state-OPEN" id="state-${i}">OPEN</div>
       <div class="ch-dl ch-meta" role="list">
@@ -1358,7 +1302,7 @@ chart = new Chart(ctx, {
         fill: false, tension: 0, hidden: false,
       },
       ...Array.from({length: NUM_CH}, (_, i) => ({
-        label: `CH${i+1}`,
+        label: `Anode ${i+1} (idx ${i})`,
         data: [], borderColor: CHART_CH_HEX[i % CHART_CH_HEX.length],
         backgroundColor: 'transparent',
         borderWidth: 2, pointRadius: 0, tension: 0.2, fill: false, hidden: false,
@@ -1931,7 +1875,8 @@ async function fetchSessions() {
       const chNum = Number.isFinite(chIdx) ? chIdx + 1 : NaN;
       const dotColor = (Number.isFinite(chNum) && chNum >= 1 && chNum <= NUM_CH)
         ? CH_COLORS[chNum - 1] : '#64748b';
-      const chLabel = Number.isFinite(chNum) ? `CH${chNum}` : '—';
+      const chLabel = Number.isFinite(chNum)
+        ? `Anode ${chNum} (idx ${chIdx})` : '—';
       const dur = (s.duration_s != null && Number.isFinite(Number(s.duration_s)))
         ? fmtSecs(Number(s.duration_s)) : '—';
       const avg = (s.avg_ma != null) ? Number(s.avg_ma).toFixed(3) : '—';
@@ -1960,7 +1905,7 @@ async function fetchStats() {
       `${totalH}h of data collected today`;
     tbody.innerHTML = d.stats.map(s => `
       <tr>
-        <td><span class="ch-dot" style="background:${CH_COLORS[s.ch-1]}"></span>CH${s.ch}</td>
+        <td><span class="ch-dot" style="background:${CH_COLORS[s.ch-1]}"></span>Anode ${s.ch} <span class="muted">(idx ${s.ch - 1})</span></td>
         <td id="stat-state-${s.ch}">—</td>
         <td>${fmtSecs(s.protecting_s)}</td>
         <td class="num">${s.avg_ma.toFixed(3)} <span class="muted">mA</span></td>
@@ -1988,7 +1933,7 @@ async function fetchDaily() {
       const c = d.channels[String(i)] || { ma_s: 0, wet_s: 0 };
       const q = (c.ma_s || 0) / 1000;
       return `<tr>
-        <td><span class="ch-dot" style="background:${CH_COLORS[i]}"></span>CH${i+1}</td>
+        <td><span class="ch-dot" style="background:${CH_COLORS[i]}"></span>Anode ${i+1} <span class="muted">(idx ${i})</span></td>
         <td>${fmtSecs(c.wet_s || 0)}</td>
         <td class="num">${(c.ma_s || 0).toFixed(0)}</td>
         <td class="num">${q.toFixed(4)}</td>
@@ -2012,7 +1957,11 @@ fetchSessions();
 </html>
 """
 
-DASHBOARD_HTML = DASHBOARD_HTML.replace("__NUM_CH__", str(cfg.NUM_CHANNELS))
+DASHBOARD_HTML = (
+    DASHBOARD_HTML.replace("__NUM_CH__", str(cfg.NUM_CHANNELS)).replace(
+        "__IDX_MAX__", str(max(0, int(cfg.NUM_CHANNELS) - 1))
+    )
+)
 
 
 @app.route("/")

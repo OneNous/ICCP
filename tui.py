@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
-CoilShield ICCP — Textual live monitor (SSH-friendly).
+CoilShield ICCP — Textual terminal control center (SSH-friendly).
 
 Launch (after ``pip install -e .`` from repo root):
     iccp tui
-    coilshield-tui          # same entry point, minimal typing
+    coilshield-tui
     python3 tui.py
 
-Run while ``main.py`` / ``iccp -start`` is running. Reads ``latest.json`` every
-``--poll-interval`` seconds (same feed as the web dashboard).
+Live feed: ``latest.json`` (same as web dashboard). Trends: SQLite ``readings``.
+Match ``COILSHIELD_LOG_DIR`` / ``--log-dir`` to ``main.py`` / systemd.
 
-Keys: ``d`` request diagnostic snapshot, ``D`` read snapshot only, ``f`` clear
-fault latch, ``t`` telemetry paths, ``p`` hardware probe (allowlisted:
-``hw_probe.py --skip-pwm``), ``1``/``2`` Live / Diagnostics tabs, ``q`` quit.
+Tabs: Live | Diagnostics | Commands | Trends. Keys: 1–4 tabs, ? help, q quit.
 """
 
 from __future__ import annotations
@@ -20,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,9 +34,19 @@ import config.settings as cfg
 try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
-    from textual.containers import Vertical
+    from textual.coordinate import Coordinate
+    from textual.containers import Horizontal, Vertical, VerticalScroll
     from textual.screen import ModalScreen
-    from textual.widgets import DataTable, Footer, Header, RichLog, Static, TabbedContent, TabPane
+    from textual.widgets import (
+        Button,
+        DataTable,
+        Footer,
+        Header,
+        RichLog,
+        Static,
+        TabbedContent,
+        TabPane,
+    )
 except ImportError as e:  # pragma: no cover - import guard for Pi without textual
     print(
         "textual is required: pip install textual  "
@@ -46,16 +55,116 @@ except ImportError as e:  # pragma: no cover - import guard for Pi without textu
     )
     raise SystemExit(1) from e
 
+from telemetry_queries import db_path, trends_table_rows
+
 PROJECT_ROOT = Path(__file__).resolve().parent
+_TCSS_FILE = Path(__file__).resolve().with_suffix(".tcss")
 LATEST_PATH = cfg.LOG_DIR / cfg.LATEST_JSON_NAME
+
+HELP_TEXT = """\
+CoilShield terminal control center
+
+LIVE DATA
+  This app reads ONE file: latest.json under LOG_DIR (see KPI strip for path).
+  The controller (main.py / iccp -start) must write the SAME directory.
+  If numbers freeze: run `iccp live` and compare paths to `systemctl cat iccp`.
+
+TABS
+  1 Live | 2 Diagnostics | 3 Commands | 4 Trends
+
+KEYS
+  r refresh  d request diag  D read diag  f clear fault  t paths  p probe
+  ? this help  q quit
+
+SAFE ACTIONS (also on Commands tab)
+  Clear fault, diagnostic request/read, paths, allowlisted hw_probe --skip-pwm.
+
+NOT FROM THIS UI
+  Commissioning and a second controller need systemd stopped first — use CLI.
+"""
 
 
 def read_latest() -> dict:
-    """Same contract as dashboard._latest()."""
+    """
+    Load latest.json with explicit error kinds (no misleading 'main.py' copy
+    when the file exists but is wrong or corrupt).
+    """
+    path = LATEST_PATH
+    if not path.is_file():
+        return {
+            "_tui_read_status": "missing",
+            "_tui_read_detail": str(path),
+            "channels": {},
+        }
     try:
-        return json.loads(LATEST_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {"error": "no data yet — is main.py running?"}
+        raw = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return {
+            "_tui_read_status": "io",
+            "_tui_read_detail": str(e),
+            "channels": {},
+        }
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        return {
+            "_tui_read_status": "json",
+            "_tui_read_detail": str(e),
+            "channels": {},
+        }
+    if not isinstance(data, dict):
+        return {
+            "_tui_read_status": "bad_type",
+            "_tui_read_detail": "root JSON is not an object",
+            "channels": {},
+        }
+    _enrich_live_file_metadata(data, path)
+    return data
+
+
+def _enrich_live_file_metadata(data: dict, path: Path) -> None:
+    """Augment snapshot like dashboard._live_envelope (file ages + thresholds)."""
+    try:
+        st = path.stat()
+        data["feed_file_mtime_unix"] = round(st.st_mtime, 6)
+        data["feed_age_s"] = round(time.time() - st.st_mtime, 3)
+    except OSError:
+        data["feed_file_mtime_unix"] = None
+        data["feed_age_s"] = None
+    thr = max(3.0, 3.0 * float(cfg.SAMPLE_INTERVAL_S))
+    data["feed_stale_threshold_s"] = thr
+    data["sample_interval_s"] = float(cfg.SAMPLE_INTERVAL_S)
+    data["telemetry_paths"] = cfg.resolved_telemetry_paths()
+    tsu = data.get("ts_unix")
+    if tsu is not None and tsu != "":
+        try:
+            data["feed_age_json_s"] = round(max(0.0, time.time() - float(tsu)), 3)
+        except (TypeError, ValueError):
+            data["feed_age_json_s"] = None
+    else:
+        data["feed_age_json_s"] = None
+
+
+def _json_ts_stale(data: dict) -> bool:
+    age = data.get("feed_age_json_s")
+    thr = data.get("feed_stale_threshold_s")
+    if age is None or thr is None:
+        return False
+    try:
+        return float(age) > float(thr)
+    except (TypeError, ValueError):
+        return False
+
+
+def _disk_feed_stale(data: dict) -> bool:
+    age = data.get("feed_age_s")
+    thr = data.get("feed_stale_threshold_s")
+    if age is None or thr is None:
+        return False
+    try:
+        return float(age) > float(thr)
+    except (TypeError, ValueError):
+        return False
 
 
 def _diagnostic_request_path() -> Path:
@@ -106,8 +215,27 @@ def _diag_line_from_latest(data: dict) -> str | None:
 
 
 def build_header_text(data: dict) -> str:
-    if "error" in data:
-        return f"[bold red]{data['error']}[/]\n[path] {LATEST_PATH}"
+    st = data.get("_tui_read_status")
+    if st == "missing":
+        return (
+            "[bold red]latest.json missing[/]\n"
+            f"[dim]{data.get('_tui_read_detail', '')}[/]\n"
+            "Set COILSHIELD_LOG_DIR or run: iccp tui --log-dir /abs/path/logs\n"
+            "[dim]Press ? for help.[/]"
+        )
+    if st == "io":
+        return f"[bold red]Cannot read latest.json[/]\n[dim]{data.get('_tui_read_detail','')}[/]"
+    if st == "json":
+        return (
+            "[bold red]latest.json is not valid JSON[/]\n"
+            f"[dim]{data.get('_tui_read_detail','')}[/]\n"
+            "File exists but is corrupt or partial."
+        )
+    if st == "bad_type":
+        return f"[bold red]Unexpected JSON root[/]\n[dim]{data.get('_tui_read_detail','')}[/]"
+
+    if "error" in data and "channels" not in data:
+        return f"[bold red]{data.get('error', 'error')}[/]\n[path] {LATEST_PATH}"
 
     lines: list[str] = []
     ts = data.get("ts") or "—"
@@ -116,6 +244,12 @@ def build_header_text(data: dict) -> str:
     if sim:
         head += f"  [cyan]sim {sim}[/]"
     lines.append(head)
+
+    if _disk_feed_stale(data) or _json_ts_stale(data):
+        lines.append(
+            "[bold red]STALE FEED[/]  snapshot older than threshold — "
+            "controller may be stopped or writing a different LOG_DIR.  [dim]t = paths[/]"
+        )
 
     temp = data.get("temp_f")
     temp_s = f"{float(temp):.1f} °F" if isinstance(temp, (int, float)) else "—"
@@ -155,6 +289,55 @@ def build_header_text(data: dict) -> str:
     if diag_line:
         lines.append(f"  [dim]diag {diag_line}[/]")
     return "\n".join(lines)
+
+
+def build_kpi_strip(data: dict) -> tuple[str, str, str, str, str]:
+    """Returns (feed_banner, kpi_meta, kpi_feed, kpi_temp, kpi_ma)."""
+    tp = data.get("telemetry_paths")
+    if not isinstance(tp, dict):
+        try:
+            tp = cfg.resolved_telemetry_paths()
+        except Exception:
+            tp = {}
+    src = str(tp.get("log_dir_source") or "—")
+    lj = str(tp.get("latest_json") or str(LATEST_PATH))
+    if len(lj) > 72:
+        lj = lj[:35] + "…" + lj[-30:]
+    meta = f"[dim]{src}[/]\n{lj}"
+
+    d_age = data.get("feed_age_s")
+    j_age = data.get("feed_age_json_s")
+    thr = data.get("feed_stale_threshold_s")
+    d_s = f"{d_age:.2f}s" if isinstance(d_age, (int, float)) else "—"
+    j_s = f"{j_age:.2f}s" if isinstance(j_age, (int, float)) else "—"
+    t_s = f"{float(thr):.1f}s" if isinstance(thr, (int, float)) else "—"
+    feed = f"diskΔ {d_s}  jsonΔ {j_s}  thr {t_s}"
+
+    if data.get("_tui_read_status"):
+        feed = "[red]no valid snapshot[/]  " + feed
+
+    banner = ""
+    if data.get("_tui_disk_stall"):
+        banner = (
+            "[bold red]latest.json mtime not advancing[/] — "
+            "wrong COILSHIELD_LOG_DIR/--log-dir or controller not writing this file."
+        )
+    elif _disk_feed_stale(data) or _json_ts_stale(data):
+        banner = (
+            "[bold yellow]Stale telemetry[/] — compare path above to systemd "
+            "`Environment=COILSHIELD_LOG_DIR` for main.py."
+        )
+
+    if data.get("_tui_read_status"):
+        temp_s = "—"
+        ma_s = "—"
+    else:
+        temp = data.get("temp_f")
+        temp_s = f"{float(temp):.1f}°F" if isinstance(temp, (int, float)) else "—"
+        tma = data.get("total_ma")
+        ma_s = _fmt_float(tma, 3) + " mA" if tma is not None else "—"
+
+    return banner, meta, feed, f"Temp {temp_s}", f"Σ {ma_s}"
 
 
 def channel_rows(data: dict) -> list[tuple[str, ...]]:
@@ -229,6 +412,15 @@ def telemetry_paths_text() -> str:
         return json.dumps({"error": str(e)}, indent=2)
 
 
+def iccp_version_text() -> str:
+    try:
+        import importlib.metadata as md
+
+        return f"coilshield-iccp {md.version('coilshield-iccp')}"
+    except Exception:
+        return "coilshield-iccp version unknown (pip install -e .)"
+
+
 def touch_request_diagnostic() -> None:
     cfg.LOG_DIR.mkdir(parents=True, exist_ok=True)
     _diagnostic_request_path().touch()
@@ -252,7 +444,6 @@ def clear_fault_file() -> tuple[bool, str]:
 
 
 def run_allowlisted_probe() -> tuple[int, str]:
-    """Run ``hw_probe.py --skip-pwm`` only (no arbitrary argv)."""
     cmd = [sys.executable, str(PROJECT_ROOT / "hw_probe.py"), "--skip-pwm"]
     try:
         proc = subprocess.run(
@@ -272,9 +463,34 @@ def run_allowlisted_probe() -> tuple[int, str]:
         return 1, f"probe failed: {e}"
 
 
-class InfoModal(ModalScreen[None]):
-    """Scrollable text / JSON; q or Esc closes."""
+def export_sqlite_copy() -> tuple[bool, str]:
+    src = db_path()
+    if not src.is_file():
+        return False, "No SQLite database at " + str(src)
+    dst = cfg.LOG_DIR / f"coilshield_export_{int(time.time())}.db"
+    try:
+        cfg.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        return True, str(dst)
+    except OSError as e:
+        return False, str(e)
 
+
+def export_csv_today_copy() -> tuple[bool, str]:
+    today = time.strftime("%Y-%m-%d")
+    name = f"{cfg.LOG_BASE_NAME}_{today}.csv"
+    src = cfg.LOG_DIR / name
+    if not src.is_file():
+        return False, f"No CSV for today: {src}"
+    dst = cfg.LOG_DIR / f"{cfg.LOG_BASE_NAME}_{today}_export_{int(time.time())}.csv"
+    try:
+        shutil.copy2(src, dst)
+        return True, str(dst)
+    except OSError as e:
+        return False, str(e)
+
+
+class InfoModal(ModalScreen[None]):
     BINDINGS = [
         Binding("escape", "dismiss", "Close"),
         Binding("q", "dismiss", "Close"),
@@ -353,32 +569,14 @@ class ProbeModal(ModalScreen[None]):
 
 
 class CoilShieldTUI(App[None]):
-    """Poll latest.json, channel table, diagnostics tab, operator actions."""
+    """Terminal control center: live JSON, SQLite trends, operator commands."""
 
     TITLE = "CoilShield ICCP"
-    CSS = """
-    Screen { layout: vertical; }
-    #rootcol { height: 1fr; }
-    #tabs { height: 1fr; min-height: 8; }
-    #header {
-        height: auto;
-        max-height: 40%;
-        border: tall $accent;
-        padding: 0 1;
-    }
-    #channels { height: 1fr; min-height: 6; }
-    #diaglog { height: 1fr; min-height: 6; }
-    #status {
-        height: auto;
-        max-height: 3;
-        padding: 0 1;
-        background: $boost;
-        color: $text;
-    }
-    """
+    CSS_PATH = str(_TCSS_FILE) if _TCSS_FILE.is_file() else None
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("?", "show_help", "Help"),
         Binding("r", "refresh_now", "Refresh"),
         Binding("d", "request_diagnostic", "Diag req"),
         Binding("D", "read_diagnostic", "Diag read"),
@@ -386,7 +584,9 @@ class CoilShieldTUI(App[None]):
         Binding("t", "show_paths", "Paths"),
         Binding("p", "run_probe", "Probe"),
         Binding("1", "tab_live", "Live"),
-        Binding("2", "tab_diag", "Diag tab"),
+        Binding("2", "tab_diag", "Diag"),
+        Binding("3", "tab_cmd", "Cmd"),
+        Binding("4", "tab_trends", "Trends"),
     ]
 
     def __init__(self, poll_s: float) -> None:
@@ -394,10 +594,19 @@ class CoilShieldTUI(App[None]):
         self._poll_s = poll_s
         self._status_until = 0.0
         self._status_msg = ""
+        self._last_disk_mtime: float | None = None
+        self._disk_same_count = 0
+        self._channels_seeded = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="rootcol"):
+            yield Static("", id="feed_banner")
+            with Horizontal(id="kpi_row"):
+                yield Static("", id="kpi_meta")
+                yield Static("", id="kpi_feed")
+                yield Static("", id="kpi_temp")
+                yield Static("", id="kpi_ma")
             with TabbedContent(id="tabs", initial="live-pane"):
                 with TabPane("Live", id="live-pane"):
                     yield Vertical(
@@ -416,10 +625,34 @@ class CoilShieldTUI(App[None]):
                         highlight=False,
                         markup=False,
                     )
+                with TabPane("Commands", id="cmd-pane"):
+                    with VerticalScroll(id="cmd_scroll"):
+                        yield Static("[bold]Safe while controller runs[/]")
+                        yield Button("Clear fault latch", id="btn_clear_fault", variant="primary")
+                        yield Button("Request diagnostic snapshot", id="btn_req_diag")
+                        yield Button("Re-read diagnostic snapshot", id="btn_read_diag")
+                        yield Button("Show telemetry paths", id="btn_paths")
+                        yield Button("Hardware probe (skip PWM)", id="btn_probe")
+                        yield Button("View latest.json (read-only)", id="btn_latest_json")
+                        yield Button("Show version", id="btn_version")
+                        yield Button("Export SQLite DB copy", id="btn_export_db")
+                        yield Button("Export today's CSV copy", id="btn_export_csv")
+                        yield Static("[dim]Advanced — stop systemd iccp before using CLI[/]")
+                        yield Button("Commission / start controller (disabled)", id="btn_disabled", disabled=True)
+                with TabPane("Trends", id="trends-pane"):
+                    yield Vertical(
+                        Static(
+                            "Recent readings (downsampled). Refreshes every 5s.",
+                            id="trends_hint",
+                        ),
+                        DataTable(id="trends_table", zebra_stripes=True, show_cursor=False),
+                        id="trends_inner",
+                    )
             yield Static("", id="status")
         yield Footer()
 
     def on_mount(self) -> None:
+        self.theme = "textual-dark"
         table = self.query_one("#channels", DataTable)
         table.add_columns(
             "CH",
@@ -436,8 +669,44 @@ class CoilShieldTUI(App[None]):
             "Surface",
         )
         self.set_interval(self._poll_s, self.refresh_snapshot)
+        self.set_interval(5.0, self.refresh_trends)
         self.refresh_snapshot()
         self._prime_diag_panel()
+        self.refresh_trends()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "btn_clear_fault":
+            self.action_clear_fault()
+        elif bid == "btn_req_diag":
+            self.action_request_diagnostic()
+        elif bid == "btn_read_diag":
+            self.action_read_diagnostic()
+        elif bid == "btn_paths":
+            self.action_show_paths()
+        elif bid == "btn_probe":
+            self.action_run_probe()
+        elif bid == "btn_latest_json":
+            self._show_latest_json_modal()
+        elif bid == "btn_version":
+            self.push_screen(InfoModal("Version", iccp_version_text()))
+        elif bid == "btn_export_db":
+            ok, msg = export_sqlite_copy()
+            self._set_status(msg if ok else f"Export failed: {msg}", 6.0 if ok else 10.0)
+        elif bid == "btn_export_csv":
+            ok, msg = export_csv_today_copy()
+            self._set_status(msg if ok else f"Export failed: {msg}", 6.0 if ok else 10.0)
+
+    def _show_latest_json_modal(self) -> None:
+        data = read_latest()
+        try:
+            body = json.dumps(data, indent=2, default=str)
+        except TypeError:
+            body = str(data)
+        self.push_screen(InfoModal("latest.json (snapshot)", body))
+
+    def action_show_help(self) -> None:
+        self.push_screen(InfoModal("Help", HELP_TEXT))
 
     def _set_status(self, msg: str, seconds: float = 4.0) -> None:
         self._status_msg = msg
@@ -468,8 +737,7 @@ class CoilShieldTUI(App[None]):
         if raw is None:
             log.write(
                 "No diagnostic_snapshot.json yet.\n"
-                "Press d to request a snapshot (main.py must be running).\n"
-                "Press D to re-read the file only.\n"
+                "Use Request diagnostic or key d (main.py must be running).\n"
             )
         else:
             try:
@@ -487,7 +755,22 @@ class CoilShieldTUI(App[None]):
             pass
 
     def action_tab_diag(self) -> None:
-        self._focus_diag_tab()
+        try:
+            self.query_one(TabbedContent).active = "diag-pane"
+        except Exception:
+            pass
+
+    def action_tab_cmd(self) -> None:
+        try:
+            self.query_one(TabbedContent).active = "cmd-pane"
+        except Exception:
+            pass
+
+    def action_tab_trends(self) -> None:
+        try:
+            self.query_one(TabbedContent).active = "trends-pane"
+        except Exception:
+            pass
 
     def action_show_paths(self) -> None:
         self.push_screen(InfoModal("Telemetry paths", telemetry_paths_text()))
@@ -562,26 +845,75 @@ class CoilShieldTUI(App[None]):
     def action_run_probe(self) -> None:
         self.push_screen(ProbeModal())
 
-    def refresh_snapshot(self) -> None:
-        self._maybe_clear_status()
-        data = read_latest()
-        self.query_one("#header", Static).update(build_header_text(data))
-        table = self.query_one("#channels", DataTable)
-        table.clear(columns=False)
-        if "error" in data and "channels" not in data:
+    def _update_disk_stall_flag(self, path: Path, data: dict) -> None:
+        try:
+            m = path.stat().st_mtime if path.is_file() else None
+        except OSError:
+            m = None
+        if m is None:
+            self._last_disk_mtime = None
+            self._disk_same_count = 0
+            data["_tui_disk_stall"] = False
             return
-        for row in channel_rows(data):
+        if self._last_disk_mtime is not None and m == self._last_disk_mtime:
+            self._disk_same_count += 1
+        else:
+            self._disk_same_count = 0
+        self._last_disk_mtime = m
+        stall_polls = max(8, int(6 / max(self._poll_s, 0.05)))
+        data["_tui_disk_stall"] = bool(path.is_file() and self._disk_same_count >= stall_polls)
+
+    def refresh_trends(self) -> None:
+        try:
+            table = self.query_one("#trends_table", DataTable)
+        except Exception:
+            return
+        cols, rows = trends_table_rows(minutes=60, max_rows=50)
+        if not cols:
+            table.clear(columns=True)
+            return
+        table.clear(columns=True)
+        table.add_columns(*cols)
+        for row in rows:
             table.add_row(*row)
 
+    def refresh_snapshot(self) -> None:
+        self._maybe_clear_status()
+        path = LATEST_PATH
+        data = read_latest()
+        self._update_disk_stall_flag(path, data)
+
+        banner, meta, feed, kt, km = build_kpi_strip(data)
+        try:
+            self.query_one("#feed_banner", Static).update(banner)
+            self.query_one("#kpi_meta", Static).update(meta)
+            self.query_one("#kpi_feed", Static).update(feed)
+            self.query_one("#kpi_temp", Static).update(kt)
+            self.query_one("#kpi_ma", Static).update(km)
+        except Exception:
+            pass
+
+        self.query_one("#header", Static).update(build_header_text(data))
+        table = self.query_one("#channels", DataTable)
+
+        if not self._channels_seeded:
+            for _ in range(cfg.NUM_CHANNELS):
+                table.add_row(*(["—"] * 12))
+            self._channels_seeded = True
+
+        rows = channel_rows(data)
+        for ri, row in enumerate(rows):
+            for ci, val in enumerate(row):
+                table.update_cell_at(Coordinate(ri, ci), str(val))
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="CoilShield Textual live monitor (latest.json)")
+    p = argparse.ArgumentParser(description="CoilShield Textual control center")
     p.add_argument(
         "--poll-interval",
         type=float,
         default=0.25,
         metavar="SEC",
-        help="seconds between file reads (default: 0.25)",
+        help="seconds between latest.json reads (default: 0.25)",
     )
     return p.parse_args(argv)
 

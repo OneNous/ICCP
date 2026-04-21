@@ -8,10 +8,10 @@
 #   3. sudo systemctl daemon-reload
 #   4. sudo systemctl enable --now iccp-dashboard
 #
-# Example:
-#   WorkingDirectory=/home/pi/coilshield
-#   ExecStart=/home/pi/coilshield/.venv/bin/python3 /home/pi/coilshield/dashboard.py --host 0.0.0.0 --port 8080
-#   Environment=COILSHIELD_LOG_DIR=/home/pi/coilshield/logs
+# Example (user onenous @ 0neNous-pi):
+#   WorkingDirectory=/home/onenous/coilshield
+#   ExecStart=/home/onenous/coilshield/.venv/bin/python3 /home/onenous/coilshield/dashboard.py --host 0.0.0.0 --port 8080
+#   Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
 
 [Unit]
 Description=CoilShield ICCP web dashboard
@@ -20,13 +20,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/coilshield
-ExecStart=/home/pi/coilshield/.venv/bin/python3 /home/pi/coilshield/dashboard.py --host 0.0.0.0 --port 8080
+User=onenous
+Group=onenous
+WorkingDirectory=/home/onenous/coilshield
+ExecStart=/home/onenous/coilshield/.venv/bin/python3 /home/onenous/coilshield/dashboard.py --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=5
-# Environment=COILSHIELD_LOG_DIR=/home/pi/coilshield/logs
+# Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
 
 [Install]
 WantedBy=multi-user.target

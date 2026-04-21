@@ -51,6 +51,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import config.settings as cfg
+from channel_labels import anode_label
 from sensors import ina219_read_failure_expected_idle
 
 
@@ -726,7 +727,7 @@ class DataLogger:
         for i in range(cfg.NUM_CHANNELS):
             se = (channels[i].get("sensor_error") or "").strip()
             if se:
-                system_alerts.append(f"CH{i + 1} sensor: {se}")
+                system_alerts.append(f"{anode_label(i)} sensor: {se}")
         if ref_hw_ok is False:
             rh = (ref_hw_message or "").strip() or "reference ADC not reachable"
             system_alerts.append(f"Reference: {rh}")
@@ -1128,11 +1129,11 @@ class DataLogger:
             if r.get("ok"):
                 try:
                     cur = float(r["current"])
-                    parts.append(f"CH{i + 1}:{cur:.3f}mA")
+                    parts.append(f"{anode_label(i)}:{cur:.3f}mA")
                 except (TypeError, ValueError):
-                    parts.append(f"CH{i + 1}:ERR")
+                    parts.append(f"{anode_label(i)}:ERR")
             else:
-                parts.append(f"CH{i + 1}:ERR")
+                parts.append(f"{anode_label(i)}:ERR")
         line = "  ".join(parts)
         with self._fault_log_path.open("a", encoding="utf-8") as lf:
             lf.write(line + "\n")

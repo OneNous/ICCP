@@ -16,7 +16,7 @@ def test_thermal_pause_reports_read_errors() -> None:
     }
     readings[0] = {"ok": False, "error": "I2C NACK"}
     faults, latched = ctrl.update(readings)
-    assert any("CH1 READ ERROR" in f and "NACK" in f for f in faults)
+    assert any("READ ERROR" in f and "NACK" in f and "Anode 1" in f and "idx 0" in f for f in faults)
     assert latched is False
     assert all(ctrl.duties().get(i, -1) == 0.0 for i in range(cfg.NUM_CHANNELS))
 

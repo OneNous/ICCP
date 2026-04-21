@@ -1,0 +1,34 @@
+# CoilShield — optional *standalone* early GPIO (only if you do NOT use ExecStartPre)
+#
+# Prefer: deploy/iccp.service already runs scripts/anode_gates_hold_low.py via
+# ExecStartPre= before every iccp -start (covers boot + restarts with one unit).
+#
+# Use THIS separate unit when the Pi must hold gates LOW at boot even if the main
+# iccp.service is disabled (bench / headless bring-up).
+#
+# WHY: While the Pi is powered, BCM PWM pins are not owned by Python until a process
+# runs. Floating N-FET gates can leave anodes energized (e.g. full bus voltage) and
+# make commissioning Phase 1 shunt checks fail. Hardware gate-to-source pull-downs
+# (tens of kΩ gate→source, not  Ω from supply rails) still define safe power-up.
+#
+# INSTALL (on the Pi; default paths match user onenous @ 0neNous-pi, repo ~/coilshield):
+#   sudo cp deploy/iccp-anode-gpio-init.service /etc/systemd/system/
+#   sudo sed -i 's|/home/onenous/coilshield|/home/YOURUSER/YOURREPO|g' /etc/systemd/system/iccp-anode-gpio-init.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now iccp-anode-gpio-init.service
+#
+[Unit]
+Description=CoilShield — anode gate BCM pins to OUTPUT LOW at boot
+DefaultDependencies=no
+After=local-fs.target
+Before=iccp.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+WorkingDirectory=/home/onenous/coilshield
+ExecStart=/home/onenous/coilshield/.venv/bin/python3 scripts/anode_gates_hold_low.py
+
+[Install]
+WantedBy=multi-user.target

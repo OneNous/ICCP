@@ -40,6 +40,13 @@ try:
 except ImportError:
     cfg = None  # type: ignore[assignment]
 
+try:
+    from channel_labels import anode_label
+except ImportError:
+    # Standalone copy without full tree (unlikely in-repo).
+    def anode_label(ch: int) -> str:  # type: ignore[misc]
+        return f"Anode {ch + 1} (idx {ch})"
+
 # ---------------------------------------------------------------------------
 # Hardware defaults (overridden by config.settings when importable)
 # ---------------------------------------------------------------------------
@@ -170,7 +177,10 @@ def run_i2c_scan(bus: int) -> None:
         return
 
     print(f"\n  Found:    {[hex(a) for a in found]}")
-    print(f"  Expected: {[hex(a) for a in INA219_ADDRESSES]}  (CH1–CH4 INA219)")
+    print(
+        f"  Expected: {[hex(a) for a in INA219_ADDRESSES]}  "
+        "(Anode 1–4 INA219; idx 0–3 in firmware)"
+    )
     print(f"  ADS1115:  {hex(ADS1115_ADDRESS)} (reference ADC)")
 
     missing = [a for a in INA219_ADDRESSES if a not in found]
@@ -247,21 +257,26 @@ def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
         sm.close()
 
     print()
-    print(f"  {'CH':<4} {'Addr':<6} {'Bus V':>8} {'Shunt mV':>10} {'mA':>10} {'mW':>10}  Status")
+    print(
+        f"  {'Anode':<14} {'Addr':<6} {'Bus V':>8} {'Shunt mV':>10} {'mA':>10} {'mW':>10}  Status"
+    )
     print("  " + "─" * 58)
     for ch, addr in enumerate(INA219_ADDRESSES):
-        label = f"CH{ch + 1}"
+        label = anode_label(ch)
         r = readings.get(addr, {"ok": False, "error": "not read"})
         if r.get("ok"):
             print(
-                f"  {label:<4} 0x{addr:02X}  "
+                f"  {label:<14} 0x{addr:02X}  "
                 f"{r['bus_v']:>8.3f} "
                 f"{r['shunt_mv']:>10.4f} "
                 f"{r['current_ma']:>10.4f} "
                 f"{r['power_mw']:>10.4f}  OK"
             )
         else:
-            print(f"  {label:<4} 0x{addr:02X}  {'—':>8} {'—':>10} {'—':>10} {'—':>10}  FAIL: {r.get('error')}")
+            print(
+                f"  {label:<14} 0x{addr:02X}  {'—':>8} {'—':>10} {'—':>10} {'—':>10}  "
+                f"FAIL: {r.get('error')}"
+            )
 
 
 def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: bool) -> None:
@@ -313,21 +328,25 @@ def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: b
             tick += 1
             ts = time.strftime("%H:%M:%S")
             print(f"\n  [{ts}  tick {tick}]")
-            print(f"  {'CH':<4} {'Bus V':>8} {'Shunt mV':>10} {'mA':>10} {'mW':>10}  Status")
+            print(
+                f"  {'Anode':<14} {'Bus V':>8} {'Shunt mV':>10} {'mA':>10} {'mW':>10}  Status"
+            )
             print("  " + "─" * 52)
             for ch, addr in enumerate(INA219_ADDRESSES):
-                label = f"CH{ch + 1}"
+                label = anode_label(ch)
                 _mux_select_anode_for_probe(sm, ch)
                 r = ina219_read(sm, addr, shunt_ohms)
                 if r.get("ok"):
                     print(
-                        f"  {label:<4} {r['bus_v']:>8.3f} "
+                        f"  {label:<14} {r['bus_v']:>8.3f} "
                         f"{r['shunt_mv']:>10.4f} "
                         f"{r['current_ma']:>10.4f} "
                         f"{r['power_mw']:>10.4f}  OK"
                     )
                 else:
-                    print(f"  {label:<4} {'—':>8} {'—':>10} {'—':>10} {'—':>10}  {r.get('error')}")
+                    print(
+                        f"  {label:<14} {'—':>8} {'—':>10} {'—':>10} {'—':>10}  {r.get('error')}"
+                    )
 
             if ads_bus is not None:
                 try:
@@ -462,13 +481,13 @@ def run_pwm_test() -> None:
     GPIO.setmode(GPIO.BCM)
 
     for ch_idx, pin in enumerate(PWM_PINS_BCM):
-        section(f"  CH{ch_idx + 1} — BCM pin {pin}")
+        section(f"  {anode_label(ch_idx)} — BCM pin {pin}")
         GPIO.setup(pin, GPIO.OUT)
         GPIO.output(pin, GPIO.LOW)
         pwm = GPIO.PWM(pin, PWM_FREQ_HZ)
         pwm.start(0)
 
-        print(f"\n  Probe: CH{ch_idx + 1} MOSFET gate → GND\n")
+        print(f"\n  Probe: {anode_label(ch_idx)} MOSFET gate → GND\n")
 
         for duty in duty_steps:
             pwm.ChangeDutyCycle(duty)
@@ -482,12 +501,13 @@ def run_pwm_test() -> None:
         pwm.stop()
         GPIO.output(pin, GPIO.LOW)
         GPIO.setup(pin, GPIO.IN)
-        print(f"\n  CH{ch_idx + 1} done — pin LOW then INPUT.")
+        print(f"\n  {anode_label(ch_idx)} done — pin LOW then INPUT.")
 
         if ch_idx < len(PWM_PINS_BCM) - 1:
             next_pin = PWM_PINS_BCM[ch_idx + 1]
             pause(
-                f"\n  Move meter to CH{ch_idx + 2} gate (BCM {next_pin}) → GND, then Enter..."
+                f"\n  Move meter to {anode_label(ch_idx + 1)} gate (BCM {next_pin}) → GND, "
+                f"then Enter..."
             )
 
     GPIO.cleanup()

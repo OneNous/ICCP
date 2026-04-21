@@ -104,7 +104,7 @@ I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
 # Non-zero reduces ``[Errno 5] Input/output error`` when switching TCA9548A → ADS1115 / INA219.
 I2C_MUX_POST_SELECT_DELAY_S: float = 0.0005
 # If any anode INA219 read fails in a tick, force 0% PWM on every non-FAULT channel (OPEN).
-# Prevents regulating CH1/2 while CH3/4 are blind — the usual cause of “anodes should be off
+# Prevents regulating Anode 1/2 while Anode 3/4 are blind — the usual cause of “anodes should be off
 # but total mA is still high” during I2C storms. Set False only if you intentionally regulate
 # partial buses (not recommended on a shared TCA9548A rig).
 INA219_FAILSAFE_ALL_OFF: bool = True
@@ -127,8 +127,8 @@ REF_INA219_SOURCE = "bus_v"
 TARGET_MA = 0.5
 MAX_MA = 5.0
 # Per-channel overrides (0-indexed). Omit a channel key to use the global value.
-# Example: CHANNEL_TARGET_MA = {1: 1.8}  → CH2 targets 1.8 mA
-#          CHANNEL_MAX_MA    = {1: 3.5}  → CH2 faults above 3.5 mA
+# Example: CHANNEL_TARGET_MA = {1: 1.8}  → Anode 2 (idx 1) targets 1.8 mA
+#          CHANNEL_MAX_MA    = {1: 3.5}  → Anode 2 faults above 3.5 mA
 CHANNEL_TARGET_MA: dict = {}
 CHANNEL_MAX_MA: dict = {}
 
@@ -224,7 +224,7 @@ PWM_STEP_UP_PROTECTING = 1
 PWM_STEP_DOWN_PROTECTING = 1
 # Per-anode ramp overrides (0-based channel index). Omit a key to use that direction’s global
 # PWM_STEP_* value above. Lets one channel ramp faster or slower than the others independently.
-# Example: CHANNEL_PWM_STEP_UP_REGULATE = {0: 2.0, 2: 0.5}  → CH1 faster up, CH3 slower up.
+# Example: CHANNEL_PWM_STEP_UP_REGULATE = {0: 2.0, 2: 0.5}  → Anode 1 faster up, Anode 3 slower up.
 CHANNEL_PWM_STEP_UP_REGULATE: dict = {}
 CHANNEL_PWM_STEP_DOWN_REGULATE: dict = {}
 CHANNEL_PWM_STEP_UP_PROTECTING: dict = {}
@@ -358,7 +358,7 @@ SIM_NOISE_MA = 0.05
 SIM_DRIFT_MA = 0.002
 SIM_INJECT_FAULT_CH = None
 SIM_INJECT_OVERCURRENT_MA = 3.0
-# Per-channel DC nudges (CH0..CH3) so bench sim does not show four identical columns.
+# Per-channel DC nudges (idx 0..NUM_CHANNELS-1) so bench sim does not show four identical columns.
 SIM_CH_BUS_OFFSET_V = (0.0, -0.006, 0.009, -0.004)
 SIM_CH_MA_BIAS_DRY = (0.006, 0.020, 0.034, 0.011)
 SIM_CH_MA_BIAS_WET = (0.0, 0.07, -0.055, 0.045)

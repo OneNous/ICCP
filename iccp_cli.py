@@ -16,11 +16,16 @@ CoilShield `iccp` CLI — entry point for console_scripts `iccp`.
   iccp tui [--poll-interval SEC] [--log-dir PATH]   SSH-friendly live Textual UI (same as coilshield-tui).
 
   iccp --help              Usage
+
+  On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload`` and then
+  ``restart iccp`` (or ``stop iccp`` before commission/probe). Set ICCP_SYSTEMD_SYNC=0 to
+  disable. See ``_sync_systemd_for_iccp_cli``.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +42,106 @@ def _running_on_raspberry_pi() -> bool:
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent
+
+
+# First argv token after `iccp` — must match dispatch in main() (typos skip systemd sync).
+_ICCP_CLI_COMMANDS: frozenset[str] = frozenset(
+    {
+        "-start",
+        "--start",
+        "start",
+        "commission",
+        "--commission",
+        "-commission",
+        "probe",
+        "clear-fault",
+        "clear_fault",
+        "clear-faults",
+        "version",
+        "-V",
+        "--version",
+        "live",
+        "diag",
+        "tui",
+        "watch",
+        "monitor",
+    }
+)
+
+
+def _sync_systemd_for_iccp_cli(cmd: str) -> None:
+    """
+    On a Raspberry Pi, refresh systemd and reconcile the ``iccp`` service so you do not
+    need to run ``daemon-reload`` / ``restart`` by hand after editing units or code.
+
+    - ``ICCP_SYSTEMD_SYNC=0`` — disable entirely (CI, laptops, or no sudo).
+    - ``ICCP_SYSTEMD_UNIT`` — unit name (default ``iccp``).
+
+    Foreground ``iccp -start``: only ``daemon-reload`` (never ``restart`` — avoids two
+    controllers). ``commission`` / ``probe``: ``daemon-reload`` then ``stop`` the
+    unit (``restart`` would leave PWM running and break commission). Other commands:
+    ``daemon-reload`` then ``restart``.
+    """
+    if not _running_on_raspberry_pi():
+        return
+    flag = os.environ.get("ICCP_SYSTEMD_SYNC", "1").strip().lower()
+    if flag in ("0", "off", "false", "no", "disable", "disabled"):
+        return
+
+    unit = (os.environ.get("ICCP_SYSTEMD_UNIT") or "iccp").strip() or "iccp"
+
+    def _run(args: list[str]) -> int:
+        try:
+            r = subprocess.run(
+                ["sudo", "systemctl", *args],
+                timeout=180,
+                capture_output=True,
+                text=True,
+            )
+            if r.returncode != 0 and (r.stderr or "").strip():
+                sys.stderr.write(r.stderr)
+                if not r.stderr.endswith("\n"):
+                    sys.stderr.write("\n")
+            return int(r.returncode)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            print(f"[iccp] systemd: {e}", file=sys.stderr)
+            return 1
+
+    if _run(["daemon-reload"]) != 0:
+        print(
+            "[iccp] `sudo systemctl daemon-reload` failed — check sudo; disable auto-sync "
+            "with ICCP_SYSTEMD_SYNC=0",
+            file=sys.stderr,
+        )
+        return
+
+    key = cmd.lower().lstrip("-")
+    if key == "start":
+        print(
+            "[iccp] systemctl daemon-reload OK (no restart before foreground -start — "
+            "would duplicate a systemd-run controller)."
+        )
+        return
+    if key == "commission":
+        _run(["stop", unit])
+        print(
+            f"[iccp] systemctl stop {unit} (before commission; `restart` would leave the "
+            "service driving PWM)."
+        )
+        return
+    if key == "probe":
+        _run(["stop", unit])
+        print(f"[iccp] systemctl stop {unit} (before probe — frees PWM / I2C).")
+        return
+
+    if _run(["restart", unit]) == 0:
+        print(f"[iccp] systemctl daemon-reload && systemctl restart {unit}")
+    else:
+        print(
+            f"[iccp] systemctl restart {unit} failed (no unit? set ICCP_SYSTEMD_UNIT). "
+            "Disable with ICCP_SYSTEMD_SYNC=0.",
+            file=sys.stderr,
+        )
 
 
 def _print_help() -> None:
@@ -62,6 +167,10 @@ def _print_help() -> None:
                              the web UI from latest.json. Keys: d/D diag, f clear fault, t paths, p probe.
 
   iccp --help                This message.
+
+On a Raspberry Pi, recognized commands run ``sudo systemctl daemon-reload`` automatically,
+then ``restart iccp`` (or ``stop iccp`` before commission/probe). Set ICCP_SYSTEMD_SYNC=0
+to disable. Override unit name with ICCP_SYSTEMD_UNIT=myunit.
 
 Install:  pip install -e .   (from repo root, in your venv)
   Quickest monitor after install:  iccp tui   or   coilshield-tui
@@ -264,6 +373,10 @@ def main() -> int:
     cmd = argv[0]
     rest = argv[1:]
 
+    if cmd not in _ICCP_CLI_COMMANDS:
+        print(f"Unknown command: {cmd!r}. Try: iccp --help", file=sys.stderr)
+        return 2
+
     os.chdir(root)
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
@@ -271,6 +384,8 @@ def main() -> int:
     from config.argv_log_dir import apply_coilshield_log_dir_from_argv
 
     apply_coilshield_log_dir_from_argv(argv)
+
+    _sync_systemd_for_iccp_cli(cmd)
 
     if cmd in ("-start", "--start", "start"):
         os.environ.setdefault("COILSHIELD_SIM", "0")
@@ -305,7 +420,7 @@ def main() -> int:
 
         return int(tui_mod.main(rest))
 
-    print(f"Unknown command: {cmd!r}. Try: iccp --help", file=sys.stderr)
+    print(f"Internal error: command {cmd!r} missing handler.", file=sys.stderr)
     return 2
 
 

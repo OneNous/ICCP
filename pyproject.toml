@@ -30,6 +30,7 @@ include = ["config*"]
 py-modules = [
     "main",
     "console_ui",
+    "telemetry_queries",
     "iccp_runtime",
     "diagnostics",
     "iccp_cli",

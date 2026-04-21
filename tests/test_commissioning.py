@@ -82,7 +82,7 @@ def test_ina_confirm_off_details_current_fail() -> None:
         mode="current",
     )
     assert ok is False
-    assert any("CH1" in r for r in reasons)
+    assert any("Anode 2" in r and "idx 1" in r for r in reasons)
     assert "9.0" in reasons[0]
 
 

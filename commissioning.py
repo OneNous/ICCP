@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import config.settings as cfg
 import temp as temp_mod
+from channel_labels import anode_hw_label
 from reference import ReferenceElectrode, _update_comm_file, find_oc_curve_metrics
 
 if TYPE_CHECKING:
@@ -115,44 +116,44 @@ def _ina_confirm_off_details(
         r = readings.get(ch, {})
         if not r.get("ok"):
             err = r.get("error", "unknown")
-            reasons.append(f"CH{ch} INA219 not ok ({err})")
+            reasons.append(f"{anode_hw_label(ch)} INA219 not ok ({err})")
             return False, reasons
         cur = abs(float(r.get("current", 999.0)))
         cur_ok = cur < i_max
         if mode_l == "current":
             if not cur_ok:
                 reasons.append(
-                    f"CH{ch} |I|={cur:.4f} mA >= {i_max:g} mA (mode=current)"
+                    f"{anode_hw_label(ch)} |I|={cur:.4f} mA >= {i_max:g} mA (mode=current)"
                 )
                 return False, reasons
         elif mode_l == "delta_v":
             if not pre_bus or ch not in pre_bus:
-                reasons.append(f"CH{ch} delta_v: missing pre_bus snapshot")
+                reasons.append(f"{anode_hw_label(ch)} delta_v: missing pre_bus snapshot")
                 return False, reasons
             dv = pre_bus[ch] - float(r.get("bus_v", 0.0))
             if dv < dv_min:
                 reasons.append(
-                    f"CH{ch} bus delta {dv:.4f} V < {dv_min:g} V (mode=delta_v; "
+                    f"{anode_hw_label(ch)} bus delta {dv:.4f} V < {dv_min:g} V (mode=delta_v; "
                     f"pre={pre_bus[ch]:.4f} V now={float(r.get('bus_v', 0.0)):.4f} V)"
                 )
                 return False, reasons
         elif mode_l == "both":
             if not cur_ok:
                 reasons.append(
-                    f"CH{ch} |I|={cur:.4f} mA >= {i_max:g} mA (mode=both)"
+                    f"{anode_hw_label(ch)} |I|={cur:.4f} mA >= {i_max:g} mA (mode=both)"
                 )
                 return False, reasons
             if pre_bus and ch in pre_bus:
                 dv = pre_bus[ch] - float(r.get("bus_v", 0.0))
                 if dv < dv_min:
                     reasons.append(
-                        f"CH{ch} bus delta {dv:.4f} V < {dv_min:g} V (mode=both)"
+                        f"{anode_hw_label(ch)} bus delta {dv:.4f} V < {dv_min:g} V (mode=both)"
                     )
                     return False, reasons
         else:
             if not cur_ok:
                 reasons.append(
-                    f"CH{ch} |I|={cur:.4f} mA >= {i_max:g} mA (mode={mode_l!r})"
+                    f"{anode_hw_label(ch)} |I|={cur:.4f} mA >= {i_max:g} mA (mode={mode_l!r})"
                 )
                 return False, reasons
     return True, []
@@ -206,7 +207,7 @@ def _wait_ina_oc_confirm(
     for ch in range(cfg.NUM_CHANNELS):
         r = last_readings.get(ch, {})
         print(
-            f"      CH{ch}: ok={r.get('ok')} I={r.get('current', '—')} "
+            f"      {anode_hw_label(ch)}: ok={r.get('ok')} I={r.get('current', '—')} "
             f"bus_v={r.get('bus_v', '—')} err={r.get('error', '')!r}"
         )
     print(
@@ -224,7 +225,7 @@ def _pwm_duties_all_zero(controller: Any) -> tuple[bool, list[str]]:
     for ch in range(cfg.NUM_CHANNELS):
         d = float(controller.output_duty_pct(ch))
         if d > 1e-6:
-            issues.append(f"CH{ch} duty={d:.4f}%")
+            issues.append(f"{anode_hw_label(ch)} duty={d:.4f}%")
     return (len(issues) == 0, issues)
 
 
@@ -237,11 +238,13 @@ def _channels_shunt_below(
         r = readings.get(ch, {})
         if not r.get("ok"):
             err = r.get("error", "unknown")
-            issues.append(f"CH{ch} INA219 not ok ({err})")
+            issues.append(f"{anode_hw_label(ch)} INA219 not ok ({err})")
             continue
         cur = abs(float(r.get("current", 999.0)))
         if cur >= i_max_ma:
-            issues.append(f"CH{ch} |I|={cur:.4f} mA (threshold {i_max_ma:g} mA)")
+            issues.append(
+                f"{anode_hw_label(ch)} |I|={cur:.4f} mA (threshold {i_max_ma:g} mA)"
+            )
     return (len(issues) == 0, issues)
 
 
@@ -307,10 +310,19 @@ def _verify_phase1_drive_off(
                 "shunts may still be decaying before long settle — native baseline may be biased."
             )
         )
+        joined = "; ".join(shunt_issues) if shunt_issues else "check wiring / leakage"
+        n_ch = int(getattr(cfg, "NUM_CHANNELS", 4))
+        list_note = ""
+        if shunt_issues and len(shunt_issues) < n_ch:
+            list_note = (
+                f" Anodes not listed had |I| < {i_gate:g} mA (only failing anodes appear; "
+                "`idx 0` = first anode, `Anode N` = harness order)."
+            )
         msg = (
             "shunt current still ≥ "
             f"{i_gate:g} mA on one or more channels after {t_out:g}s — "
-            + ("; ".join(shunt_issues) if shunt_issues else "check wiring / leakage")
+            + joined
+            + list_note
             + f"; {tail}"
         )
         if post_long_settle:
@@ -475,8 +487,8 @@ def _instant_off_ref_mv_and_restore(
                 raw_vals.append(inf_mv)
                 if log is not None:
                     log(
-                        f"  OC sequential CH{cut_ch}: inflection {raw_vals[-1]:.1f} mV "
-                        f"(using min across CH for shift)"
+                        f"  OC sequential {anode_hw_label(cut_ch)}: inflection "
+                        f"{raw_vals[-1]:.1f} mV (using min across anodes for shift)"
                     )
                 _restore_saved_pwm()
                 readings = _sensor_readings(sim_state)

@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import config.settings as cfg
+from channel_labels import anode_hw_label
 
 SIM_MODE: bool = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
@@ -134,7 +135,7 @@ if not SIM_MODE:
                     _sensors.append(sensor)
                 except Exception as e:
                     print(
-                        f"[sensors] CH{idx} INA219 @ {hex(addr)} init failed "
+                        f"[sensors] {anode_hw_label(idx)} INA219 @ {hex(addr)} init failed "
                         f"({port_desc}, i2c-{cfg.I2C_BUS}): {e}"
                     )
                     raise
@@ -203,11 +204,11 @@ def read_all_real() -> dict[int, ChannelReading]:
     """
     Read all 4 ICCP channels from INA219 hardware.
 
-    Channel mapping:
-        CH0 → INA219 at 0x40
-        CH1 → INA219 at 0x41
-        CH2 → INA219 at 0x44
-        CH3 → INA219 at 0x45
+    Channel mapping (firmware idx → INA219; Anode N = idx + 1):
+        idx 0 (Anode 1) → 0x40
+        idx 1 (Anode 2) → 0x41
+        idx 2 (Anode 3) → 0x44
+        idx 3 (Anode 4) → 0x45
 
     If ``I2C_MUX_CHANNELS_INA219`` is set, selects that TCA9548A port (0..7) before
     each channel read (one downstream branch at a time). Legacy single-port layout
@@ -349,10 +350,10 @@ COOLING_CYCLES: tuple[tuple[int, int], ...] = (
 
 # (wet_delay_s, dry_delay_s) per channel after cycle start/end
 ANODE_WET_PARAMS: tuple[tuple[int, int], ...] = (
-    (120,  480),   # CH0: bottom left  — wets 2min after, dries 8min after
-    (180,  720),   # CH1: bottom right — wets 3min after, dries 12min after
-    (60,  2400),   # CH2: top left     — wets 1min after, dries 40min after
-    (300, 1200),   # CH3: center       — wets 5min after, dries 20min after
+    (120,  480),   # idx 0 / Anode 1: bottom left  — wets 2min after, dries 8min after
+    (180,  720),   # idx 1 / Anode 2: bottom right — wets 3min after, dries 12min after
+    (60,  2400),   # idx 2 / Anode 3: top left     — wets 1min after, dries 40min after
+    (300, 1200),   # idx 3 / Anode 4: center       — wets 5min after, dries 20min after
 )
 
 SIM_REAL_S_PER_SIM_HOUR: float = float(os.environ.get("SIM_TIME_SCALE", "10"))

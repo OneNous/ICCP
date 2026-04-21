@@ -81,7 +81,7 @@ On first start (no `commissioning.json` in the project root), `main.py` runs **s
 
 **Bench / dev without waiting on hardware:** run with **`--skip-commission`** so the controller starts immediately (native baseline will not be set until you commission for real).
 
-**Before `iccp commission` on the Pi:** stop the live controller (`sudo systemctl stop iccp` or any `main.py` / `iccp -start`) so only one process owns PWM. If `latest.json` was just updated, `iccp commission` aborts unless you pass **`--force`** (unsafe if a controller is still running). High shunt current at “off” is often a **second process** or gate drive — see [docs/mosfet-off-verification.md](docs/mosfet-off-verification.md). Phase 1 can use **static gate LOW** (`COMMISSIONING_PHASE1_STATIC_GATE_LOW`) instead of soft-PWM-at-0 alone.
+**Before `iccp commission` on the Pi:** the `iccp` CLI runs **`sudo systemctl stop iccp`** automatically before commissioning (after `daemon-reload`). For other subcommands it runs **`daemon-reload` + `restart iccp`** unless disabled (`ICCP_SYSTEMD_SYNC=0`). Foreground **`iccp -start`** only reloads units (no restart). You can still stop manually if you prefer. If `latest.json` was just updated, `iccp commission` aborts unless you pass **`--force`** (unsafe if a controller is still running). High shunt current at “off” is often a **second process** or gate drive — see [docs/mosfet-off-verification.md](docs/mosfet-off-verification.md). Phase 1 can use **static gate LOW** (`COMMISSIONING_PHASE1_STATIC_GATE_LOW`) instead of soft-PWM-at-0 alone.
 
 **Force re-commissioning** (e.g. after replacing the zinc rod or major rewiring): from the repo root, run:
 
@@ -98,6 +98,8 @@ On a **bench rig** with a fixed supply, no feedback, and no PWM, a **series resi
 **This controller does not need that resistor in the electrochemical path.** The **INA219** on each anode channel measures real shunt current; the Pi adjusts **PWM duty** every sample toward `TARGET_MA` in `config/settings.py`. Changing condensate impedance is handled by the loop (more or less duty), not by burning headroom in a fixed ballast. Software still enforces `MAX_MA` and bus voltage limits per channel.
 
 **Do keep a small gate resistor** (order ~100 Ω) from each GPIO to its MOSFET gate to protect the driver output—that is standard practice and is **not** the same as series cell current limiting.
+
+**Power-up / script off:** Until Python configures the BCM lines, gate pins may **float**; an N-FET can then conduct and put **full bus voltage** on the anode path (commissioning Phase 1 will always see high shunt current). Add **gate-to-source pull-downs** (**tens of kΩ** gate→**source**, not a low-Ω bleed from **VIN** on the INA219 — that rail stays at stack voltage while the FET is on). **`deploy/iccp.service`** runs **`scripts/anode_gates_hold_low.py`** via **`ExecStartPre=`** before each **`iccp -start`** so gates are driven **LOW** until the controller takes over. For Pi-on without the main unit, see **`deploy/iccp-anode-gpio-init.service`**. Details: [docs/mosfet-off-verification.md](docs/mosfet-off-verification.md) §0.
 
 ## Web dashboard (live + history + benchmarks)
 
@@ -211,8 +213,8 @@ Ensure `~/.local/bin` is on your `PATH` for login shells (many Pi images already
 
 - **Git:** commit on Mac, `git push`; on Pi `cd ~/coilshield && git pull`.
 - **rsync (fast iteration):**  
-  `rsync -avz ~/coilshield/ user@pi:~/coilshield/`  
-  Optional shell alias, e.g. `alias push-coilshield='rsync -avz ~/coilshield/ user@pi:~/coilshield/'`.
+  `rsync -avz ~/coilshield/ onenous@0neNous-pi:~/coilshield/`
+  Optional shell alias, e.g. `alias push-coilshield='rsync -avz ~/coilshield/ onenous@0neNous-pi:~/coilshield/'`.
 
 ## Tests
 
@@ -230,7 +232,7 @@ COILSHIELD_SIM=1 .venv/bin/python -m pytest tests/ -q
 If you use [fswatch](https://github.com/emcrisostomo/fswatch) on the Mac:
 
 ```bash
-fswatch -o ~/coilshield | xargs -n1 -I{} rsync -avz ~/coilshield/ user@pi-ip:~/coilshield/
+fswatch -o ~/coilshield | xargs -n1 -I{} rsync -avz ~/coilshield/ onenous@0neNous-pi:~/coilshield/
 ```
 
 Throttle as needed; many editors also have “save & upload” extensions.
