@@ -8,6 +8,7 @@ Use `--sim` or `COILSHIELD_SIM=1` for the bench simulator; default is hardware (
 On a Raspberry Pi, `COILSHIELD_SIM=1` in the environment alone is ignored (hardware is used) unless you pass `--sim`.
 Clear fault latch: `touch <PROJECT_ROOT>/clear_fault` or `iccp clear-fault`
 Commissioning reset: `python3 -c "import commissioning; commissioning.reset()"`
+Telemetry directory: match the dashboard — ``--log-dir /abs/path/logs`` or ``COILSHIELD_LOG_DIR`` before import (see ``config/argv_log_dir.py``).
 Sim speed: SIM_TIME_SCALE=10 or `python3 main.py --sim --sim-time-scale 60`
 """
 
@@ -29,6 +30,12 @@ def _running_on_raspberry_pi() -> bool:
     except OSError:
         return False
     return "Raspberry Pi" in model
+
+
+def _apply_argv_log_dir(argv: list[str]) -> None:
+    from config.argv_log_dir import apply_coilshield_log_dir_from_argv
+
+    apply_coilshield_log_dir_from_argv(argv)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -67,6 +74,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         metavar="MV",
         help="write native_mv to commissioning.json and exit (e.g. --set-native -232.0)",
+    )
+    p.add_argument(
+        "--log-dir",
+        metavar="PATH",
+        default=None,
+        help="telemetry directory (absolute path); same as COILSHIELD_LOG_DIR — must match dashboard",
     )
     return p.parse_args()
 
@@ -262,6 +275,7 @@ def _print_ref_compact(
 
 
 def main() -> int:
+    _apply_argv_log_dir(sys.argv[1:])
     args = _parse_args()
     if args.sim:
         os.environ["COILSHIELD_SIM"] = "1"

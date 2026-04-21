@@ -38,14 +38,9 @@ from pathlib import Path
 
 def _apply_dashboard_argv_log_dir() -> None:
     """Set COILSHIELD_LOG_DIR from argv before ``import config.settings`` (LOG_DIR is fixed at import)."""
-    argv = sys.argv[1:]
-    for i, a in enumerate(argv):
-        if a == "--log-dir" and i + 1 < len(argv):
-            os.environ["COILSHIELD_LOG_DIR"] = argv[i + 1].strip().strip('"').strip("'")
-            return
-        if a.startswith("--log-dir="):
-            os.environ["COILSHIELD_LOG_DIR"] = a.split("=", 1)[1].strip().strip('"').strip("'")
-            return
+    from config.argv_log_dir import apply_coilshield_log_dir_from_argv
+
+    apply_coilshield_log_dir_from_argv(sys.argv[1:])
 
 
 _apply_dashboard_argv_log_dir()
@@ -2033,7 +2028,9 @@ def main() -> None:
     _warn_sqlite_lag_support()
     _tp = cfg.resolved_telemetry_paths()
     print(f"CoilShield dashboard: http://127.0.0.1:{args.port} (bind {args.host}:{args.port})")
-    print(f"Telemetry paths (must match main.py): latest.json ← {_tp['latest_json']}")
+    print(f"Telemetry paths (must match main.py / iccp -start):")
+    print(f"  latest.json ← {_tp['latest_json']}")
+    print(f"  SQLite      ← {_tp['sqlite_db']}")
     print(f"  LOG_DIR={_tp['log_dir']} (source: {_tp['log_dir_source']})")
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
 

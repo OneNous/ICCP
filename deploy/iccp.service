@@ -13,6 +13,10 @@
 #   Group=pi
 #   WorkingDirectory=/home/pi/coilshield
 #   ExecStart=/home/pi/coilshield/.venv/bin/iccp -start
+#
+# Strongly recommended: absolute telemetry dir so dashboard + controller always agree:
+#   Environment=COILSHIELD_LOG_DIR=/home/pi/coilshield/logs
+# Or pass on ExecStart: .../iccp -start --log-dir /home/pi/coilshield/logs
 
 [Unit]
 Description=CoilShield ICCP controller
@@ -28,6 +32,7 @@ ExecStart=/home/pi/coilshield/.venv/bin/iccp -start
 Restart=on-failure
 RestartSec=10
 Environment=COILSHIELD_SIM=0
+# Environment=COILSHIELD_LOG_DIR=/home/pi/coilshield/logs
 
 [Install]
 WantedBy=multi-user.target

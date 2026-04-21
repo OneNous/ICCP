@@ -67,8 +67,8 @@ def run_iccp_forever(args: Namespace) -> int:
     )
     _tp = cfg.resolved_telemetry_paths()
     print(
-        f"[main] Telemetry files: {_tp['latest_json']} "
-        f"(LOG_DIR via {_tp['log_dir_source']})"
+        f"[main] Telemetry: latest.json ← {_tp['latest_json']}  "
+        f"SQLite ← {_tp['sqlite_db']}  (LOG_DIR via {_tp['log_dir_source']})"
     )
     print(f"[main] Reference path: {ref_hw_message()}")
 

@@ -3,7 +3,7 @@
 CoilShield `iccp` CLI — entry point for console_scripts `iccp`.
 
   iccp -start [args ...]   Run ICCP (defaults: --real --verbose --skip-commission)
-  iccp commission [--sim]  Reference + current commissioning (writes commissioning.json)
+  iccp commission [--sim] [--force]  Commissioning (writes commissioning.json; see --help body)
   iccp probe [args ...]    Full hardware probe (see hw_probe.py)
   iccp clear-fault         Touch clear_fault (uses config CLEAR_FAULT_FILE)
   iccp version             Package / install version
@@ -43,10 +43,11 @@ def _print_help() -> None:
 
   iccp -start [args ...]     Run controller. Sets COILSHIELD_SIM=0 unless you pass --sim.
                              Default argv: --real --verbose --skip-commission
+                             Optional: --log-dir /abs/path/logs (same as COILSHIELD_LOG_DIR; match dashboard)
 
-  iccp commission [--sim]    Self-commission reference (native_mv) + ramp to target shift;
-                             writes commissioning.json. On Pi uses hardware unless --sim.
-                             Off-Pi defaults to simulator unless you run on a Pi.
+  iccp commission [--sim] [--force]  Self-commission (writes commissioning.json).
+                             On Pi uses hardware unless --sim. If latest.json is very fresh,
+                             commission aborts unless --force (stop systemd iccp first).
 
   iccp probe [args ...]      Hardware probe (I2C, INA219 smbus2, ADS1115, DS18B20, PWM).
                              Same options as hw_probe.py (--continuous, --skip-pwm, …).
@@ -129,8 +130,26 @@ def _cmd_version() -> int:
     return 0
 
 
-def _warn_if_runtime_may_be_active() -> None:
-    """If latest.json is fresh, another controller process may still own GPIO + telemetry."""
+def _split_commission_force_flag(rest: list[str]) -> tuple[list[str], bool]:
+    """Strip ``--force`` from commission argv; return (remaining_argv, force)."""
+    force = False
+    out: list[str] = []
+    for a in rest:
+        if a == "--force":
+            force = True
+            continue
+        out.append(a)
+    return out, force
+
+
+def _abort_if_concurrent_controller_active(*, force: bool, on_pi_hw: bool) -> int | None:
+    """
+    If latest.json is very fresh, another iccp/main likely still owns PWM — abort unless --force.
+
+    Returns exit code (e.g. 1) to stop commission, or None to continue.
+    """
+    if force or not on_pi_hw:
+        return None
     try:
         import time
 
@@ -138,25 +157,30 @@ def _warn_if_runtime_may_be_active() -> None:
 
         p = cfg.LOG_DIR / getattr(cfg, "LATEST_JSON_NAME", "latest.json")
         if not p.is_file():
-            return
+            return None
         age = time.time() - p.stat().st_mtime
         thr = max(5.0, 4.0 * float(getattr(cfg, "SAMPLE_INTERVAL_S", 1.0)))
         if age >= thr:
-            return
+            return None
         print(
-            "[iccp commission] WARNING: "
-            f"{p.name} was updated {age:.1f}s ago (threshold {thr:.0f}s). "
-            "If main.py or systemd is still running the controller, stop it before commissioning: "
-            "two processes share the same PWM GPIO and the dashboard reads latest.json from the "
-            "runtime, not this CLI — you will see REGULATE / non-zero duty while logs say 'channels off'.",
+            "[iccp commission] ERROR: "
+            f"{p} was updated {age:.1f}s ago (threshold {thr:.0f}s) — a controller is probably "
+            "still running.\n"
+            "  Stop it first, e.g.:  sudo systemctl stop iccp\n"
+            "  (or stop any manual main.py / iccp -start). Two processes share the same PWM "
+            "GPIO; this CLI's all_off() cannot turn off the other process's duty — shunts stay "
+            "high and native baseline aborts.\n"
+            "  Override (unsafe):  iccp commission --force",
             file=sys.stderr,
         )
+        return 1
     except OSError:
-        pass
+        return None
 
 
 def _cmd_commission(rest: list[str]) -> int:
     """Run commissioning.run() — same sequence as first boot of main.py (no --skip-commission)."""
+    rest, force_comm = _split_commission_force_flag(rest)
     use_sim = "--sim" in rest
     if use_sim:
         os.environ["COILSHIELD_SIM"] = "1"
@@ -181,6 +205,11 @@ def _cmd_commission(rest: list[str]) -> int:
     from reference import ReferenceElectrode, ref_hw_message
 
     sim = sensors.SIM_MODE
+    on_pi_hw = not sim and _running_on_raspberry_pi()
+    abort = _abort_if_concurrent_controller_active(force=force_comm, on_pi_hw=on_pi_hw)
+    if abort is not None:
+        return abort
+
     use_hw_gpio = not sim
     if use_hw_gpio:
         try:
@@ -233,8 +262,9 @@ def main() -> int:
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
-    if cmd in ("commission", "--commission", "-commission"):
-        _warn_if_runtime_may_be_active()
+    from config.argv_log_dir import apply_coilshield_log_dir_from_argv
+
+    apply_coilshield_log_dir_from_argv(argv)
 
     if cmd in ("-start", "--start", "start"):
         os.environ.setdefault("COILSHIELD_SIM", "0")

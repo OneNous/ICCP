@@ -1,0 +1,32 @@
+# CoilShield ICCP — example systemd unit for the Flask dashboard (EXAMPLE)
+#
+# INSTALL (on the Pi):
+#   1. sudo cp deploy/dashboard.service /etc/systemd/system/iccp-dashboard.service
+#   2. Edit User, Group, WorkingDirectory, ExecStart, and Environment to match your install.
+#      Use the SAME COILSHIELD_LOG_DIR as the iccp controller unit so /api/live reads the
+#      same latest.json the controller writes.
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now iccp-dashboard
+#
+# Example:
+#   WorkingDirectory=/home/pi/coilshield
+#   ExecStart=/home/pi/coilshield/.venv/bin/python3 /home/pi/coilshield/dashboard.py --host 0.0.0.0 --port 8080
+#   Environment=COILSHIELD_LOG_DIR=/home/pi/coilshield/logs
+
+[Unit]
+Description=CoilShield ICCP web dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/coilshield
+ExecStart=/home/pi/coilshield/.venv/bin/python3 /home/pi/coilshield/dashboard.py --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+# Environment=COILSHIELD_LOG_DIR=/home/pi/coilshield/logs
+
+[Install]
+WantedBy=multi-user.target
