@@ -1,12 +1,15 @@
-"""Zinc reference electrode shift and protection band."""
+"""Reference electrode shift, protection band, and ADS1115 scale overrides."""
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 import pytest
 
 import config.settings as cfg
+import reference as ref_mod
 from reference import ReferenceElectrode
 
 
@@ -85,7 +88,32 @@ def test_protection_status_from_shift(monkeypatch: pytest.MonkeyPatch) -> None:
     ref = ReferenceElectrode()
     ref.native_mv = 200.0
     # shift = native − raw → 100 mV when reading has fallen 100 mV vs native
-    monkeypatch.setattr(ReferenceElectrode, "read", lambda self, duties=None, statuses=None: 100.0)
+    monkeypatch.setattr(
+        ReferenceElectrode,
+        "read",
+        lambda self, duties=None, statuses=None, **kwargs: 100.0,
+    )
     shift = ref.shift_mv(duties={}, statuses={})
     assert shift == 100.0
     assert ref.protection_status(shift) == "OK"
+
+
+def test_ref_ads_scale_from_commissioning_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = tmp_path / "commissioning.json"
+    p.write_text(
+        json.dumps({"native_mv": 100.0, "ref_ads_scale": 0.5}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ref_mod, "_COMM_FILE", p)
+    ref_mod._reload_comm_ref_ads_scale()
+    assert ref_mod._effective_ref_ads_scale() == 0.5
+
+
+def test_ref_temp_adjust_mv(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "REF_TEMP_COMP_MV_PER_F", -0.5)
+    ref = ReferenceElectrode()
+    ref.native_temp_f = 70.0
+    assert ref.ref_temp_adjust_mv(200.0, None) == 200.0
+    assert ref.ref_temp_adjust_mv(200.0, 72.0) == 199.0

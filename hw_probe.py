@@ -50,7 +50,7 @@ if cfg is not None:
     PWM_FREQ_HZ = int(cfg.PWM_FREQUENCY_HZ)
     ADS1115_ADDRESS = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
     ADS1115_BUS = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))
-    ADS1115_FSR_V = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
+    ADS1115_FSR_V = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
 else:
     INA219_ADDRESSES = (0x40, 0x41, 0x44, 0x45)
     I2C_BUS = 1
@@ -58,7 +58,7 @@ else:
     PWM_FREQ_HZ = 100
     ADS1115_ADDRESS = 0x48
     ADS1115_BUS = 1
-    ADS1115_FSR_V = 4.096
+    ADS1115_FSR_V = 2.048
 
 SHUNT_OHMS = 0.1
 SUPPLY_V = 5.0

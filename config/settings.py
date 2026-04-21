@@ -48,7 +48,10 @@ NUM_CHANNELS = 4
 ADS1115_ADDRESS = 0x48
 ADS1115_BUS = 1
 ADS1115_CHANNEL = 0
-ADS1115_FSR_V = 4.096
+# TI PGA full-scale — must match the programmed range or every mV is scaled wrong vs a DMM.
+# ±2.048 V is typical for Ag/AgCl + divider when the AIN node stays below ~2 V; use ±4.096 only
+# if the front-end can exceed ±2.048 V (see COILSHIELD_ADS1115_FSR_V).
+ADS1115_FSR_V = 2.048
 # BCM pin for ADS1115 ALERT/RDY (conversion-ready, active low). None = poll config register only.
 ADS1115_ALRT_GPIO: int | None = 24
 # If True, try RPi.GPIO wait_for_edge on ALRT after starting a conversion; on failure
@@ -67,12 +70,27 @@ REF_ADS_MEDIAN_SAMPLES = 5
 # Data rate bits 0..7 for routine reference reads (5 = 250 SPS). Commissioning curve uses COMMISSIONING_ADS1115_DR.
 REF_ADS1115_DR = 5
 # Multiply ADC volts (after ×1000) for divider scaling vs. electrode node.
+# Calibrate with a DMM at the ADS1115 AIN node (same ground): at fixed PWM state,
+#   REF_ADS_SCALE ≈ V_dmm / (ref_raw_mv / 1000).
+# Example: meter 0.120 V but ref_raw_mv ≈ 300 → scale ≈ 0.40.
+# Optional env: COILSHIELD_REF_ADS_SCALE=0.4
+# Optional FSR env (TI PGA only): COILSHIELD_ADS1115_FSR_V=2.048
+# commissioning.json key ``ref_ads_scale`` overrides the below at runtime (see reference.py).
 REF_ADS_SCALE = 1.0
+_ADS1115_FSR_ALLOWED = (6.144, 4.096, 2.048, 1.024, 0.512, 0.256)
+_rs_env = os.environ.get("COILSHIELD_REF_ADS_SCALE", "").strip()
+if _rs_env:
+    REF_ADS_SCALE = float(_rs_env)
+_fsr_env = os.environ.get("COILSHIELD_ADS1115_FSR_V", "").strip()
+if _fsr_env:
+    _v = float(_fsr_env)
+    if any(abs(_v - _k) < 1e-9 for _k in _ADS1115_FSR_ALLOWED):
+        ADS1115_FSR_V = _v
 
 # Reference backend: "ads1115" (default) or legacy "ina219" on REF_I2C_BUS.
 REF_ADC_BACKEND = "ads1115"
-# Bench: copper wire; field: ag_agcl after swap — informational for logs/docs.
-REF_ELECTRODE_KIND = "copper_bench"
+# Field default Ag/AgCl sense; legacy bench Cu was ``copper_bench`` — informational for logs/docs.
+REF_ELECTRODE_KIND = "ag_agcl"
 
 # TCA9548A @ 0x70 (ADDR straps): ch0..3 → INA219 0x40/0x41/0x44/0x45; ch4 → ADS1115 @ 0x48.
 # Control byte = 1 << N. Bench / no-mux rigs: set I2C_MUX_ADDRESS = None and all mux channels None.
@@ -105,7 +123,7 @@ REF_INA219_MEDIAN_SAMPLES = 1
 REF_INA219_SOURCE = "bus_v"
 
 # --- Current targets ---
-# Conservative default for aluminum fin chemistry; raise on bench copper if needed.
+# Conservative default for aluminum fin chemistry; tune after commissioning if needed.
 TARGET_MA = 0.5
 MAX_MA = 5.0
 # Per-channel overrides (0-indexed). Omit a channel key to use the global value.
@@ -198,13 +216,12 @@ PWM_FREQUENCY_HZ = 100
 # (code uses getattr(..., PWM_STEP)).
 PWM_STEP = 1
 # Finer ramp tuning: % duty added or removed per SAMPLE_INTERVAL_S tick in each state/direction.
-# Defaults mirror PWM_STEP; override any key for asymmetric or mode-specific ramps. Smaller values
-# slow ramps; effective %/s ≈ step / SAMPLE_INTERVAL_S. On hardware, PWMBank still sends
-# int(round(duty)) to RPi.GPIO each tick, so sub-integer steps accumulate in software before the pin moves.
-PWM_STEP_UP_REGULATE = PWM_STEP
-PWM_STEP_DOWN_REGULATE = PWM_STEP
-PWM_STEP_UP_PROTECTING = PWM_STEP
-PWM_STEP_DOWN_PROTECTING = PWM_STEP
+# Legacy fallback is PWM_STEP. Asymmetric REGULATE (faster up, slower down) is common; PROTECTING
+# often keeps symmetric small steps. Effective %/s ≈ step / SAMPLE_INTERVAL_S.
+PWM_STEP_UP_REGULATE = 2
+PWM_STEP_DOWN_REGULATE = 1
+PWM_STEP_UP_PROTECTING = 1
+PWM_STEP_DOWN_PROTECTING = 1
 # Per-anode ramp overrides (0-based channel index). Omit a key to use that direction’s global
 # PWM_STEP_* value above. Lets one channel ramp faster or slower than the others independently.
 # Example: CHANNEL_PWM_STEP_UP_REGULATE = {0: 2.0, 2: 0.5}  → CH1 faster up, CH3 slower up.
@@ -254,9 +271,15 @@ SQLITE_PURGE_EVERY_N_INSERTS = 10_000
 # --- Reference electrode (ADS1115 default; legacy INA219 if REF_ADC_BACKEND) ---
 # Set False to skip reference ADC init until hardware is wired.
 REF_ENABLED = True
+# Polarization shift = native_mv − instant-off mV (positive when protected). Default 100 mV
+# matches a common field picture: native ~100–130 mV at the AIN after Phase 1, ramp succeeds
+# when OC inflection sits ~20–40 mV (order ~100 mV below native). Tune if chemistry differs.
 TARGET_SHIFT_MV = 100
 MAX_SHIFT_MV = 200
 TARGET_MA_STEP = 0.02
+# Optional Ag/AgCl linear trim vs pan temperature (°F only): raw mV += (temp_f − native_temp_f)×coef.
+# Literature often quotes mV/°C — convert once: mV_per_F = mV_per_C × (5/9). Default 0 = off.
+REF_TEMP_COMP_MV_PER_F = 0.0
 COMMISSIONING_SETTLE_S = 60
 # Phase 2: regulate before each instant-off ref sample (s). Longer soak helps
 # surface polarization on high-Z bench water; real coil + condensate is faster.
@@ -316,6 +339,7 @@ COMMISSIONING_OCBUS_MAX_DELTA_V = 0.05
 COMMISSIONING_OC_CONFIRM_TIMEOUT_S = 1.5
 # Optional PWM Hz override only during OC / sensitive commissioning paths (None = no change).
 COMMISSIONING_PWM_HZ: int | None = None
+# Sim-only open-circuit baseline (mV-like); name is legacy — field Ag/AgCl uses the same shift math.
 SIM_NATIVE_ZINC_MV = 200.0
 
 # --- Simulator ---

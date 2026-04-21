@@ -122,7 +122,9 @@ def run_iccp_forever(args: Namespace) -> int:
             d0 = ctrl.duties()
             st0 = ctrl.channel_statuses()
             w0 = ctrl.any_wet()
-            raw0, sh0 = ref.read_raw_and_shift(duties=d0, statuses=st0)
+            raw0, sh0 = ref.read_raw_and_shift(
+                duties=d0, statuses=st0, temp_f=t0
+            )
             bd0 = (
                 ref.protection_status(sh0) if sh0 is not None else "—"
             )
@@ -158,6 +160,9 @@ def run_iccp_forever(args: Namespace) -> int:
                 ref_hw_message=ref_hw_message(),
                 ref_baseline_set=ref.native_mv is not None,
                 runtime_alerts=["Startup: first telemetry snapshot after init"],
+                channel_targets={
+                    i: ctrl.channel_target_ma(i) for i in range(cfg.NUM_CHANNELS)
+                },
             )
             log.maybe_flush()
         except Exception as e:
@@ -214,7 +219,7 @@ def run_iccp_forever(args: Namespace) -> int:
                 sim_state.duties = dict(duties)
 
             ref_raw_mv, ref_shift = ref.read_raw_and_shift(
-                duties=duties, statuses=ch_status
+                duties=duties, statuses=ch_status, temp_f=temp_f
             )
 
             if not _ux_tip_shown:
@@ -239,7 +244,11 @@ def run_iccp_forever(args: Namespace) -> int:
                         try:
                             io_raw, io_shift, ref_depol_rate_mv_s = (
                                 commissioning.instant_off_ref_measurement(
-                                    ctrl, ref, sim_state=sim_state, log=None
+                                    ctrl,
+                                    ref,
+                                    sim_state=sim_state,
+                                    log=None,
+                                    temp_f=temp_f,
                                 )
                             )
                             ref_raw_mv = io_raw
@@ -319,6 +328,10 @@ def run_iccp_forever(args: Namespace) -> int:
                     ref_depol_rate_mv_s=ref_depol_rate_mv_s,
                     diag_extra=diag_extra,
                     runtime_alerts=runtime_alerts or None,
+                    channel_targets={
+                        i: ctrl.channel_target_ma(i)
+                        for i in range(cfg.NUM_CHANNELS)
+                    },
                 )
             except Exception as e:
                 print(f"[main] log.record failed: {e}", file=sys.stderr)

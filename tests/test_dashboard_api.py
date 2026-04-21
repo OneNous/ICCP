@@ -79,6 +79,16 @@ def log_and_dashboard_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
     return dashboard.app.test_client()
 
 
+def test_api_history_includes_avg_target_ma(log_and_dashboard_client) -> None:
+    c = log_and_dashboard_client
+    r = c.get("/api/history?minutes=60&metric=ma")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert "avg_target_ma" in data
+    assert len(data["avg_target_ma"]) == len(data["labels"])
+    assert all(isinstance(x, (int, float)) for x in data["avg_target_ma"])
+
+
 def test_api_live_includes_feed_envelope(log_and_dashboard_client) -> None:
     c = log_and_dashboard_client
     r = c.get("/api/live")
@@ -92,6 +102,9 @@ def test_api_live_includes_feed_envelope(log_and_dashboard_client) -> None:
     assert data["channels"]["0"].get("reading_ok") is True
     assert "target_ma" in data
     assert isinstance(data["target_ma"], (int, float))
+    assert data.get("target_ma_avg_live") is not None
+    assert isinstance(data["target_ma_avg_live"], (int, float))
+    assert "target_ma" in data["channels"]["0"]
     assert isinstance(data.get("system_alerts"), list)
     tp = data.get("telemetry_paths")
     assert isinstance(tp, dict)

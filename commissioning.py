@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import config.settings as cfg
+import temp as temp_mod
 from reference import ReferenceElectrode, _update_comm_file, find_oc_curve_metrics
 
 if TYPE_CHECKING:
@@ -343,6 +344,7 @@ def _instant_off_ref_mv_and_restore(
     log: Callable[[str], None] | None = None,
     repeat_cuts: int | None = None,
     repolarize_s: float | None = None,
+    temp_f: float | None = None,
 ) -> tuple[float, float | None, float]:
     """
     OC sample: save duties → cut → (INA219 confirm) → ADS curve + inflection
@@ -379,6 +381,7 @@ def _instant_off_ref_mv_and_restore(
         return _snapshot_bus_v(_sensor_readings(sim_state))
 
     def _one_cut_and_sample(cut_ch: int | None) -> tuple[float, float]:
+        tf = temp_f if temp_f is not None else temp_mod.read_fahrenheit()
         pre_bus = _pre_bus_snapshot()
         if cut_ch is None:
             controller._pwm.all_off()
@@ -394,11 +397,23 @@ def _instant_off_ref_mv_and_restore(
             if log is not None:
                 log(w)
         if curve_on:
+            # Match legacy path: dwell at 0% before ADS burst so first samples are not
+            # dominated by the immediate post-cut transient (non-curve branch uses this sleep).
+            time.sleep(INSTANT_OFF_WINDOW_S)
             samples = reference.collect_oc_decay_samples()
+            if log is not None and samples:
+                n = len(samples)
+                if n > 6:
+                    log(
+                        f"  OC curve n={n} head={samples[:3]!r} … "
+                        f"tail={samples[-3:]!r}"
+                    )
+                else:
+                    log(f"  OC curve n={n} pts={samples!r}")
             inf, rate = find_oc_curve_metrics(samples)
-            return float(inf), float(rate)
+            return float(reference.ref_temp_adjust_mv(float(inf), tf)), float(rate)
         time.sleep(INSTANT_OFF_WINDOW_S)
-        return float(reference.read()), 0.0
+        return float(reference.read(temp_f=tf)), 0.0
 
     def _restore_saved_pwm() -> None:
         for ch, duty in saved_duties.items():
@@ -469,6 +484,7 @@ def instant_off_ref_measurement(
     sim_state: Any | None = None,
     *,
     log: Callable[[str], None] | None = None,
+    temp_f: float | None = None,
 ) -> tuple[float, float | None, float]:
     """
     Same instant-off / OC-curve path as commissioning (for runtime outer-loop monitoring).
@@ -486,6 +502,7 @@ def instant_off_ref_measurement(
         log=log,
         repeat_cuts=rpt,
         repolarize_s=rep,
+        temp_f=temp_f,
     )
 
 
@@ -568,8 +585,12 @@ def run(
             time.sleep(native_iv)
 
     native_mv = round(sum(samples) / len(samples), 2)
-    reference.save_native(native_mv)
-    log(f"Native reference scalar: {native_mv:.1f} mV")
+    pan_tf = temp_mod.read_fahrenheit()
+    reference.save_native(native_mv, native_temp_f=pan_tf)
+    if pan_tf is not None:
+        log(f"Native reference scalar: {native_mv:.1f} mV (pan temp {pan_tf:.1f} °F recorded)")
+    else:
+        log(f"Native reference scalar: {native_mv:.1f} mV")
     log(
         f"Target polarization shift: ≥{cfg.TARGET_SHIFT_MV} mV (native − reading); "
         f"ref typically falls toward ~{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"

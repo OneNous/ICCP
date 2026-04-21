@@ -8,7 +8,8 @@ Four sinks per record() call:
   4. iccp_YYYY-MM-DD.csv (buffered CSV)
 
 readings: per-tick telemetry including chN_impedance_ohm, chN_cell_voltage_v,
-  chN_power_w (bus V × I as W), chN_z_delta_ohm (ΔZ vs prior tick), total_power_w.
+  chN_power_w (bus V × I as W), chN_z_delta_ohm (ΔZ vs prior tick), chN_target_ma
+  (effective mA setpoint for that channel), total_power_w.
 
 cooling_cycles: one row per completed ICCP temperature band segment (same window as
   temp.in_operating_range): duration_s, avg_temp_f, chN_protect_s (PROTECTING dwell
@@ -118,21 +119,36 @@ def _coefficient_of_variation(values: list[float]) -> float | None:
     return round(statistics.pstdev(values) / abs(m), 6)
 
 
+def _effective_channel_targets_mas(
+    channel_targets: dict[int, float] | None,
+) -> dict[int, float]:
+    """Per-channel mA setpoint: runtime dict from controller, else CHANNEL_TARGET_MA / TARGET_MA."""
+    out: dict[int, float] = {}
+    for i in range(cfg.NUM_CHANNELS):
+        if channel_targets is not None and i in channel_targets:
+            out[i] = float(channel_targets[i])
+        else:
+            out[i] = float(getattr(cfg, "CHANNEL_TARGET_MA", {}).get(i, cfg.TARGET_MA))
+    return out
+
+
 def _channel_health(
     ok: bool,
     state: str,
     ma: float,
+    target_ma: float,
 ) -> str:
-    """UI / DB status column: OK, LOW, HIGH, ERR, DRY."""
+    """UI / DB status column: OK, LOW, HIGH, ERR, DRY (uses per-channel effective target)."""
     if not ok:
         return "ERR"
     if state in ("OPEN", "DRY", "DORMANT", "PROBING"):
         return "DRY"
-    if state == "REGULATE":
+    t = float(target_ma)
+    if t <= 0.0:
+        t = float(cfg.TARGET_MA)
+    if ma < t * 0.7:
         return "LOW"
-    if ma < cfg.TARGET_MA * 0.7:
-        return "LOW"
-    if ma > cfg.TARGET_MA * 1.5:
+    if ma > t * 1.5:
         return "HIGH"
     return "OK"
 
@@ -331,6 +347,7 @@ class DataLogger:
                 (f"ch{i}_cell_voltage_v", "REAL"),
                 (f"ch{i}_power_w", "REAL"),
                 (f"ch{i}_z_delta_ohm", "REAL"),
+                (f"ch{i}_target_ma", "REAL"),
             ):
                 if name not in cols:
                     alters.append(f"ALTER TABLE readings ADD COLUMN {name} {decl}")
@@ -506,6 +523,7 @@ class DataLogger:
         ref_depol_rate_mv_s: float | None = None,
         diag_extra: dict[str, object] | None = None,
         runtime_alerts: list[str] | None = None,
+        channel_targets: dict[int, float] | None = None,
     ) -> dict[str, object]:
         wet = any_wet
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -515,6 +533,7 @@ class DataLogger:
         self._roll_daily_calendar(ts_ymd)
 
         dt_s = cfg.SAMPLE_INTERVAL_S
+        eff_targets = _effective_channel_targets_mas(channel_targets)
         channels: dict[int, dict] = {}
         for i in range(cfg.NUM_CHANNELS):
             r = readings.get(i, {})
@@ -540,10 +559,11 @@ class DataLogger:
                 current_ma=ma,
                 bus_v=bus_v,
             )
+            tgt_for_ch = eff_targets[i]
             status = (
                 "OFF"
                 if benign_idle
-                else (_channel_health(ok, state, ma) if ok else "ERR")
+                else (_channel_health(ok, state, ma, tgt_for_ch) if ok else "ERR")
             )
             z_ohm = _cell_impedance_ohm(bus_v, ma) if ok else 0.0
             v_cell = _cell_voltage_v(bus_v, duty) if ok else 0.0
@@ -612,6 +632,7 @@ class DataLogger:
                 "ma": ma,
                 "duty": duty,
                 "bus_v": bus_v,
+                "target_ma": round(tgt_for_ch, 4),
                 "sensor_error": sensor_err,
                 "status": status,
                 "impedance_ohm": z_ohm,
@@ -781,6 +802,7 @@ class DataLogger:
             row[f"ch{n}_ma"] = ch["ma"]
             row[f"ch{n}_duty"] = ch["duty"]
             row[f"ch{n}_bus_v"] = ch["bus_v"]
+            row[f"ch{n}_target_ma"] = ch["target_ma"]
             row[f"ch{n}_status"] = ch["status"]
             row[f"ch{n}_impedance_ohm"] = ch["impedance_ohm"]
             row[f"ch{n}_cell_voltage_v"] = ch["cell_voltage_v"]
@@ -961,7 +983,7 @@ class DataLogger:
         ch_col_names = ", ".join(
             f"ch{i}_state, ch{i}_ma, ch{i}_duty, ch{i}_bus_v, ch{i}_status, "
             f"ch{i}_impedance_ohm, ch{i}_cell_voltage_v, "
-            f"ch{i}_power_w, ch{i}_z_delta_ohm"
+            f"ch{i}_power_w, ch{i}_z_delta_ohm, ch{i}_target_ma"
             for i in range(1, cfg.NUM_CHANNELS + 1)
         )
         ch_values: list[object] = []
@@ -979,6 +1001,7 @@ class DataLogger:
                     d["cell_voltage_v"],
                     d["power_w"],
                     zd,
+                    d["target_ma"],
                 ]
             )
 
@@ -987,7 +1010,7 @@ class DataLogger:
             f"supply_v_avg,total_power_w,cross_i_cv,cross_z_cv,ref_shift_mv,ref_status,temp_f,"
             f"ref_raw_mv,ref_hw_ok,ref_hint,ref_depol_rate_mv_s"
         )
-        n_ch_cols = 9
+        n_ch_cols = 10
         n_params = 5 + cfg.NUM_CHANNELS * n_ch_cols + 3 + 2 + 3 + 3 + 1
         placeholders = ",".join(["?"] * n_params)
         ref_hw_sql = None if ref_hw_ok is None else (1 if ref_hw_ok else 0)

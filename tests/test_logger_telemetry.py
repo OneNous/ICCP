@@ -74,6 +74,9 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     assert "fqi_smooth_s" in ch0
     assert "cross" in latest and "i_cv" in latest["cross"]
     assert ch0.get("sensor_error") in ("", None)
+    assert latest["channels"]["0"].get("target_ma") == pytest.approx(
+        float(cfg.TARGET_MA)
+    )
 
     conn = sqlite3.connect(str(tmp_path / cfg.SQLITE_DB_NAME))
     try:
@@ -87,11 +90,13 @@ def test_logger_writes_sqlite_latest_json_and_csv(
         assert row[2] is not None and float(row[2]) > 1000  # high Z when ~0.1 mA
         assert row[3] is not None
         row_pw = conn.execute(
-            "SELECT total_power_w, ch1_power_w, ch1_z_delta_ohm FROM readings LIMIT 1"
+            "SELECT total_power_w, ch1_power_w, ch1_z_delta_ohm, ch1_target_ma "
+            "FROM readings LIMIT 1"
         ).fetchone()
         assert row_pw is not None
         assert row_pw[0] is not None and float(row_pw[0]) >= 0
         assert row_pw[1] is not None
+        assert float(row_pw[3]) == pytest.approx(float(cfg.TARGET_MA))
         cr = conn.execute(
             "SELECT cross_i_cv, cross_z_cv FROM readings LIMIT 1"
         ).fetchone()
@@ -140,6 +145,36 @@ def test_sensor_error_and_system_alerts_when_read_fails(
     assert any(x.startswith("Reference:") and "ADS1115" in x for x in sa)
 
 
+def test_record_channel_targets_override_for_health_and_json(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "SQLITE_PURGE_EVERY_N_INSERTS", 999_999_999)
+    monkeypatch.setattr(cfg, "TARGET_MA", 0.5)
+    from logger import DataLogger
+
+    readings = {
+        i: {"ok": True, "current": 2.0 if i == 0 else 0.1, "bus_v": 5.0}
+        for i in range(cfg.NUM_CHANNELS)
+    }
+    duties = {i: 10.0 for i in range(cfg.NUM_CHANNELS)}
+    st = {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)}
+    log = DataLogger()
+    log.record(
+        readings,
+        True,
+        [],
+        duties,
+        False,
+        st,
+        channel_targets={0: 1.0, 1: 0.5, 2: 0.5, 3: 0.5},
+    )
+    log.close()
+    latest = json.loads((tmp_path / cfg.LATEST_JSON_NAME).read_text(encoding="utf-8"))
+    assert latest["channels"]["0"]["target_ma"] == pytest.approx(1.0)
+    assert latest["channels"]["0"]["status"] == "HIGH"
+
+
 def test_recovery_touch_latest_merges_alert(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
     monkeypatch.setattr(cfg, "SQLITE_PURGE_EVERY_N_INSERTS", 999_999_999)
@@ -147,12 +182,17 @@ def test_recovery_touch_latest_merges_alert(tmp_path, monkeypatch: pytest.Monkey
 
     log = DataLogger()
     log.recovery_touch_latest("first banner")
+    t0 = json.loads((tmp_path / cfg.LATEST_JSON_NAME).read_text(encoding="utf-8"))[
+        "ts_unix"
+    ]
     log.recovery_touch_latest("second banner", ValueError("x"))
     log.close()
     latest = json.loads((tmp_path / cfg.LATEST_JSON_NAME).read_text(encoding="utf-8"))
     assert "first banner" in latest["system_alerts"]
     assert any("second banner" in x for x in latest["system_alerts"])
     assert "tick_writer_error" in latest
+    assert latest["ts_unix"] >= t0
+    assert "ts" in latest and len(str(latest["ts"])) >= 10
 
 
 def test_cooling_cycle_row_on_band_exit(

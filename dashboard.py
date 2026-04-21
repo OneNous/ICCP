@@ -15,7 +15,7 @@ Reads from (same ``config.settings`` as ``main.py``). Telemetry directory:
 
 If the dashboard shows **stale** ``latest.json`` while ``main.py`` is running, the controller is almost certainly writing to a **different** log directory—match env/``--log-dir`` to ``main.py``.
 
-HTTP: /api/live (Cache-Control: no-store; adds feed_age_s, feed_stale_threshold_s), /api/diagnostic, /api/history, /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
+HTTP: /api/live (Cache-Control: no-store; adds feed_age_s, feed_stale_threshold_s, target_ma_avg_live), /api/diagnostic, /api/history (avg_target_ma for mA charts), /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
 
 SQL column names for `readings` / `wet_sessions` / `daily_totals` MUST stay in sync with logger.py _init_schema.
 
@@ -117,6 +117,24 @@ def _live_envelope() -> dict:
     # If main.py stops, latest.json stops updating; UI treats age above this as stale.
     data["feed_stale_threshold_s"] = max(3.0, 3.0 * float(cfg.SAMPLE_INTERVAL_S))
     data["target_ma"] = float(cfg.TARGET_MA)
+    # Mean of per-channel effective targets from the snapshot (matches controller setpoints).
+    tgts: list[float] = []
+    chs = data.get("channels")
+    if isinstance(chs, dict):
+        for i in range(cfg.NUM_CHANNELS):
+            c = chs.get(str(i))
+            if not isinstance(c, dict):
+                continue
+            raw = c.get("target_ma")
+            if raw is None or raw == "":
+                continue
+            try:
+                tgts.append(float(raw))
+            except (TypeError, ValueError):
+                continue
+    data["target_ma_avg_live"] = (
+        round(sum(tgts) / len(tgts), 4) if tgts else None
+    )
     data["telemetry_paths"] = cfg.resolved_telemetry_paths()
     return data
 
@@ -169,6 +187,8 @@ def api_history():
     labels = [r["ts"][11:19] for r in sampled]
     channels = {str(i): [] for i in range(cfg.NUM_CHANNELS)}
     total: list[float | None] = []
+    avg_target_ma: list[float] = []
+    fallback_tgt = float(cfg.TARGET_MA)
 
     for r in sampled:
         for i in range(cfg.NUM_CHANNELS):
@@ -182,6 +202,22 @@ def api_history():
             else:
                 channels[str(i)].append(r[f"ch{i + 1}_ma"])
         total.append(r["total_ma"])
+        if metric == "ma":
+            tvals: list[float] = []
+            for i in range(cfg.NUM_CHANNELS):
+                key = f"ch{i + 1}_target_ma"
+                if key not in r:
+                    continue
+                raw_t = r[key]
+                if raw_t is None or raw_t == "":
+                    continue
+                try:
+                    tvals.append(float(raw_t))
+                except (TypeError, ValueError):
+                    continue
+            avg_target_ma.append(
+                round(sum(tvals) / len(tvals), 4) if tvals else fallback_tgt
+            )
 
     tgt = cfg.TARGET_MA if metric == "ma" else None
     resp = make_response(
@@ -191,6 +227,7 @@ def api_history():
                 "channels": channels,
                 "total": total,
                 "target": tgt,
+                "avg_target_ma": avg_target_ma if metric == "ma" else [],
                 "metric": metric,
                 "count": len(sampled),
                 "minutes": minutes,
@@ -865,6 +902,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .ok { color: var(--green); font-weight: 600; }
   .low { color: var(--amber); font-weight: 600; }
+  .high { color: #c2410c; font-weight: 600; }
   .err { color: var(--red); font-weight: 600; }
   .off { color: var(--gray-text); font-weight: 600; }
   .dry { color: var(--csp-text-muted); font-weight: 500; }
@@ -1019,8 +1057,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <p id="health-cross"></p>
       </article>
       <article class="health-card">
-        <h3>Anode wet (sense)</h3>
+        <h3>Any channel PROTECTING</h3>
         <p id="health-anywet"></p>
+      </article>
+      <article class="health-card health-accuracy-card" style="grid-column:1/-1">
+        <details>
+          <summary><strong>Feed &amp; accuracy</strong> — how this UI relates to hardware</summary>
+          <ul style="margin:8px 0 0 18px;font-size:13px;line-height:1.45;color:var(--csp-text-muted)">
+            <li><strong>Same files as the controller:</strong> match <code>COILSHIELD_LOG_DIR</code> / <code>ICCP_LOG_DIR</code> (or <code>dashboard.py --log-dir</code>) with <code>main.py</code>. Paths appear under Telemetry files.</li>
+            <li><strong>Stale feed:</strong> if <code>latest.json</code> stops updating, numbers freeze; age vs <code>feed_stale_threshold_s</code> flags stale. If <code>log.record()</code> throws, <code>recovery_touch_latest</code> still refreshes timestamps and merges a <code>tick_writer_error</code> / system alert.</li>
+            <li><strong>Proxies (not lab potentials):</strong> cell voltage ≈ bus×duty%; impedance ≈ bus/I; power ≈ bus×I — see README and <code>docs/iccp-vs-coilshield.md</code>.</li>
+            <li><strong>PROTECTING vs “wet current”:</strong> the overview flag is true when any channel FSM is PROTECTING, not merely shunt current above a wet threshold.</li>
+            <li><strong>Targets:</strong> each channel card shows the effective mA setpoint for that tick; KPI “settings default” uses module <code>TARGET_MA</code> (outer loop may move the live setpoint).</li>
+          </ul>
+        </details>
       </article>
       <article class="health-card">
         <h3>Active faults</h3>
@@ -1163,8 +1213,9 @@ const CHART_TARGET_HEX = '#9333ea';
 const CHART_TOTAL_HEX = '#0891b2';
 const NUM_CH = __NUM_CH__;
 const STATUS_HINT = {
-  OK: 'On target: current and path look healthy for this tick.',
-  LOW: 'Marginal: current or path is below expectations; monitor.',
+  OK: 'On target: current vs effective setpoint looks healthy for this tick.',
+  LOW: 'Marginal: current is low vs this channel target (or non-conducting path).',
+  HIGH: 'Elevated: current is high vs this channel target.',
   ERR: 'Sensor or read failed for this channel; values may not reflect the anode.',
   OFF: 'Outputs idle: transient I2C (e.g. errno 5) while PWM at 0% — not treated as a live fault.',
   DRY: 'Treated as dry / non-conductive path by the state machine.',
@@ -1187,6 +1238,10 @@ for (let i = 0; i < NUM_CH; i++) {
         <div class="dl-row ch-ma-row">
           <span class="dl-k" title="Servo-controlled cathodic current for this anode path; compare to per-channel target in the controller.">Output current</span>
           <span class="dl-v"><span class="ch-ma" id="ma-${i}">— <small>mA</small></span></span>
+        </div>
+        <div class="dl-row">
+          <span class="dl-k" title="Effective mA setpoint this tick (CHANNEL_TARGET_MA override or runtime TARGET_MA after commissioning / outer-loop nudges).">Target (setpoint)</span>
+          <span class="dl-v"><span id="tgt-${i}">—</span><span class="muted"> mA</span></span>
         </div>
         <div class="dl-row">
           <span class="dl-k" title="Fraction of time the output is on; the controller uses duty to regulate current.">PWM duty</span>
@@ -1295,7 +1350,7 @@ chart = new Chart(ctx, {
     labels: [],
     datasets: [
       {
-        label: 'Target', data: [], borderColor: CHART_TARGET_HEX,
+        label: 'Avg target mA', data: [], borderColor: CHART_TARGET_HEX,
         borderDash: [6, 4], borderWidth: 2, pointRadius: 0,
         fill: false, tension: 0, hidden: false,
       },
@@ -1350,8 +1405,11 @@ function syncChartLiveTail(d) {
   const lab = (d.ts && d.ts.length >= 19) ? d.ts.slice(11, 19) : '';
   if (!lab) return;
 
-  const tgtMa = (d.target_ma != null && d.target_ma !== '')
+  let tgtMa = (d.target_ma != null && d.target_ma !== '')
     ? Number(d.target_ma) : null;
+  if (d.target_ma_avg_live != null && d.target_ma_avg_live !== '' && Number.isFinite(Number(d.target_ma_avg_live))) {
+    tgtMa = Number(d.target_ma_avg_live);
+  }
 
   function yForCh(ch) {
     if (!ch) return null;
@@ -1424,6 +1482,8 @@ function paintChannelUnknown(i) {
   stateEl.textContent = 'UNKNOWN';
   stateEl.className = 'ch-state state-UNKNOWN';
   document.getElementById(`ma-${i}`).innerHTML = '— <small>mA</small>';
+  const tgtE = document.getElementById(`tgt-${i}`);
+  if (tgtE) tgtE.textContent = '—';
   document.getElementById(`duty-${i}`).textContent = '—';
   document.getElementById(`busv-${i}`).textContent = '—';
   document.getElementById(`z-${i}`).textContent = '—';
@@ -1528,7 +1588,7 @@ async function fetchLive() {
         ? `I_CV ${fmtOpt(icv, 4)} · Z_CV ${fmtOpt(zcv, 4)} (spread across channels)`
         : '—';
     document.getElementById('health-anywet').textContent =
-      d.wet ? 'Yes — at least one anode reads wet' : 'No';
+      d.wet ? 'Yes — at least one channel is in PROTECTING (fine servo state)' : 'No';
     const fl = Array.isArray(d.faults) ? d.faults : [];
     document.getElementById('health-faults').textContent =
       fl.length ? fl.join(' · ') : 'None';
@@ -1555,11 +1615,17 @@ async function fetchLive() {
     const lastMaStr = (d.total_ma != null && d.total_ma !== '') ? fmtOpt(d.total_ma, 4) : null;
     const lastPwNum = (tpw != null && tpw !== '') ? Number(tpw) : null;
     const pwCapEl = document.getElementById('kpi-total-pw-cap');
+    const tgtLive = (d.target_ma_avg_live != null && d.target_ma_avg_live !== '')
+      ? fmtOpt(d.target_ma_avg_live, 3) : null;
+    const tgtSet = fmtOpt(d.target_ma, 3);
+    const tgtSuffix = tgtLive != null
+      ? ` · settings default ${tgtSet} mA · snapshot avg setpoint ${tgtLive} mA`
+      : ` · settings default ${tgtSet} mA`;
     if (stale) {
       document.getElementById('kpi-total-ma').textContent = '—';
       document.getElementById('kpi-total-cap').textContent = lastMaStr != null
-        ? `Not live · last file had ΣI = ${lastMaStr} mA · target (global) ${fmtOpt(d.target_ma, 3)} mA`
-        : `Not live · target (global) ${fmtOpt(d.target_ma, 3)} mA`;
+        ? `Not live · last file had ΣI = ${lastMaStr} mA${tgtSuffix}`
+        : `Not live${tgtSuffix}`;
       document.getElementById('kpi-total-pw').textContent = '—';
       if (pwCapEl) {
         pwCapEl.textContent = (lastPwNum != null && Number.isFinite(lastPwNum))
@@ -1570,7 +1636,7 @@ async function fetchLive() {
       document.getElementById('kpi-total-ma').textContent =
         lastMaStr != null ? `${lastMaStr} mA` : '—';
       document.getElementById('kpi-total-cap').textContent =
-        `Live · sum of channel mA · target (global) ${fmtOpt(d.target_ma, 3)} mA`;
+        `Live · sum of channel mA${tgtSuffix}`;
       document.getElementById('kpi-total-pw').textContent =
         (lastPwNum != null && Number.isFinite(lastPwNum)) ? fmtPowerW(lastPwNum) : '—';
       if (pwCapEl) pwCapEl.textContent = 'Live · Σ V×I (control proxy)';
@@ -1683,6 +1749,11 @@ async function fetchLive() {
         document.getElementById(`ma-${i}`).innerHTML =
           `${maDisp.toFixed(3)} <small>mA</small>`;
       }
+      const tgtEl = document.getElementById(`tgt-${i}`);
+      if (tgtEl) {
+        tgtEl.textContent = (ch.target_ma != null && ch.target_ma !== '')
+          ? fmtOpt(ch.target_ma, 3) : '—';
+      }
       document.getElementById(`duty-${i}`).textContent = fmtOpt(ch.duty, 1);
       const busV = Number(ch.bus_v);
       document.getElementById(`busv-${i}`).textContent = fmtOpt(ch.bus_v, 3);
@@ -1699,6 +1770,7 @@ async function fetchLive() {
       st.className = stt === 'OK' ? 'ok'
         : stt === 'ERR' ? 'err'
         : stt === 'OFF' ? 'off'
+        : stt === 'HIGH' ? 'high'
         : (stt === 'DRY' || stt === 'OPEN') ? 'dry' : 'low';
       const pw = ch.power_w;
       document.getElementById(`pow-${i}`).textContent =
@@ -1798,9 +1870,15 @@ async function loadHistory(minutes) {
     const d = await fetch(`/api/history?minutes=${minutes}&metric=${chartMetric}`, { cache: 'no-store' }).then(r => r.json());
     if (d.error) return;
     chart.data.labels = d.labels;
+    const tgtArr = (chartMetric === 'ma' && Array.isArray(d.avg_target_ma) && d.avg_target_ma.length === d.labels.length)
+      ? d.avg_target_ma.map((x) => (x != null && x !== '' && Number.isFinite(Number(x)) ? Number(x) : null))
+      : null;
     const tgt = d.target;
-    chart.data.datasets[0].hidden = tgt == null;
-    chart.data.datasets[0].data = d.labels.map(() => tgt);
+    chart.data.datasets[0].label = 'Avg target mA';
+    chart.data.datasets[0].hidden = chartMetric === 'ma' ? false : true;
+    chart.data.datasets[0].data = (tgtArr && chartMetric === 'ma')
+      ? tgtArr
+      : d.labels.map(() => (chartMetric === 'ma' ? tgt : null));
     for (let i = 0; i < NUM_CH; i++) {
       chart.data.datasets[i + 1].data = d.channels[String(i)] || [];
     }

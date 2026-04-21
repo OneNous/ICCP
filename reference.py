@@ -3,8 +3,13 @@ CoilShield — reference electrode (polarization shift input).
 
 Hardware backends (see config.settings):
   • **ads1115** (default): ADS1115 @ `ADS1115_ADDRESS` on `ADS1115_BUS`, single-ended
-    channel `ADS1115_CHANNEL`; raw scalar = volts × 1000 × `REF_ADS_SCALE` (mV-like).
+    channel `ADS1115_CHANNEL`; raw scalar = volts × 1000 × effective scale (mV-like).
+    Scale is `REF_ADS_SCALE` (and env `COILSHIELD_REF_ADS_SCALE`), optionally overridden by
+    numeric ``ref_ads_scale`` in `commissioning.json` after `load_native` / commissioning updates.
   • **ina219**: legacy dedicated INA219 on `REF_I2C_BUS` / `REF_INA219_ADDRESS`.
+
+Optional pan-temperature trim (°F only): ``native_temp_f`` in `commissioning.json` with
+`REF_TEMP_COMP_MV_PER_F` adjusts raw mV vs commissioned temperature.
 
 SIM_MODE: COILSHIELD_SIM=1 uses simulated readings (no hardware).
 """
@@ -41,6 +46,29 @@ _ADS_ALRT_WAIT_EDGE_BROKEN: bool = False
 _ALRT_DIAG_LOGGED_RUNTIME: bool = False
 _ALRT_DIAG_LOGGED_TIMEOUT: bool = False
 _OS_WAIT_FAIL_LOGGED: bool = False
+
+# None → use cfg.REF_ADS_SCALE only; float → commissioning.json ``ref_ads_scale`` override.
+_COMM_REF_ADS_SCALE: float | None = None
+
+
+def _reload_comm_ref_ads_scale() -> None:
+    """Reload ``ref_ads_scale`` from commissioning.json (called after load_native / _update_comm_file)."""
+    global _COMM_REF_ADS_SCALE
+    _COMM_REF_ADS_SCALE = None
+    if not _COMM_FILE.exists():
+        return
+    try:
+        data = json.loads(_COMM_FILE.read_text())
+        if "ref_ads_scale" in data and data["ref_ads_scale"] is not None:
+            _COMM_REF_ADS_SCALE = float(data["ref_ads_scale"])
+    except Exception:
+        pass
+
+
+def _effective_ref_ads_scale() -> float:
+    if _COMM_REF_ADS_SCALE is not None:
+        return float(_COMM_REF_ADS_SCALE)
+    return float(getattr(cfg, "REF_ADS_SCALE", 1.0))
 
 
 def ads_alrt_edge_wait_broken() -> bool:
@@ -184,7 +212,7 @@ def _init_ref_ads1115() -> None:
         mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
         mux_select_on_bus(sm, mux_addr, mux_ch)
         ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
-        fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
+        fsr = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
         ads1115_read_single_ended(sm, addr, ch, fsr)
         # TI ADS1115: Lo_thresh MSB=0, Hi_thresh MSB=1 + COMP_QUE≠11 in config → ALERT/RDY pulses conversion-ready.
         try:
@@ -223,6 +251,8 @@ if not SIM_MODE and _REF_ENABLED:
         _init_ref_ina219()
     else:
         _init_ref_ads1115()
+
+_reload_comm_ref_ads_scale()
 
 
 def ref_hw_ok() -> bool:
@@ -322,8 +352,8 @@ def _read_raw_mv_hw() -> float:
     mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
     addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
     ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
-    fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
-    scale = float(getattr(cfg, "REF_ADS_SCALE", 1.0))
+    fsr = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
+    scale = _effective_ref_ads_scale()
     n = max(
         1,
         int(
@@ -407,8 +437,10 @@ def find_oc_curve_metrics(
     """
     Open-circuit decay curve: inflection mV (knee) and signed depolarization slope (mV/s).
 
-    The slope is a linear regression on the same time window used to score |dV/dt|
-    for the knee (post-spike / pre-flat-tail segment), for logging and diagnostics.
+    Knee: smallest |dV/dt| in the guarded window, preferring segments where dV < 0 (decay)
+    so a post-cut rising transient does not dominate. Depolarization slope is a linear
+    regression on samples **from the knee onward** through the same pre-tail time bound
+    (not the whole pre-knee band), so the reported mV/s reflects post-knee decay.
     """
     if not samples:
         return (0.0, 0.0)
@@ -426,13 +458,13 @@ def find_oc_curve_metrics(
         else getattr(cfg, "COMMISSIONING_OC_INFLECTION_TAIL_EXCLUDE", 0.2)
     )
 
-    rates: list[float] = []
+    signed_rates: list[float] = []
     for i in range(1, len(samples)):
         dt = float(samples[i][0] - samples[i - 1][0])
-        dv = abs(float(samples[i][1]) - float(samples[i - 1][1]))
-        rates.append(dv / max(dt, 1e-9))
+        dv = float(samples[i][1]) - float(samples[i - 1][1])
+        signed_rates.append(dv / max(dt, 1e-9))
 
-    n_rates = len(rates)
+    n_rates = len(signed_rates)
     k_lo = max(0, min(skip, n_rates - 2))
     tail_n = max(0, int(n_rates * tail))
     k_hi = max(k_lo + 1, n_rates - tail_n)
@@ -441,15 +473,20 @@ def find_oc_curve_metrics(
         seg = samples[max(0, len(samples) // 4) :]
         return (mid, _linear_regression_slope_mv_s(seg))
 
-    sub = rates[k_lo:k_hi]
-    best = min(range(len(sub)), key=lambda j: (round(sub[j], 6), j))
-    k = k_lo + best
+    window = list(range(k_lo, min(k_hi, n_rates)))
+    decay_idx = [j for j in window if signed_rates[j] < 0.0]
+    pool = decay_idx if decay_idx else window
+    # Round |dV/dt| so float noise does not push the knee to the far end of a constant-slope tail.
+    k = min(pool, key=lambda j: (round(abs(signed_rates[j]), 6), j))
     idx = min(k + 1, len(samples) - 1)
     inf_mv = float(samples[idx][1])
 
-    lo_s = k_lo
     hi_s = min(k_hi, len(samples) - 1)
-    seg = samples[lo_s : hi_s + 1]
+    start_s = min(idx, hi_s)
+    if start_s >= hi_s:
+        seg = samples[max(0, hi_s - 3) : hi_s + 1]
+    else:
+        seg = samples[start_s : hi_s + 1]
     depol = _linear_regression_slope_mv_s(seg)
     return (inf_mv, round(depol, 6))
 
@@ -512,8 +549,8 @@ def _read_ads_mv_scaled_once(
     mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
     addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
     ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
-    fsr = float(getattr(cfg, "ADS1115_FSR_V", 4.096))
-    scale = float(getattr(cfg, "REF_ADS_SCALE", 1.0))
+    fsr = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
+    scale = _effective_ref_ads_scale()
     pin = _ensure_ads_alrt_gpio() if use_alrt else None
 
     def _one_volt() -> float:
@@ -642,6 +679,7 @@ class ReferenceElectrode:
 
     def __init__(self) -> None:
         self.native_mv: float | None = None
+        self.native_temp_f: float | None = None
         self._last_raw_mv: float = 0.0
 
     def load_native(self) -> bool:
@@ -650,49 +688,77 @@ class ReferenceElectrode:
         try:
             data = json.loads(_COMM_FILE.read_text())
             self.native_mv = float(data["native_mv"])
+            nt = data.get("native_temp_f")
+            if nt is not None and str(nt).strip() != "":
+                try:
+                    self.native_temp_f = float(nt)
+                except (TypeError, ValueError):
+                    self.native_temp_f = None
+            else:
+                self.native_temp_f = None
+            _reload_comm_ref_ads_scale()
             return True
         except Exception:
             return False
 
-    def save_native(self, mv: float) -> None:
+    def save_native(
+        self, mv: float, *, native_temp_f: float | None = None
+    ) -> None:
         self.native_mv = mv
         ts = (
             time.strftime("%Y-%m-%dT%H:%M:%S")
             if time.time() > 1_000_000_000
             else "CLOCK_UNSYNCED"
         )
-        _update_comm_file({"native_mv": mv, "native_measured_at": ts})
+        payload: dict[str, Any] = {"native_mv": mv, "native_measured_at": ts}
+        if native_temp_f is not None:
+            payload["native_temp_f"] = round(float(native_temp_f), 2)
+        _update_comm_file(payload)
 
     def read(
         self,
         duties: dict[int, float] | None = None,
         statuses: dict[int, str] | None = None,
+        *,
+        temp_f: float | None = None,
     ) -> float:
         if SIM_MODE:
             mv = _read_raw_mv_sim(duties or {}, statuses or {})
         else:
             mv = _read_raw_mv_hw()
+        mv = self.ref_temp_adjust_mv(mv, temp_f)
         self._last_raw_mv = mv
         return mv
+
+    def ref_temp_adjust_mv(self, mv: float, temp_f: float | None) -> float:
+        """Optional linear mV trim vs pan °F (see REF_TEMP_COMP_MV_PER_F, native_temp_f in JSON)."""
+        coef = float(getattr(cfg, "REF_TEMP_COMP_MV_PER_F", 0.0))
+        if coef == 0.0 or temp_f is None or self.native_temp_f is None:
+            return mv
+        return mv + (float(temp_f) - float(self.native_temp_f)) * coef
 
     def shift_mv(
         self,
         duties: dict[int, float] | None = None,
         statuses: dict[int, str] | None = None,
+        *,
+        temp_f: float | None = None,
     ) -> float | None:
         """Polarization vs native: native_mv − raw (positive when reading drops under CP)."""
         if self.native_mv is None:
             return None
-        raw = self.read(duties, statuses)
+        raw = self.read(duties, statuses, temp_f=temp_f)
         return round(self.native_mv - raw, 2)
 
     def read_raw_and_shift(
         self,
         duties: dict[int, float] | None = None,
         statuses: dict[int, str] | None = None,
+        *,
+        temp_f: float | None = None,
     ) -> tuple[float, float | None]:
         try:
-            raw = self.read(duties, statuses)
+            raw = self.read(duties, statuses, temp_f=temp_f)
         except RuntimeError as e:
             print(e)
             return 0.0, None
@@ -821,3 +887,4 @@ def _update_comm_file(data: dict) -> None:
             pass
     existing.update(data)
     _COMM_FILE.write_text(json.dumps(existing, indent=2))
+    _reload_comm_ref_ads_scale()

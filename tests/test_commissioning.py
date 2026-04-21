@@ -38,7 +38,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         ReferenceElectrode,
         "read",
-        lambda self, duties=None, statuses=None: 210.0,
+        lambda self, duties=None, statuses=None, **kwargs: 210.0,
     )
     monkeypatch.setattr(
         commissioning,
