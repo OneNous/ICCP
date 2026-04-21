@@ -51,6 +51,10 @@ import config.settings as cfg
 
 app = Flask(__name__)
 
+# /api/history: cap window so bad params cannot load unbounded rows into memory.
+_HISTORY_MINUTES_DEFAULT = 60
+_HISTORY_MINUTES_MAX = 60 * 24 * 366  # align with /api/sessions max horizon spirit
+
 DB_PATH = cfg.LOG_DIR / cfg.SQLITE_DB_NAME
 LATEST_PATH = cfg.LOG_DIR / cfg.LATEST_JSON_NAME
 DIAGNOSTIC_SNAPSHOT_PATH = cfg.LOG_DIR / getattr(
@@ -155,7 +159,11 @@ def api_diagnostic():
 
 @app.route("/api/history")
 def api_history():
-    minutes = int(request.args.get("minutes", 60))
+    try:
+        minutes = int(request.args.get("minutes", _HISTORY_MINUTES_DEFAULT))
+    except (TypeError, ValueError):
+        minutes = _HISTORY_MINUTES_DEFAULT
+    minutes = max(1, min(minutes, _HISTORY_MINUTES_MAX))
     metric = request.args.get("metric", "ma").lower()
     if metric not in ("ma", "impedance"):
         metric = "ma"

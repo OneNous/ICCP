@@ -24,6 +24,7 @@ import random
 import statistics
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import config.settings as cfg
@@ -31,6 +32,14 @@ import config.settings as cfg
 SIM_MODE = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
+
+
+def _atomic_write_json_same_dir(path: Path, data: dict) -> None:
+    """Write JSON atomically (temp + replace) so crashes never leave a half file."""
+    text = json.dumps(data, indent=2)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 _REF_ENABLED: bool = bool(getattr(cfg, "REF_ENABLED", True))
 _REF_BACKEND: str = str(getattr(cfg, "REF_ADC_BACKEND", "ads1115")).lower().strip()
@@ -58,11 +67,19 @@ def _reload_comm_ref_ads_scale() -> None:
     if not _COMM_FILE.exists():
         return
     try:
-        data = json.loads(_COMM_FILE.read_text())
+        data = json.loads(_COMM_FILE.read_text(encoding="utf-8"))
         if "ref_ads_scale" in data and data["ref_ads_scale"] is not None:
             _COMM_REF_ADS_SCALE = float(data["ref_ads_scale"])
-    except Exception:
-        pass
+    except json.JSONDecodeError as e:
+        print(
+            f"[reference] commissioning.json invalid JSON (ref_ads_scale reload): {e}",
+            file=sys.stderr,
+        )
+    except (OSError, TypeError, ValueError) as e:
+        print(
+            f"[reference] commissioning.json read error (ref_ads_scale reload): {e}",
+            file=sys.stderr,
+        )
 
 
 def _effective_ref_ads_scale() -> float:
@@ -686,7 +703,7 @@ class ReferenceElectrode:
         if not _COMM_FILE.exists():
             return False
         try:
-            data = json.loads(_COMM_FILE.read_text())
+            data = json.loads(_COMM_FILE.read_text(encoding="utf-8"))
             self.native_mv = float(data["native_mv"])
             nt = data.get("native_temp_f")
             if nt is not None and str(nt).strip() != "":
@@ -698,7 +715,20 @@ class ReferenceElectrode:
                 self.native_temp_f = None
             _reload_comm_ref_ads_scale()
             return True
-        except Exception:
+        except json.JSONDecodeError as e:
+            print(
+                f"[reference] load_native: invalid commissioning.json: {e}",
+                file=sys.stderr,
+            )
+            return False
+        except (KeyError, TypeError, ValueError) as e:
+            print(
+                f"[reference] load_native: missing or invalid native_mv / fields: {e}",
+                file=sys.stderr,
+            )
+            return False
+        except OSError as e:
+            print(f"[reference] load_native: cannot read commissioning.json: {e}", file=sys.stderr)
             return False
 
     def save_native(
@@ -882,9 +912,26 @@ def _update_comm_file(data: dict) -> None:
     existing: dict = {}
     if _COMM_FILE.exists():
         try:
-            existing = json.loads(_COMM_FILE.read_text())
-        except Exception:
-            pass
+            raw = _COMM_FILE.read_text(encoding="utf-8")
+            existing = json.loads(raw)
+            if not isinstance(existing, dict):
+                print(
+                    "[reference] commissioning.json root is not an object; replacing with update payload keys only",
+                    file=sys.stderr,
+                )
+                existing = {}
+        except json.JSONDecodeError as e:
+            print(
+                f"[reference] commissioning.json corrupt; overwriting merge base: {e}",
+                file=sys.stderr,
+            )
+            existing = {}
+        except OSError as e:
+            print(
+                f"[reference] cannot read commissioning.json before update: {e}",
+                file=sys.stderr,
+            )
+            existing = {}
     existing.update(data)
-    _COMM_FILE.write_text(json.dumps(existing, indent=2))
+    _atomic_write_json_same_dir(_COMM_FILE, existing)
     _reload_comm_ref_ads_scale()

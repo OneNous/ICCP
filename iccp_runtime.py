@@ -35,7 +35,7 @@ def run_iccp_forever(args: Namespace) -> int:
 
     Path(cfg.LOG_DIR).mkdir(parents=True, exist_ok=True)
 
-    import main as main_mod
+    from console_ui import print_ref_compact, print_sim_schedule, print_status_table
 
     sim = sensors.SIM_MODE
     use_hw_gpio = not sim
@@ -49,7 +49,7 @@ def run_iccp_forever(args: Namespace) -> int:
     def _signal_pwm_off(signum: int, _frame) -> None:
         """Best-effort: drive anodes off before exit (SIGKILL cannot be caught)."""
         try:
-            ctrl._pwm.all_off()
+            ctrl.all_outputs_off()
         except Exception:
             pass
         if signum == signal.SIGINT:
@@ -73,7 +73,7 @@ def run_iccp_forever(args: Namespace) -> int:
     print(f"[main] Reference path: {ref_hw_message()}")
 
     if sim:
-        main_mod._print_sim_schedule(sensors)
+        print_sim_schedule(sensors)
 
     if not args.skip_commission:
         if commissioning.needs_commissioning():
@@ -370,7 +370,7 @@ def run_iccp_forever(args: Namespace) -> int:
             log.maybe_flush()
 
             if ref_log_tick and not args.verbose and live_snap is not None:
-                main_mod._print_ref_compact(
+                print_ref_compact(
                     ref_hw_line,
                     ref_raw_mv,
                     ref_shift,
@@ -393,7 +393,7 @@ def run_iccp_forever(args: Namespace) -> int:
                         f"[sim {sim_state.sim_hhmm()}] {cycle_str:<24} "
                         f"anodes: {wet_map}  (W=wet  .=dry)"
                     )
-                main_mod._print_table(
+                print_status_table(
                     readings,
                     faults,
                     duties,

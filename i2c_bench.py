@@ -13,17 +13,24 @@ from typing import Any
 # One lock per /dev/i2c-N adapter. Multiple SMBus() handles + mux (TCA9548A) on the
 # same adapter can produce errno 5 (EIO) on Raspberry Pi kernels; serialize hot-path
 # traffic with :func:`i2c_bus_lock`.
-_I2C_BUS_LOCKS: dict[int, threading.Lock] = {}
+_I2C_BUS_LOCKS: dict[int, threading.RLock] = {}
+_I2C_BUS_LOCKS_GUARD = threading.Lock()
 
 
-def i2c_bus_lock(bus: int) -> threading.Lock:
-    """Return a process-wide reentrant-safe lock for ``bus`` (adapter number)."""
+def i2c_bus_lock(bus: int) -> threading.RLock:
+    """Return a process-wide reentrant lock for ``bus`` (adapter number).
+
+    Uses :class:`threading.RLock` so nested acquisition on the same thread is safe
+    (e.g. reference + sensor paths). Creation is guarded so two threads never install
+    different locks for the same adapter number.
+    """
     b = int(bus)
-    lock = _I2C_BUS_LOCKS.get(b)
-    if lock is None:
-        lock = threading.Lock()
-        _I2C_BUS_LOCKS[b] = lock
-    return lock
+    with _I2C_BUS_LOCKS_GUARD:
+        lock = _I2C_BUS_LOCKS.get(b)
+        if lock is None:
+            lock = threading.RLock()
+            _I2C_BUS_LOCKS[b] = lock
+        return lock
 
 
 def word_in(raw: int) -> int:

@@ -89,6 +89,33 @@ def test_api_history_includes_avg_target_ma(log_and_dashboard_client) -> None:
     assert all(isinstance(x, (int, float)) for x in data["avg_target_ma"])
 
 
+def test_api_history_invalid_minutes_defaults(log_and_dashboard_client) -> None:
+    import dashboard
+
+    c = log_and_dashboard_client
+    r = c.get("/api/history?minutes=notanumber&metric=ma")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data["minutes"] == dashboard._HISTORY_MINUTES_DEFAULT
+
+
+def test_api_history_minutes_clamped_and_non_negative(
+    log_and_dashboard_client,
+) -> None:
+    import dashboard
+
+    c = log_and_dashboard_client
+    r = c.get(f"/api/history?minutes={10**9}&metric=ma")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data["minutes"] == dashboard._HISTORY_MINUTES_MAX
+
+    r2 = c.get("/api/history?minutes=-500&metric=ma")
+    assert r2.status_code == 200
+    data2 = json.loads(r2.data)
+    assert data2["minutes"] == 1
+
+
 def test_api_live_includes_feed_envelope(log_and_dashboard_client) -> None:
     c = log_and_dashboard_client
     r = c.get("/api/live")

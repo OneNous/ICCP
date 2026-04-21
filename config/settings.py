@@ -243,6 +243,12 @@ MAX_BUS_V = 6.0
 # --- Timing ---
 SAMPLE_INTERVAL_S = 0.5
 LOG_INTERVAL_S = 60
+# When True, a missing/unreadable DS18B20 (temp_f None) triggers thermal pause (outputs off).
+# Default False preserves legacy behavior: do not block CP when the sensor is absent.
+# Set env COILSHIELD_THERMAL_PAUSE_ON_MISSING_TEMP=1 to fail-safe on missing temp.
+THERMAL_PAUSE_WHEN_SENSOR_MISSING: bool = (
+    os.environ.get("COILSHIELD_THERMAL_PAUSE_ON_MISSING_TEMP", "0").strip() == "1"
+)
 # Outer-loop potential feedback: use commissioning-style instant-off (not live IR-corrupted ref).
 OUTER_LOOP_INSTANT_OFF = True
 # Single cut + no repolarize soak keeps each LOG_INTERVAL tick short (commissioning uses
@@ -305,6 +311,9 @@ COMMISSIONING_SHIFT_CONFIRM_TOLERANCE = 0.9
 # before native reads; during averaging, all_off() is re-applied each tick so probe duty
 # cannot inject current. Set False to skip (e.g. unusual bench wiring).
 COMMISSIONING_PHASE1_OFF_VERIFY = True
+# Phase 1: stop soft-PWM and hold each gate pin at static LOW (same idea as PWMBank.cleanup).
+# Improves “true off” vs ChangeDutyCycle(0) alone; set False only if your hardware misbehaves.
+COMMISSIONING_PHASE1_STATIC_GATE_LOW = True
 COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S = 3.0
 # Stricter ceiling (mA) for “at rest” before native averaging — abort if exceeded after long settle.
 # Keep in line with COMMISSIONING_OC_CONFIRM_I_MA so bench parasitic / INA offset does not abort Phase 1.

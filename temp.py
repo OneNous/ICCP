@@ -16,6 +16,8 @@ import random
 import time
 from pathlib import Path
 
+import config.settings as cfg
+
 SIM_MODE = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 _W1_BASE = Path("/sys/bus/w1/devices")
@@ -73,10 +75,14 @@ def read_fahrenheit() -> float | None:
 
 
 def in_operating_range(temp_f: float | None) -> bool:
-    """False only when a valid reading falls outside [TEMP_MIN_F, TEMP_MAX_F].
-    None (sensor absent) returns True — don't block when sensor is missing."""
+    """False when a reading is outside [TEMP_MIN_F, TEMP_MAX_F] or when fail-safe applies.
+
+    If ``temp_f`` is None (sensor absent / unreadable): returns False when
+    ``cfg.THERMAL_PAUSE_WHEN_SENSOR_MISSING`` is True (thermal pause / outputs off);
+    otherwise True (legacy: do not block when sensor is missing).
+    """
     if temp_f is None:
-        return True
+        return not bool(getattr(cfg, "THERMAL_PAUSE_WHEN_SENSOR_MISSING", False))
     return TEMP_MIN_F <= temp_f <= TEMP_MAX_F
 
 

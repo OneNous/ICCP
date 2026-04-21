@@ -13,6 +13,8 @@ CoilShield `iccp` CLI — entry point for console_scripts `iccp`.
   iccp diag [--request]    Print logs/diagnostic_snapshot.json if present.
                              --request touches logs/request_diag (main loop writes snapshot).
 
+  iccp tui [--poll-interval SEC] [--log-dir PATH]   SSH-friendly live Textual UI (same as coilshield-tui).
+
   iccp --help              Usage
 """
 
@@ -56,9 +58,13 @@ def _print_help() -> None:
 
   iccp version               Show coilshield-iccp version (from pip metadata).
 
+  iccp tui [--poll-interval SEC] [--log-dir PATH]   Live terminal dashboard (Textual). Same data as
+                             the web UI from latest.json. Keys: d/D diag, f clear fault, t paths, p probe.
+
   iccp --help                This message.
 
 Install:  pip install -e .   (from repo root, in your venv)
+  Quickest monitor after install:  iccp tui   or   coilshield-tui
 """
     )
 
@@ -293,6 +299,11 @@ def main() -> int:
 
     if cmd == "diag":
         return _cmd_diag(rest)
+
+    if cmd in ("tui", "watch", "monitor"):
+        import tui as tui_mod
+
+        return int(tui_mod.main(rest))
 
     print(f"Unknown command: {cmd!r}. Try: iccp --help", file=sys.stderr)
     return 2

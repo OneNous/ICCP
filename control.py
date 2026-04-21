@@ -146,14 +146,58 @@ class PWMBank:
     def __init__(self) -> None:
         self._duties: dict[int, float] = {i: 0.0 for i in range(cfg.NUM_CHANNELS)}
         self._pwm: list = []
+        self._static_mode: bool = False
+        self._pwm_carrier_hz: int = int(cfg.PWM_FREQUENCY_HZ)
 
         if not _SIM:
             GPIO.setmode(GPIO.BCM)
             for pin in cfg.PWM_GPIO_PINS:
                 GPIO.setup(pin, GPIO.OUT)
-                p = GPIO.PWM(pin, cfg.PWM_FREQUENCY_HZ)
+                p = GPIO.PWM(pin, self._pwm_carrier_hz)
                 p.start(0.0)
                 self._pwm.append(p)
+
+    @property
+    def static_gate_off_active(self) -> bool:
+        """True while commissioning (or similar) holds gates at static LOW instead of soft-PWM."""
+        return self._static_mode
+
+    def enter_static_gate_off(self) -> None:
+        """
+        Stop soft-PWM and drive each gate BCM pin LOW (matches cleanup teardown semantics).
+
+        Used during commissioning Phase 1 so shunt “at rest” matches true gate-off. No-op in
+        sim. Raising duty while in this mode raises RuntimeError (call leave_static_gate_off first).
+        """
+        if _SIM or self._static_mode:
+            return
+        self._static_mode = True
+        for i, p in enumerate(self._pwm):
+            try:
+                p.stop()
+            except Exception:
+                pass
+            try:
+                pin = cfg.PWM_GPIO_PINS[i]
+                GPIO.setup(pin, GPIO.OUT)
+                GPIO.output(pin, GPIO.LOW)
+            except Exception:
+                pass
+        self._pwm = []
+
+    def leave_static_gate_off(self) -> None:
+        """Recreate soft-PWM objects at ``_pwm_carrier_hz`` with 0%% duty. No-op in sim or if idle."""
+        if _SIM or not self._static_mode:
+            return
+        self._static_mode = False
+        self._pwm = []
+        for pin in cfg.PWM_GPIO_PINS:
+            GPIO.setup(pin, GPIO.OUT)
+            p = GPIO.PWM(pin, self._pwm_carrier_hz)
+            p.start(0.0)
+            self._pwm.append(p)
+        for ch in range(cfg.NUM_CHANNELS):
+            self._duties[ch] = 0.0
 
     def set_duty(self, ch: int, duty: float) -> None:
         duty = float(duty)
@@ -162,8 +206,19 @@ class PWMBank:
         else:
             duty = float(max(cfg.PWM_MIN_DUTY, min(cfg.PWM_MAX_DUTY, duty)))
         self._duties[ch] = duty
-        if not _SIM:
-            self._pwm[ch].ChangeDutyCycle(int(round(duty)))
+        if _SIM:
+            return
+        if self._static_mode:
+            if duty > 0.0:
+                raise RuntimeError(
+                    "PWMBank: cannot raise PWM duty while static_gate_off mode is active; "
+                    "call leave_static_gate_off() first."
+                )
+            pin = cfg.PWM_GPIO_PINS[ch]
+            GPIO.setup(pin, GPIO.OUT)
+            GPIO.output(pin, GPIO.LOW)
+            return
+        self._pwm[ch].ChangeDutyCycle(int(round(duty)))
 
     def duty(self, ch: int) -> float:
         return self._duties[ch]
@@ -175,6 +230,7 @@ class PWMBank:
     def set_pwm_frequency_hz(self, hz: int) -> None:
         """Change PWM carrier on all channels (RPi.GPIO 0.7+). No-op in sim or if unset."""
         hz = int(max(1, hz))
+        self._pwm_carrier_hz = hz
         if _SIM or not self._pwm:
             return
         for p in self._pwm:
@@ -184,6 +240,8 @@ class PWMBank:
                 pass
 
     def cleanup(self) -> None:
+        if not _SIM and self._static_mode:
+            self.leave_static_gate_off()
         self.all_off()
         if not _SIM:
             for i, p in enumerate(self._pwm):
@@ -244,6 +302,30 @@ class Controller:
         """When True, `update()` keeps all PWM off but still evaluates read errors and FAULT recovery."""
         self._thermal_pause = bool(active)
 
+    def all_outputs_off(self) -> None:
+        """Drive every anode channel to 0% PWM (commissioning, signals, safe shutdown)."""
+        self._pwm.all_off()
+
+    def output_duty_pct(self, ch: int) -> float:
+        """Current PWM duty (%) for channel ``ch``."""
+        return float(self._pwm.duty(ch))
+
+    def set_output_duty_pct(self, ch: int, duty: float) -> None:
+        """Set PWM duty (%) for channel ``ch``."""
+        self._pwm.set_duty(ch, duty)
+
+    def set_pwm_carrier_hz(self, hz: int) -> None:
+        """Set PWM carrier frequency on all channels (hardware only)."""
+        self._pwm.set_pwm_frequency_hz(hz)
+
+    def enter_static_gate_off(self) -> None:
+        """Hold MOSFET gates at static LOW (commissioning Phase 1); see :meth:`PWMBank.enter_static_gate_off`."""
+        self._pwm.enter_static_gate_off()
+
+    def leave_static_gate_off(self) -> None:
+        """Restore soft-PWM after static gate-off; see :meth:`PWMBank.leave_static_gate_off`."""
+        self._pwm.leave_static_gate_off()
+
     def _any_drive_intent(self, readings: dict[int, dict]) -> bool:
         """True if any channel is regulating, driven, or reporting wet-scale current."""
         wet_ma = float(getattr(cfg, "CHANNEL_WET_THRESHOLD_MA", 0.15))
@@ -277,7 +359,7 @@ class Controller:
         self._check_clear_fault()
 
         if self._thermal_pause:
-            self._pwm.all_off()
+            self.all_outputs_off()
             for ch, state in enumerate(self._states):
                 r = readings.get(ch, {})
                 if state.status == ChannelState.FAULT:
@@ -648,7 +730,7 @@ class Controller:
 
     def thermal_off(self) -> None:
         """Zero all PWM outputs without touching channel states (temp-range pause)."""
-        self._pwm.all_off()
+        self.all_outputs_off()
 
     def cleanup(self) -> None:
         self._pwm.cleanup()

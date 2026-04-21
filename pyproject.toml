@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 iccp = "iccp_cli:main"
+coilshield-tui = "tui:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -28,6 +29,7 @@ include = ["config*"]
 [tool.setuptools]
 py-modules = [
     "main",
+    "console_ui",
     "iccp_runtime",
     "diagnostics",
     "iccp_cli",

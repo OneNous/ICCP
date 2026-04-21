@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import sys
 import time
 from contextlib import contextmanager
 from collections.abc import Callable
@@ -34,8 +35,18 @@ def needs_commissioning() -> bool:
     if not _COMM_FILE.exists():
         return True
     try:
-        return "native_mv" not in json.loads(_COMM_FILE.read_text())
-    except Exception:
+        return "native_mv" not in json.loads(_COMM_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(
+            f"[commissioning] invalid commissioning.json (treat as needs commissioning): {e}",
+            file=sys.stderr,
+        )
+        return True
+    except OSError as e:
+        print(
+            f"[commissioning] cannot read commissioning.json: {e}",
+            file=sys.stderr,
+        )
         return True
 
 
@@ -44,11 +55,21 @@ def load_commissioned_target() -> float:
         return cfg.TARGET_MA
     try:
         return float(
-            json.loads(_COMM_FILE.read_text()).get(
+            json.loads(_COMM_FILE.read_text(encoding="utf-8")).get(
                 "commissioned_target_ma", cfg.TARGET_MA
             )
         )
-    except Exception:
+    except json.JSONDecodeError as e:
+        print(
+            f"[commissioning] invalid commissioning.json (commissioned_target_ma fallback): {e}",
+            file=sys.stderr,
+        )
+        return cfg.TARGET_MA
+    except (OSError, TypeError, ValueError) as e:
+        print(
+            f"[commissioning] commissioned_target_ma read error: {e}",
+            file=sys.stderr,
+        )
         return cfg.TARGET_MA
 
 
@@ -201,7 +222,7 @@ def _pwm_duties_all_zero(controller: Any) -> tuple[bool, list[str]]:
     """True if every channel PWM duty is 0 (gates commanded off)."""
     issues: list[str] = []
     for ch in range(cfg.NUM_CHANNELS):
-        d = float(controller._pwm.duty(ch))
+        d = float(controller.output_duty_pct(ch))
         if d > 1e-6:
             issues.append(f"CH{ch} duty={d:.4f}%")
     return (len(issues) == 0, issues)
@@ -268,7 +289,7 @@ def _verify_phase1_drive_off(
             log(msg)
         else:
             print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
-        controller._pwm.all_off()
+        controller.all_outputs_off()
         if sim_state is not None:
             sim_state.duties = controller.duties()
 
@@ -298,8 +319,9 @@ def _verify_phase1_drive_off(
                 "Check for leakage current before measuring baseline. "
                 + msg
                 + " If systemd or another main.py/iccp still runs, stop it first — only one "
-                "process may drive PWM; otherwise raise COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA "
-                "(and COMMISSIONING_OC_CONFIRM_I_MA) only if you accept a weaker idle-current gate."
+                "process may drive PWM; see docs/mosfet-off-verification.md. Otherwise raise "
+                "COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA (and COMMISSIONING_OC_CONFIRM_I_MA) only "
+                "if you accept a weaker idle-current gate."
             )
         msg = "WARNING: " + msg
         if log is not None:
@@ -333,10 +355,26 @@ def _commissioning_pwm_hz_context(controller: Any) -> Any:
         return
     base = int(cfg.PWM_FREQUENCY_HZ)
     try:
-        controller._pwm.set_pwm_frequency_hz(int(alt))
+        controller.set_pwm_carrier_hz(int(alt))
         yield
     finally:
-        controller._pwm.set_pwm_frequency_hz(base)
+        controller.set_pwm_carrier_hz(base)
+
+
+@contextmanager
+def _phase1_static_gate_context(controller: Any) -> Any:
+    """
+    Optional Phase 1: true gate-off via static LOW (see COMMISSIONING_PHASE1_STATIC_GATE_LOW).
+    Always balanced with leave_static_gate_off in finally.
+    """
+    if not bool(getattr(cfg, "COMMISSIONING_PHASE1_STATIC_GATE_LOW", True)):
+        yield
+        return
+    controller.enter_static_gate_off()
+    try:
+        yield
+    finally:
+        controller.leave_static_gate_off()
 
 
 def _instant_off_ref_mv_and_restore(
@@ -359,7 +397,7 @@ def _instant_off_ref_mv_and_restore(
     """
 
     saved_duties = {
-        ch: float(controller._pwm.duty(ch)) for ch in range(cfg.NUM_CHANNELS)
+        ch: float(controller.output_duty_pct(ch)) for ch in range(cfg.NUM_CHANNELS)
     }
     curve_on = bool(getattr(cfg, "COMMISSIONING_OC_CURVE_ENABLED", True))
     sequential = bool(getattr(cfg, "COMMISSIONING_OC_SEQUENTIAL_CHANNELS", False))
@@ -387,10 +425,12 @@ def _instant_off_ref_mv_and_restore(
         tf = temp_f if temp_f is not None else temp_mod.read_fahrenheit()
         pre_bus = _pre_bus_snapshot()
         if cut_ch is None:
-            controller._pwm.all_off()
+            controller.all_outputs_off()
         else:
             for c in range(cfg.NUM_CHANNELS):
-                controller._pwm.set_duty(c, 0.0 if c == cut_ch else saved_duties[c])
+                controller.set_output_duty_pct(
+                    c, 0.0 if c == cut_ch else saved_duties[c]
+                )
         if not _wait_ina_oc_confirm(sim_state, pre_bus, cut_ch=cut_ch):
             w = (
                 "WARNING: INA219 off-confirm timed out; continuing with ADS/ref OC read "
@@ -420,7 +460,7 @@ def _instant_off_ref_mv_and_restore(
 
     def _restore_saved_pwm() -> None:
         for ch, duty in saved_duties.items():
-            controller._pwm.set_duty(ch, duty)
+            controller.set_output_duty_pct(ch, duty)
         if sim_state is not None:
             sim_state.duties = dict(saved_duties)
 
@@ -541,24 +581,25 @@ def run(
 
     # Phase 1 — native potential
     log("Phase 1 — measuring native corrosion potential")
-    controller._pwm.all_off()
-    _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
-    log(f"Channels off. Settling {COMMISSIONING_SETTLE_S}s ...")
-    # _pump_control calls update() each tick; without thermal pause the FSM can still
-    # enter REGULATE/PROTECTING from shunt readings — contradicting “gates closed” Phase 1.
-    controller.set_thermal_pause(True)
-    try:
-        _pump_control(controller, sim_state, float(COMMISSIONING_SETTLE_S))
-    finally:
-        controller.set_thermal_pause(False)
+    controller.all_outputs_off()
+    with _phase1_static_gate_context(controller):
+        _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
+        log(f"Channels off. Settling {COMMISSIONING_SETTLE_S}s ...")
+        # _pump_control calls update() each tick; without thermal pause the FSM can still
+        # enter REGULATE/PROTECTING from shunt readings — contradicting “gates closed” Phase 1.
+        controller.set_thermal_pause(True)
+        try:
+            _pump_control(controller, sim_state, float(COMMISSIONING_SETTLE_S))
+        finally:
+            controller.set_thermal_pause(False)
 
-    controller._pwm.all_off()
-    if sim_state is not None:
-        sim_state.duties = controller.duties()
+        controller.all_outputs_off()
+        if sim_state is not None:
+            sim_state.duties = controller.duties()
 
-    _verify_phase1_drive_off(
-        controller, sim_state, log=log if verbose else None, post_long_settle=True
-    )
+        _verify_phase1_drive_off(
+            controller, sim_state, log=log if verbose else None, post_long_settle=True
+        )
 
     log(
         f"Averaging {native_n} reference samples "
@@ -568,7 +609,7 @@ def run(
     # so REGULATE cannot apply probe duty between reads.
     readings = _sensor_readings(sim_state)
     controller.update(readings)
-    controller._pwm.all_off()
+    controller.all_outputs_off()
     if sim_state is not None:
         sim_state.duties = controller.duties()
     status_snap = {
@@ -579,7 +620,7 @@ def run(
     samples: list[float] = []
     with _commissioning_pwm_hz_context(controller):
         for _ in range(native_n):
-            controller._pwm.all_off()
+            controller.all_outputs_off()
             if sim_state is not None:
                 sim_state.duties = dict(zero_duties)
             samples.append(

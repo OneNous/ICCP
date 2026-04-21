@@ -37,7 +37,7 @@ If the log line says `sim=True` but you expect hardware, check **`COILSHIELD_SIM
 
 **ADS1115 reference calibration:** Default **`ADS1115_FSR_V = 2.048`** (±2.048 V PGA) matches many Ag/AgCl divider rigs against a handheld meter; raise to **4.096** only if the AIN node can exceed ±2.048 V. At a steady PWM state, compare a **DMM (V DC)** at **AIN** to logged `ref_raw_mv` — set **`REF_ADS_SCALE`** (or env **`COILSHIELD_REF_ADS_SCALE`**) so `ref_raw_mv/1000` matches the meter if the divider still disagrees. Optional numeric **`ref_ads_scale`** in `commissioning.json` overrides `REF_ADS_SCALE` at runtime after commissioning loads.
 
-**Live data:** While `main.py` runs, **`logs/latest.json`** is updated every tick (same JSON as dashboard **`/api/live`** and `tui.py`). Paths come from **`config.settings`** (`PROJECT_ROOT/logs` by default). To put telemetry elsewhere (and keep dashboard + controller aligned), set the same environment on both processes: **`COILSHIELD_LOG_DIR`** or **`ICCP_LOG_DIR`** to an **absolute** directory (relative paths are resolved under the project root), or pass **`--log-dir /abs/path/logs`** to **`main.py`**, **`iccp -start`**, or **`dashboard.py`** (parsed before `config.settings` loads). The dashboard **System health → Telemetry files** card and **`GET /api/live`** field **`telemetry_paths`** show the resolved paths this instance is using. Optional: set **`LATEST_JSON_INCLUDE_DIAG = True`** in `config/settings.py` for a throttled **`diag`** object (mux map, ref ALRT latch flags). For a **deep I2C snapshot** (INA219 registers, ADS config), touch **`logs/request_diag`** once per minute (see **`DIAGNOSTIC_MIN_INTERVAL_S`**) or run **`iccp diag --request`** while the controller is running; read **`logs/diagnostic_snapshot.json`** or **`GET /api/diagnostic`** on the dashboard. **`iccp live`** prints the path it reads, then the current `latest.json`.
+**Live data:** While `main.py` runs, **`logs/latest.json`** is updated every tick (same JSON as dashboard **`/api/live`** and `tui.py`). Paths come from **`config.settings`** (`PROJECT_ROOT/logs` by default). To put telemetry elsewhere (and keep dashboard + controller aligned), set the same environment on both processes: **`COILSHIELD_LOG_DIR`** or **`ICCP_LOG_DIR`** to an **absolute** directory (relative paths are resolved under the project root), or pass **`--log-dir /abs/path/logs`** to **`main.py`**, **`iccp -start`**, **`dashboard.py`**, or **`tui.py` / `iccp tui`** (parsed before `config.settings` loads). The dashboard **System health → Telemetry files** card and **`GET /api/live`** field **`telemetry_paths`** show the resolved paths this instance is using. Optional: set **`LATEST_JSON_INCLUDE_DIAG = True`** in `config/settings.py` for a throttled **`diag`** object (mux map, ref ALRT latch flags). For a **deep I2C snapshot** (INA219 registers, ADS config), touch **`logs/request_diag`** once per minute (see **`DIAGNOSTIC_MIN_INTERVAL_S`**) or run **`iccp diag --request`** while the controller is running; read **`logs/diagnostic_snapshot.json`** or **`GET /api/diagnostic`** on the dashboard. **`iccp live`** prints the path it reads, then the current `latest.json`.
 3. Verify bus: `sudo i2cdetect -y 1` (expect **four** anode INA219s at **`40` `41` `44` `45`** by default). The **reference** INA219 may be on the same bus (e.g. **`42`**) or on a **second** `i2c-gpio` bus — see `I2C_BUS`, `REF_I2C_BUS`, and `REF_INA219_ADDRESS` in `config/settings.py`; re-strap A0/A1 on breakouts if you use other addresses.
 4. If the matrix is all `--`, run **`./scripts/diagnose_i2c.sh`** (lists adapters, scans anode and optional ref buses). First run **`sudo i2cdetect -l`** and scan the **`i2c-N`** that matches the **header** I2C (on many Pis this is **`bcm2835 (i2c@7e804000)` → bus `1`**). Bus **`2`** is often a different controller, not the pins on 3/5—an empty scan there is normal if nothing is wired to it. A full grid of `--` on the **correct** bus means no device acknowledged the bus: check **power**, **SDA/SCL/GND** to each breakout, and **3.3 V** I2C levels.
 
@@ -81,7 +81,7 @@ On first start (no `commissioning.json` in the project root), `main.py` runs **s
 
 **Bench / dev without waiting on hardware:** run with **`--skip-commission`** so the controller starts immediately (native baseline will not be set until you commission for real).
 
-**Before `iccp commission` on the Pi:** stop the live controller (`sudo systemctl stop iccp` or any `main.py` / `iccp -start`) so only one process owns PWM. If `latest.json` was just updated, `iccp commission` aborts unless you pass **`--force`** (unsafe if a controller is still running).
+**Before `iccp commission` on the Pi:** stop the live controller (`sudo systemctl stop iccp` or any `main.py` / `iccp -start`) so only one process owns PWM. If `latest.json` was just updated, `iccp commission` aborts unless you pass **`--force`** (unsafe if a controller is still running). High shunt current at “off” is often a **second process** or gate drive — see [docs/mosfet-off-verification.md](docs/mosfet-off-verification.md). Phase 1 can use **static gate LOW** (`COMMISSIONING_PHASE1_STATIC_GATE_LOW`) instead of soft-PWM-at-0 alone.
 
 **Force re-commissioning** (e.g. after replacing the zinc rod or major rewiring): from the repo root, run:
 
@@ -111,14 +111,20 @@ COILSHIELD_SIM=1 python3 main.py --sim --verbose
 python3 dashboard.py --host 0.0.0.0 --port 8080
 ```
 
-**Terminal monitor (SSH, no browser):** the same `logs/latest.json` snapshot drives a Textual TUI:
+**Terminal monitor (SSH, no browser):** the same `logs/latest.json` snapshot drives a Textual TUI. After `pip install -e .`, the shortest launch is **`coilshield-tui`** or **`iccp tui`** (same app). From the repo without install: `python3 tui.py`.
 
 ```bash
-python3 tui.py
-# optional: python3 tui.py --poll-interval 0.5
+iccp tui
+# or:  coilshield-tui
+# or:  python3 tui.py
+# optional:  iccp tui --poll-interval 0.5 --log-dir /abs/path/logs
 ```
 
-Install Flask on the Pi if needed: `python3 -m pip install flask --break-system-packages` (see `requirements.txt`). Install Textual for the TUI: `python3 -m pip install textual --break-system-packages` (also listed in `requirements.txt`).
+Inside the TUI: **`d`** request a diagnostic snapshot (touches `request_diag`; `main.py` must be running), **`D`** re-read `diagnostic_snapshot.json` only, **`f`** clear fault latch, **`t`** show resolved telemetry paths, **`p`** run allowlisted `hw_probe.py --skip-pwm` in a modal, **`1` / `2`** switch Live vs Diagnostics tab, **`q`** quit.
+
+SSH: use a capable `TERM` (e.g. `xterm-256color`) for full colors. Optional: run inside **tmux** so the session survives disconnect.
+
+Install Flask on the Pi if needed: `python3 -m pip install flask --break-system-packages` (see `requirements.txt`). Textual is required for the TUI: `python3 -m pip install textual --break-system-packages` (also listed in `requirements.txt`).
 
 **Telemetry files** (under repo `logs/`):
 
