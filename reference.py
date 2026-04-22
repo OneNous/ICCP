@@ -59,6 +59,11 @@ _OS_WAIT_FAIL_LOGGED: bool = False
 # None → use cfg.REF_ADS_SCALE only; float → commissioning.json ``ref_ads_scale`` override.
 _COMM_REF_ADS_SCALE: float | None = None
 
+# True if the last hardware read returned 0.0 because of a trapped OSError — surfaces
+# up through ReferenceElectrode.ref_valid() so control can raise REFERENCE_INVALID
+# (see docs/iccp-requirements.md §6.1). Module-level because the hw helpers are module-level.
+_REF_LAST_READ_FAILED: bool = False
+
 
 def _reload_comm_ref_ads_scale() -> None:
     """Reload ``ref_ads_scale`` from commissioning.json (called after load_native / _update_comm_file)."""
@@ -316,6 +321,7 @@ def ref_ux_hint(*, baseline_set: bool, hw_ok: bool, skip_commission: bool) -> st
 
 
 def _read_raw_mv_hw() -> float:
+    global _REF_LAST_READ_FAILED
     from i2c_bench import (
         ads1115_read_single_ended,
         i2c_bus_lock,
@@ -334,8 +340,11 @@ def _read_raw_mv_hw() -> float:
                         src = getattr(cfg, "REF_INA219_SOURCE", "bus_v")
                         n = max(1, int(getattr(cfg, "REF_INA219_MEDIAN_SAMPLES", 1)))
                         if n == 1:
-                            return _ina219_scalar_mv(_ref_ina, src)
+                            val = _ina219_scalar_mv(_ref_ina, src)
+                            _REF_LAST_READ_FAILED = False
+                            return val
                         samples = [_ina219_scalar_mv(_ref_ina, src) for _ in range(n)]
+                        _REF_LAST_READ_FAILED = False
                         return float(statistics.median(samples))
                 except OSError as e:
                     if getattr(e, "errno", None) == 5 and attempt == 0:
@@ -343,6 +352,7 @@ def _read_raw_mv_hw() -> float:
                         continue
                     raise
         except Exception as e:
+            _REF_LAST_READ_FAILED = True
             print(f"[reference] INA219 read failed: {e}")
             try:
                 import smbus2
@@ -388,6 +398,7 @@ def _read_raw_mv_hw() -> float:
                 mux_select_on_bus(_ref_smbus, mux_addr, mux_ch)
                 if n == 1:
                     v = ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr)
+                    _REF_LAST_READ_FAILED = False
                     return v * 1000.0 * scale
                 samples = [
                     ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr)
@@ -395,16 +406,20 @@ def _read_raw_mv_hw() -> float:
                     * scale
                     for _ in range(n)
                 ]
+                _REF_LAST_READ_FAILED = False
                 return float(statistics.median(samples))
         except OSError as e:
             if getattr(e, "errno", None) == 5 and attempt == 0:
                 time.sleep(0.003)
                 continue
+            _REF_LAST_READ_FAILED = True
             print(f"[reference] ADS1115 read failed: {e}")
             return 0.0
         except Exception as e:
+            _REF_LAST_READ_FAILED = True
             print(f"[reference] ADS1115 read failed: {e}")
             return 0.0
+    _REF_LAST_READ_FAILED = True
     print("[reference] ADS1115 read failed: repeated I/O error (errno 5)")
     return 0.0
 
@@ -697,7 +712,20 @@ class ReferenceElectrode:
     def __init__(self) -> None:
         self.native_mv: float | None = None
         self.native_temp_f: float | None = None
+        self.native_measured_at: str | None = None
+        self.native_measured_unix: float | None = None
         self._last_raw_mv: float = 0.0
+        # Rolling window for ref_valid stability check (W_REF seconds).
+        self._ref_history: list[tuple[float, float]] = []
+        self._consecutive_failures: int = 0
+        self._last_valid_reason: str = ""
+        be = str(getattr(cfg, "REF_ADC_BACKEND", "ads1115")).lower().strip()
+        if be != "ads1115":
+            print(
+                f"[reference] REF_ADC_BACKEND={be!r} is legacy and not spec-supported (docs/iccp-requirements.md §7.1). "
+                "Use ads1115 for production rigs.",
+                file=sys.stderr,
+            )
 
     def load_native(self) -> bool:
         if not _COMM_FILE.exists():
@@ -713,6 +741,12 @@ class ReferenceElectrode:
                     self.native_temp_f = None
             else:
                 self.native_temp_f = None
+            self.native_measured_at = data.get("native_measured_at")
+            nu = data.get("native_measured_unix")
+            try:
+                self.native_measured_unix = float(nu) if nu is not None else None
+            except (TypeError, ValueError):
+                self.native_measured_unix = None
             _reload_comm_ref_ads_scale()
             return True
         except json.JSONDecodeError as e:
@@ -735,12 +769,20 @@ class ReferenceElectrode:
         self, mv: float, *, native_temp_f: float | None = None
     ) -> None:
         self.native_mv = mv
+        now = time.time()
         ts = (
             time.strftime("%Y-%m-%dT%H:%M:%S")
-            if time.time() > 1_000_000_000
+            if now > 1_000_000_000
             else "CLOCK_UNSYNCED"
         )
+        self.native_measured_at = ts
+        self.native_measured_unix = now if now > 1_000_000_000 else None
         payload: dict[str, Any] = {"native_mv": mv, "native_measured_at": ts}
+        if self.native_measured_unix is not None:
+            payload["native_measured_unix"] = round(self.native_measured_unix, 3)
+        recap = float(getattr(cfg, "NATIVE_RECAPTURE_S", 24 * 3600.0))
+        if self.native_measured_unix is not None and recap > 0:
+            payload["native_recapture_due_unix"] = round(self.native_measured_unix + recap, 3)
         if native_temp_f is not None:
             payload["native_temp_f"] = round(float(native_temp_f), 2)
         _update_comm_file(payload)
@@ -754,11 +796,137 @@ class ReferenceElectrode:
     ) -> float:
         if SIM_MODE:
             mv = _read_raw_mv_sim(duties or {}, statuses or {})
+            read_ok = True
         else:
             mv = _read_raw_mv_hw()
+            read_ok = not _REF_LAST_READ_FAILED
         mv = self.ref_temp_adjust_mv(mv, temp_f)
         self._last_raw_mv = mv
+        # Track rolling window and failure count for ref_valid() / REFERENCE_INVALID.
+        now = time.monotonic()
+        if read_ok:
+            self._consecutive_failures = 0
+            self._ref_history.append((now, mv))
+            w = max(1.0, float(getattr(cfg, "W_REF", 20.0)))
+            cutoff = now - w
+            self._ref_history = [(t, v) for t, v in self._ref_history if t >= cutoff]
+        else:
+            self._consecutive_failures += 1
         return mv
+
+    def ref_valid(self) -> tuple[bool, str]:
+        """Return (valid, reason). Invalid → control should assert REFERENCE_INVALID (§6.1)."""
+        if self._consecutive_failures >= 3:
+            self._last_valid_reason = f"read_failed_x{self._consecutive_failures}"
+            return False, self._last_valid_reason
+        if len(self._ref_history) < 3:
+            self._last_valid_reason = "warmup"
+            return True, self._last_valid_reason
+        vals = [v for _, v in self._ref_history]
+        pp = max(vals) - min(vals)
+        stab = float(getattr(cfg, "NATIVE_STABILITY_MV", 5.0)) * 4.0
+        if pp > stab:
+            self._last_valid_reason = f"noisy_p2p_{pp:.1f}>{stab:.1f}"
+            return False, self._last_valid_reason
+        self._last_valid_reason = "ok"
+        return True, self._last_valid_reason
+
+    def capture_native(
+        self,
+        *,
+        temp_f: float | None = None,
+        rest_current_ok: callable | None = None,  # type: ignore[valid-type]
+        static_gate_low: callable | None = None,  # type: ignore[valid-type]
+        gate_restore: callable | None = None,  # type: ignore[valid-type]
+    ) -> tuple[float | None, str]:
+        """
+        Capture a fresh native baseline per docs/iccp-requirements.md §8.1 Phase 1.
+        Returns (native_mv, reason). On failure returns (None, reason) — caller should
+        raise REFERENCE_INVALID if no existing baseline is usable.
+
+        Callers supply optional helpers to enforce gates:
+          - rest_current_ok(): bool — True when |I| < I_REST_MA on every channel.
+          - static_gate_low(): force all anode gates low (Phase 1 "true off").
+          - gate_restore(): restore normal PWM control after capture.
+        """
+        retries = max(0, int(getattr(cfg, "NATIVE_CAPTURE_RETRIES", 2)))
+        t_relax = max(1.0, float(getattr(cfg, "T_RELAX", 30.0)))
+        interval = max(0.05, float(getattr(cfg, "NATIVE_SAMPLE_INTERVAL_S", 2.0)))
+        stab = max(0.1, float(getattr(cfg, "NATIVE_STABILITY_MV", 5.0)))
+        slope_limit = max(0.0, float(getattr(cfg, "NATIVE_SLOPE_MV_PER_MIN", 2.0)))
+        rest_confirm_s = max(0.0, float(getattr(cfg, "T_REST_CONFIRM", 3.0)))
+        if static_gate_low is not None:
+            try:
+                static_gate_low()
+            except Exception as e:  # pragma: no cover — best effort
+                print(f"[reference] capture_native: static_gate_low raised: {e}", file=sys.stderr)
+        last_reason = "unknown"
+        try:
+            for attempt in range(retries + 1):
+                if rest_current_ok is not None:
+                    rest_t0 = time.monotonic()
+                    rested = False
+                    while time.monotonic() - rest_t0 < rest_confirm_s:
+                        try:
+                            if rest_current_ok():
+                                rested = True
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(0.25)
+                    if not rested:
+                        last_reason = "rest_current_not_below_I_REST_MA"
+                        continue
+                samples: list[tuple[float, float]] = []
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < t_relax:
+                    mv = self.read(temp_f=temp_f)
+                    if not SIM_MODE and _REF_LAST_READ_FAILED:
+                        last_reason = "read_failed_during_capture"
+                        break
+                    samples.append((time.monotonic() - t0, float(mv)))
+                    time.sleep(interval)
+                else:
+                    if len(samples) < 3:
+                        last_reason = "too_few_samples"
+                        continue
+                    vals = [v for _, v in samples]
+                    pp = max(vals) - min(vals)
+                    if pp > stab:
+                        last_reason = f"unstable_p2p_{pp:.1f}>{stab:.1f}"
+                        continue
+                    first = statistics.fmean(vals[: max(2, len(vals) // 3)])
+                    last = statistics.fmean(vals[-max(2, len(vals) // 3):])
+                    span_min = max(samples[-1][0] - samples[0][0], 1e-6) / 60.0
+                    slope = (last - first) / span_min
+                    if slope_limit > 0 and abs(slope) > slope_limit:
+                        last_reason = f"slope_{slope:.2f}>{slope_limit:.2f}mv_per_min"
+                        continue
+                    median_mv = float(statistics.median(vals))
+                    return median_mv, "ok"
+                if last_reason.startswith("read_failed"):
+                    continue
+            return None, last_reason
+        finally:
+            if gate_restore is not None:
+                try:
+                    gate_restore()
+                except Exception as e:  # pragma: no cover
+                    print(f"[reference] capture_native: gate_restore raised: {e}", file=sys.stderr)
+
+    def native_age_s(self) -> float | None:
+        if self.native_measured_unix is None:
+            return None
+        return max(0.0, time.time() - float(self.native_measured_unix))
+
+    def next_native_recapture_s(self) -> float | None:
+        if self.native_measured_unix is None:
+            return None
+        recap = float(getattr(cfg, "NATIVE_RECAPTURE_S", 24 * 3600.0))
+        if recap <= 0:
+            return None
+        remaining = (float(self.native_measured_unix) + recap) - time.time()
+        return remaining
 
     def ref_temp_adjust_mv(self, mv: float, temp_f: float | None) -> float:
         """Optional linear mV trim vs pan °F (see REF_TEMP_COMP_MV_PER_F, native_temp_f in JSON)."""

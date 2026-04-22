@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 _last_runtime_diag_ts: float = 0.0
 _last_deep_snapshot_ts: float = 0.0
+_last_native_recapture_attempt: float = 0.0
+_last_drift_alert_ts: float = 0.0
 
 
 def run_iccp_forever(args: Namespace) -> int:
@@ -106,6 +108,7 @@ def run_iccp_forever(args: Namespace) -> int:
     _prev_verbose_mono: float | None = None
 
     global _last_runtime_diag_ts, _last_deep_snapshot_ts
+    global _last_native_recapture_attempt, _last_drift_alert_ts
 
     def _bootstrap_latest() -> None:
         """One telemetry write so dashboards are not stuck on a pre-reboot latest.json."""
@@ -163,6 +166,7 @@ def run_iccp_forever(args: Namespace) -> int:
                 channel_targets={
                     i: ctrl.channel_target_ma(i) for i in range(cfg.NUM_CHANNELS)
                 },
+                t_to_system_protected_s=ctrl.t_to_system_protected_s(),
             )
             log.maybe_flush()
         except Exception as e:
@@ -220,6 +224,13 @@ def run_iccp_forever(args: Namespace) -> int:
 
             ref_raw_mv, ref_shift = ref.read_raw_and_shift(
                 duties=duties, statuses=ch_status, temp_f=temp_f
+            )
+            ref_valid, ref_valid_reason = ref.ref_valid()
+            ctrl.advance_shift_fsm(
+                readings,
+                shift_mv=ref_shift,
+                ref_valid=ref_valid,
+                ref_valid_reason=ref_valid_reason,
             )
 
             if not _ux_tip_shown:
@@ -308,6 +319,50 @@ def run_iccp_forever(args: Namespace) -> int:
                     f"[{temp_mod.TEMP_MIN_F}–{temp_mod.TEMP_MAX_F}°F] (outputs held off)"
                 )
 
+            # --- Scheduled native re-capture (docs/iccp-requirements.md §2.3) ---
+            # Only run when the baseline is actually past its due time, temperature is in
+            # band, and we are not already in a fault storm. Cool-down between attempts
+            # prevents tight retry loops on persistent reference issues.
+            recap_cooldown_s = 10.0 * 60.0
+            if (
+                temp_in_band
+                and not fault_latched
+                and ref.native_mv is not None
+                and commissioning.native_recapture_due()
+                and (time.time() - _last_native_recapture_attempt) > recap_cooldown_s
+            ):
+                _last_native_recapture_attempt = time.time()
+                print("[main] Native re-capture due — pausing CP for Phase 1 native-only.")
+                try:
+                    new_mv, reason = commissioning.run_native_only(
+                        ref, ctrl, sim_state=sim_state, verbose=True
+                    )
+                except Exception as exc:  # pragma: no cover
+                    new_mv, reason = None, f"exception:{exc!r}"
+                    traceback.print_exc()
+                if new_mv is None:
+                    runtime_alerts.append(
+                        f"Native re-capture failed: {reason} (keeping previous native_mv)"
+                    )
+                else:
+                    runtime_alerts.append(
+                        f"Native re-captured: {new_mv:.2f} mV ({reason})"
+                    )
+
+            # --- Drift warning while sustained Protected (docs/iccp-requirements.md §2.3) ---
+            drift_trigger = float(getattr(cfg, "NATIVE_DRIFT_TRIGGER_MV", 40.0))
+            if (
+                ref.native_mv is not None
+                and ctrl.all_protected()
+                and abs(ref_raw_mv - ref.native_mv) > drift_trigger
+                and (time.time() - _last_drift_alert_ts) > 300.0
+            ):
+                _last_drift_alert_ts = time.time()
+                runtime_alerts.append(
+                    f"Reference drift: |ref {ref_raw_mv:.1f} − native {ref.native_mv:.1f}| "
+                    f"> {drift_trigger:.0f} mV while all_protected"
+                )
+
             try:
                 live_snap = log.record(
                     readings,
@@ -332,6 +387,20 @@ def run_iccp_forever(args: Namespace) -> int:
                         i: ctrl.channel_target_ma(i)
                         for i in range(cfg.NUM_CHANNELS)
                     },
+                    state_v2=ctrl.channel_state_v2(),
+                    channel_fault_reasons=ctrl.channel_fault_reasons(),
+                    channel_t_in_state_s={
+                        i: ctrl.t_in_state_v2_s(i)
+                        for i in range(cfg.NUM_CHANNELS)
+                    },
+                    all_protected=ctrl.all_protected(),
+                    any_active=ctrl.any_active(),
+                    native_mv=ref.native_mv,
+                    native_age_s=ref.native_age_s(),
+                    next_native_recapture_s=ref.next_native_recapture_s(),
+                    ref_valid=ref_valid,
+                    ref_valid_reason=ref_valid_reason,
+                    t_to_system_protected_s=ctrl.t_to_system_protected_s(),
                 )
             except Exception as e:
                 print(f"[main] log.record failed: {e}", file=sys.stderr)

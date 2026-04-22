@@ -36,7 +36,7 @@ def needs_commissioning() -> bool:
     if not _COMM_FILE.exists():
         return True
     try:
-        return "native_mv" not in json.loads(_COMM_FILE.read_text(encoding="utf-8"))
+        data = json.loads(_COMM_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         print(
             f"[commissioning] invalid commissioning.json (treat as needs commissioning): {e}",
@@ -49,6 +49,29 @@ def needs_commissioning() -> bool:
             file=sys.stderr,
         )
         return True
+    return "native_mv" not in data
+
+
+def native_recapture_due() -> bool:
+    """True when the stored native baseline is older than `NATIVE_RECAPTURE_S` (spec §2.3).
+
+    Used by the runtime to schedule a mid-run Phase 1 without triggering a full
+    re-commissioning. Returns False if no timestamp is available (legacy file) so we
+    do not spam re-captures on a healthy install that never stored a unix ts.
+    """
+    if not _COMM_FILE.exists():
+        return False
+    try:
+        data = json.loads(_COMM_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    due = data.get("native_recapture_due_unix")
+    if due is None:
+        return False
+    try:
+        return time.time() >= float(due)
+    except (TypeError, ValueError):
+        return False
 
 
 def load_commissioned_target() -> float:
@@ -576,6 +599,48 @@ def _pump_control(
         time.sleep(cfg.SAMPLE_INTERVAL_S)
 
 
+def _phase1_spec_native_capture(
+    reference: ReferenceElectrode,
+    controller: Any,
+    sim_state: Any | None,
+) -> tuple[float | None, str]:
+    """Phase 1 per docs/iccp-requirements.md §3.3: median native, rest gate, static LOW."""
+    controller.all_outputs_off()
+    i_rest = float(getattr(cfg, "I_REST_MA", 1.0))
+
+    def _rest_ok() -> bool:
+        r = _sensor_readings(sim_state)
+        for ch in range(cfg.NUM_CHANNELS):
+            rd = r.get(ch, {})
+            if rd.get("ok") and abs(float(rd.get("current", 0.0) or 0.0)) > i_rest:
+                return False
+        return True
+
+    def _static_low() -> None:
+        try:
+            controller.enter_static_gate_off()
+        except Exception as e:  # pragma: no cover
+            print(f"[commission] static_gate_low: {e}", file=sys.stderr)
+
+    def _restore() -> None:
+        try:
+            controller.leave_static_gate_off()
+        except Exception as e:  # pragma: no cover
+            print(f"[commission] leave static_gate: {e}", file=sys.stderr)
+
+    with _commissioning_pwm_hz_context(controller):
+        controller.set_thermal_pause(True)
+        try:
+            return reference.capture_native(
+                temp_f=temp_mod.read_fahrenheit(),
+                rest_current_ok=_rest_ok,
+                static_gate_low=_static_low,
+                gate_restore=_restore,
+            )
+        finally:
+            controller.set_thermal_pause(False)
+
+
 def run(
     reference: ReferenceElectrode,
     controller: Controller,
@@ -588,59 +653,16 @@ def run(
         if verbose:
             print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
 
-    native_n = int(getattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_COUNT", 30))
-    native_iv = float(getattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S", 2.0))
-
-    # Phase 1 — native potential
-    log("Phase 1 — measuring native corrosion potential")
-    controller.all_outputs_off()
+    # Phase 1 — native potential (docs/iccp-requirements.md §3.3: median, stability/slope gates)
+    log("Phase 1 — measuring native corrosion potential (spec capture / median)")
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
-        log(f"Channels off. Settling {COMMISSIONING_SETTLE_S}s ...")
-        # _pump_control calls update() each tick; without thermal pause the FSM can still
-        # enter REGULATE/PROTECTING from shunt readings — contradicting “gates closed” Phase 1.
-        controller.set_thermal_pause(True)
-        try:
-            _pump_control(controller, sim_state, float(COMMISSIONING_SETTLE_S))
-        finally:
-            controller.set_thermal_pause(False)
-
-        controller.all_outputs_off()
-        if sim_state is not None:
-            sim_state.duties = controller.duties()
-
-        _verify_phase1_drive_off(
-            controller, sim_state, log=log if verbose else None, post_long_settle=True
+    native_mv, cap_reason = _phase1_spec_native_capture(reference, controller, sim_state)
+    if native_mv is None:
+        raise RuntimeError(
+            f"Phase 1 native capture failed: {cap_reason} "
+            "(fix wiring, reference ADC, or shunt at rest — see COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA / I_REST_MA)"
         )
-
-    log(
-        f"Averaging {native_n} reference samples "
-        f"({native_iv:g}s apart, ~{native_n * native_iv:.0f}s window) ..."
-    )
-    # One FSM tick after settle, then freeze statuses — native loop does not run update()
-    # so REGULATE cannot apply probe duty between reads.
-    readings = _sensor_readings(sim_state)
-    controller.update(readings)
-    controller.all_outputs_off()
-    if sim_state is not None:
-        sim_state.duties = controller.duties()
-    status_snap = {
-        ch: controller.channel_statuses().get(ch, "OPEN") for ch in range(cfg.NUM_CHANNELS)
-    }
-    zero_duties = {ch: 0.0 for ch in range(cfg.NUM_CHANNELS)}
-
-    samples: list[float] = []
-    with _commissioning_pwm_hz_context(controller):
-        for _ in range(native_n):
-            controller.all_outputs_off()
-            if sim_state is not None:
-                sim_state.duties = dict(zero_duties)
-            samples.append(
-                reference.read(duties=zero_duties, statuses=status_snap)
-            )
-            time.sleep(native_iv)
-
-    native_mv = round(sum(samples) / len(samples), 2)
     pan_tf = temp_mod.read_fahrenheit()
     reference.save_native(native_mv, native_temp_f=pan_tf)
     if pan_tf is not None:
@@ -731,12 +753,57 @@ def run(
     _final_raw, final_shift, _f_depol = _instant_off_ref_mv_and_restore(
         controller, reference, sim_state, log=log if verbose else None
     )
+    # Nested per-channel hints (docs/iccp-requirements.md §8.1 Phase 3). Written alongside
+    # legacy `commissioned_target_ma` / `final_shift_mv` for backward compatibility; the
+    # default setup today applies the same target to every channel, so mirror that here.
+    channels_hints: dict[str, dict[str, Any]] = {}
+    for ch in range(cfg.NUM_CHANNELS):
+        per_ch_target = float(
+            getattr(cfg, "CHANNEL_TARGET_MA", {}).get(ch, current_target_ma)
+        )
+        channels_hints[str(ch)] = {
+            "commissioned_target_ma": round(per_ch_target, 3),
+            "final_shift_mv": final_shift,
+        }
     _update_comm_file(
         {
             "commissioned_target_ma": current_target_ma,
             "commissioned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "final_shift_mv": final_shift,
+            "channels": channels_hints,
         }
     )
     log("Done.")
     return current_target_ma
+
+
+def run_native_only(
+    reference: ReferenceElectrode,
+    controller: Controller,
+    sim_state: Any | None = None,
+    verbose: bool = True,
+) -> tuple[float | None, str]:
+    """Phase 1 only: re-capture the native baseline without ramp/lock phases.
+
+    Drives all channels to 0% PWM (plus Phase 1 static gate-low context), runs the new
+    `ReferenceElectrode.capture_native` primitive, and — on success — persists the new
+    native_mv / native_measured_at / native_recapture_due_unix fields via save_native.
+    Returns (native_mv, reason). Reason is "ok" on success; otherwise a diagnostic string
+    the caller should surface via telemetry / CLI exit code.
+    """
+
+    def log(msg: str) -> None:
+        if verbose:
+            print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
+
+    log("Phase 1 (native-only) — measuring native corrosion potential")
+    native_mv, reason = _phase1_spec_native_capture(reference, controller, sim_state)
+
+    if native_mv is None:
+        log(f"native capture failed: {reason}")
+        return None, reason
+
+    pan_tf = temp_mod.read_fahrenheit()
+    reference.save_native(native_mv, native_temp_f=pan_tf)
+    log(f"native_mv = {native_mv:.2f} mV (reason={reason})")
+    return native_mv, reason

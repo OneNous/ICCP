@@ -33,6 +33,7 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 
 - **`--sim`**: simulator (also used automatically off-Pi).
 - **`--force`**: skip the guard that aborts if **`latest.json`** was updated very recently (another controller may still own PWM). Use only when you are sure nothing else is driving the stack.
+- **`--native-only`**: run Phase 1 only — re-capture the native baseline via the new `reference.capture_native` primitive (static gate off, rest-current gate, stability + slope gates, median of samples) and persist it to **`commissioning.json`** with a fresh `native_measured_unix` / `native_recapture_due_unix`. Does not touch `commissioned_target_ma`. Per docs/iccp-requirements.md §3.4 / §8.1 Phase 1.
 
 **Notes:** On Pi, commission stops the **`iccp`** systemd unit first (`stop`, not `restart`) so PWM is not left running by the service. Requires **`RPi.GPIO`** on real hardware.
 
@@ -46,7 +47,7 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 
 **Common flags** (see **`iccp probe --help`**): **`--init`**, **`--ads1115`**, **`--ads1115-only`**, **`--continuous`**, **`--skip-pwm`**, etc.
 
-**Notes:** On Pi, systemd runs **`stop`** on the **`iccp`** unit before probe so I2C/PWM are free.
+**Notes:** On Pi, systemd runs **`stop`** on the **`iccp`** unit before probe so I2C/PWM are free. **STEP 1** is a flat “idle” I²C address sweep. If a **TCA9548A** is configured in `config.settings` (`I2C_MUX_ADDRESS` and related `I2C_MUX_CHANNEL_*` fields), only the mux (often **0x70**) may show on that sweep; **STEP 1b** then selects each configured downstream port and pings the expected INA219 and ADS1115—same model as the controller. A raw `i2cdetect` without per-port select does not see devices behind the mux.
 
 ---
 
@@ -98,9 +99,13 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 
 ## `iccp clear-fault`
 
-**What it does:** Creates or truncates the clear-fault file configured in **`config.settings.CLEAR_FAULT_FILE`** (typically under your log/project tree).
+**What it does:** Creates or truncates the clear-fault file configured in **`config.settings.CLEAR_FAULT_FILE`** (typically under your log/project tree). With **`--channel N`**, writes a small JSON side file at **`config.settings.CLEAR_FAULT_CHANNEL_FILE`** that is consumed by `Controller.update()` on its next tick to clear only channel **N** (0-based: `0..N_CHANNELS-1`) — `polarize_retry_count` and `state_v2` fault state are reset for that channel alone.
 
-**When to use it:** After an overcurrent or other latched fault, when the main loop is running and you want to clear the latch without using the TUI/web "clear fault" action.
+**When to use it:** After an overcurrent or other latched fault, when the main loop is running and you want to clear the latch without using the TUI/web "clear fault" action. Use **`--channel N`** to clear a single channel while leaving siblings untouched (per docs/iccp-requirements.md §6.2).
+
+**Flags:**
+
+- **`--channel N`**: clear only channel **N** (0-based). Without this flag, all channels are cleared.
 
 **Notes:** On Pi, default **`ICCP_SYSTEMD_SYNC`** also **`restart`s** the **`iccp`** service after **`daemon-reload`** so the running controller picks up unit file changes if any.
 

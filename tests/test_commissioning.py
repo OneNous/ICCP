@@ -37,6 +37,11 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     ref = ReferenceElectrode()
     monkeypatch.setattr(
         ReferenceElectrode,
+        "capture_native",
+        lambda *a, **k: (210.0, "ok"),
+    )
+    monkeypatch.setattr(
+        ReferenceElectrode,
         "read",
         lambda self, duties=None, statuses=None, **kwargs: 210.0,
     )

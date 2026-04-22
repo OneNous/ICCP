@@ -37,6 +37,7 @@ import glob
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 
 try:
     import config.settings as cfg
@@ -170,47 +171,226 @@ def scan_i2c(bus: int) -> list[int]:
     return found
 
 
+def _i2c_ping_device(sb: object, addr: int) -> bool:
+    """True if `read_byte(addr)` succeeds (device acknowledges)."""
+    try:
+        sb.read_byte(int(addr))  # type: ignore[union-attr]
+        return True
+    except OSError:
+        return False
+
+
+@dataclass
+class MuxDownstreamI2CResult:
+    """Per-port pings after TCA9548A select (mirrors `sensors.py` / `i2c_bench.mux_select_on_bus`)."""
+
+    ina_rows: list[tuple[int, int, int, bool]] = field(
+        default_factory=list
+    )  # (iccp_ch, tca_ch, ina_addr, ok)
+    ads_tca_ch: int | None = None
+    ads_addr: int = 0x48
+    ads_ok: bool = False
+    ads_checked: bool = False
+    error: str | None = None
+
+
+def mux_downstream_i2c_probe(bus: int) -> MuxDownstreamI2CResult | None:
+    """
+    When ``I2C_MUX_ADDRESS`` is set, INA219/ADS are invisible on an idle bus scan
+    until each TCA downstream port is selected. Ping expected devices per
+    ``I2C_MUX_CHANNELS_INA219`` / ``I2C_MUX_CHANNEL_INA219`` and
+    ``I2C_MUX_CHANNEL_ADS1115`` from config.
+    """
+    if cfg is None:
+        return None
+    mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+    if mux_addr is None:
+        return None
+    try:
+        import smbus2
+    except ImportError:
+        return None
+    from i2c_bench import mux_select_on_bus
+
+    out = MuxDownstreamI2CResult(ads_addr=int(ADS1115_ADDRESS))
+    try:
+        sb = smbus2.SMBus(bus)
+    except OSError as e:
+        out.error = f"Could not open I2C bus {bus} for downstream probe: {e}"
+        return out
+
+    per = getattr(cfg, "I2C_MUX_CHANNELS_INA219", None)
+    leg = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
+    mxa = int(mux_addr)
+
+    try:
+        if per is not None and len(per) > 0:
+            n = min(len(INA219_ADDRESSES), len(per))
+            for ch in range(n):
+                mux_select_on_bus(sb, mxa, int(per[ch]))
+                addr = int(INA219_ADDRESSES[ch])
+                ok = _i2c_ping_device(sb, addr)
+                out.ina_rows.append((ch, int(per[ch]), addr, ok))
+        elif leg is not None:
+            mux_select_on_bus(sb, mxa, int(leg))
+            for ch, addr in enumerate(INA219_ADDRESSES):
+                ok = _i2c_ping_device(sb, int(addr))
+                out.ina_rows.append((ch, int(leg), int(addr), ok))
+
+        ads_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
+        if ads_ch is not None:
+            mux_select_on_bus(sb, mxa, int(ads_ch))
+            out.ads_tca_ch = int(ads_ch)
+            out.ads_addr = int(ADS1115_ADDRESS)
+            out.ads_ok = _i2c_ping_device(sb, int(ADS1115_ADDRESS))
+            out.ads_checked = True
+    except OSError as e:
+        out.error = f"downstream I2C error: {e}"
+    except ValueError as e:
+        out.error = str(e)
+    finally:
+        try:
+            sb.write_byte(mxa, 0x00)
+        except OSError:
+            pass
+        try:
+            sb.close()
+        except OSError:
+            pass
+
+    return out
+
+
 def run_i2c_scan(bus: int) -> None:
     section("STEP 1 — I2C scan")
-    print(f"\n  Scanning bus {bus} for all devices (0x03–0x77) ...")
+    print(
+        f"\n  Scanning bus {bus} for all devices (0x03–0x77) without mux select (idle) …"
+    )
     found = scan_i2c(bus)
 
     if not found:
         print("  No devices found (or smbus2 unavailable).")
         return
 
-    print(f"\n  Found:    {[hex(a) for a in found]}")
+    mxa = getattr(cfg, "I2C_MUX_ADDRESS", None) if cfg is not None else None
+    print(f"\n  Found (idle, upstream bus):  {[hex(a) for a in found]}")
     print(
-        f"  Expected: {[hex(a) for a in INA219_ADDRESSES]}  "
-        "(Anode 1–4 INA219; idx 0–3 in firmware)"
+        f"  Expected INA219 addrs: {[hex(a) for a in INA219_ADDRESSES]}  "
+        "(Anode 1–4; idx 0–3 in firmware)"
     )
     print(f"  ADS1115:  {hex(ADS1115_ADDRESS)} (reference ADC)")
 
+    if mxa is not None:
+        mux_r = mux_downstream_i2c_probe(bus)
+        if mux_r is not None and (
+            mux_r.ina_rows
+            or mux_r.ads_checked
+            or (mux_r.error and not (mux_r.ina_rows or mux_r.ads_checked))
+        ):
+            print(
+                "\n  TCA9548A is configured (I2C_MUX_ADDRESS). INA/ADS on downstream "
+                "ports are invisible in the idle scan — checking each port from config…"
+            )
+            if mux_r.error:
+                print(f"  [!] {mux_r.error}")
+            if mux_r.ina_rows or mux_r.ads_checked:
+                section("STEP 1b — I2C downstream (TCA9548A per port)")
+            for ch, tca_ch, ina_addr, ok in mux_r.ina_rows:
+                st = "✓" if ok else "✗"
+                print(
+                    f"  {st}  Anode idx {ch}  TCA ch{tca_ch}  INA@ {hex(ina_addr)}"
+                )
+            if mux_r.ads_checked and mux_r.ads_tca_ch is not None:
+                st = "✓" if mux_r.ads_ok else "✗"
+                print(
+                    f"  {st}  ADS1115 @ {hex(ADS1115_ADDRESS)}  "
+                    f"(TCA ch{mux_r.ads_tca_ch} — from config)"
+                )
+            if mux_r.ina_rows:
+                if all(r[3] for r in mux_r.ina_rows):
+                    print("  ✓ All configured anode INA219 addresses respond behind mux")
+                else:
+                    mina = [hex(r[2]) for r in mux_r.ina_rows if not r[3]]
+                    print(f"\n  ✗ MISSING (behind mux): {mina}")
+                    print(
+                        "    • Per-port wiring, A0/A1, power, or TCA ch vs "
+                        "I2C_MUX_CHANNELS_INA219 in config.settings"
+                    )
+            if mux_r.ads_checked:
+                if mux_r.ads_ok:
+                    print(
+                        f"  ✓ ADS1115 responds at {hex(ADS1115_ADDRESS)} (behind mux)"
+                    )
+                else:
+                    print(
+                        f"\n  ✗ ADS1115 not at {hex(ADS1115_ADDRESS)} on selected "
+                        "TCA ch — reference ADC path will fail"
+                    )
+            if (
+                mux_r.ina_rows
+                and not mux_r.ads_checked
+                and getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None) is None
+                and ADS1115_ADDRESS not in found
+            ):
+                print(
+                    f"\n  (ADS: I2C_MUX_CHANNEL_ADS1115 unset — "
+                    f"set it if ADS is on a downstream port; idle bus did not show "
+                    f"{hex(ADS1115_ADDRESS)}.)"
+                )
+            if (
+                mxa is not None
+                and (mux_r.ina_rows or mux_r.ads_checked)
+                and not (
+                    (not mux_r.ina_rows)
+                    and not mux_r.ads_checked
+                    and mux_r.error
+                )
+            ):
+                maddr = int(mxa)
+                other = [a for a in found if a not in INA219_ADDRESSES and a != maddr]
+                if other:
+                    print(
+                        f"\n  ? Other addresses (idle, upstream bus): "
+                        f"{[hex(a) for a in other]}"
+                    )
+            if mux_r.ina_rows or mux_r.ads_checked:
+                return
+            if mux_r.error:
+                return
+
     missing = [a for a in INA219_ADDRESSES if a not in found]
-    extra = [a for a in found if a not in INA219_ADDRESSES]
+    extra: list[int] = [a for a in found if a not in INA219_ADDRESSES]
+    if mxa is not None:
+        extra = [a for a in extra if a != int(mxa)]
 
     if not missing:
-        print("  ✓ All 4 expected INA219 addresses present")
+        print("  ✓ All 4 expected INA219 addresses present (idle / no-mux scan)")
     else:
         print(f"\n  ✗ MISSING: {[hex(a) for a in missing]}")
-        print("    • Address jumpers (A0/A1), power 3.3 V, SDA/SCL, or address clash")
+        print(
+            "    • Address jumpers (A0/A1), power 3.3 V, SDA/SCL, or address clash; "
+            "on TCA rigs, confirm I2C_MUX_* in config and see STEP 1b if shown above."
+        )
 
     if ADS1115_ADDRESS in found:
-        print(f"  ✓ ADS1115 present at {hex(ADS1115_ADDRESS)}")
+        print(f"  ✓ ADS1115 present at {hex(ADS1115_ADDRESS)} (idle bus)")
     else:
-        print(f"\n  ✗ ADS1115 not found at {hex(ADS1115_ADDRESS)} — reference ADC path will fail")
+        print(
+            f"\n  ✗ ADS1115 not found at {hex(ADS1115_ADDRESS)} in idle scan — "
+            "reference only works if the chip is on this bus or use STEP 1b / "
+            "STEP 3 (mux-aware)."
+        )
         if cfg is not None:
-            mxa = getattr(cfg, "I2C_MUX_ADDRESS", None)
-            mxc = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
-            if mxa is not None and mxc is not None:
+            cads = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
+            cmx = getattr(cfg, "I2C_MUX_ADDRESS", None)
+            if cmx is not None and cads is not None:
                 print(
-                    f"    • If ADS1115 is on TCA9548A port {mxc}, it only appears after mux "
-                    "select — run STEP 3 or `iccp probe --ads1115-only`."
+                    f"    • If ADS1115 is on TCA9548A port {cads}, run "
+                    f"`iccp probe --ads1115-only` or use STEP 3 (mux select in probe)."
                 )
 
     if extra:
         print(f"\n  ? Other addresses: {[hex(a) for a in extra]}")
-
 
 # ---------------------------------------------------------------------------
 # STEP 2 — INA219 (smbus2 / i2c_bench)

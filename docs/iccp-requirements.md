@@ -157,7 +157,7 @@ stateDiagram-v2
 
 ### 4.3 Required invariants
 
-- **Per-channel independence.** One channel in `Fault` must not pull any other channel out of `Protected`. `INA219_FAILSAFE_ALL_OFF` (see [control.py](../control.py) lines ~412–448) is scoped to **bus-level I²C failures only** — `OSError` with `errno 5` or equivalent OS-level failures that indicate the I²C bus itself is unhealthy (decision Q8 in the Decisions log). A single-channel INA219 read failure that is not bus-level faults only that channel and leaves siblings regulating. Bus-level failures still trigger the system-level `HARDWARE_I2C` fail-safe in §6.1.
+- **Per-channel independence.** One channel in `Fault` must not pull any other channel out of `Protected`. `INA219_FAILSAFE_ALL_OFF` (see [control.py](../control.py) lines ~412–448) is scoped to **bus-level I²C failures only** — `OSError` with `errno 5` or equivalent OS-level failures that indicate the I²C bus itself is unhealthy (decision Q8 in the Decisions log). A per-channel INA219 read failure that is *not* bus-level faults that channel alone and leaves siblings regulating. Bus-level failures still trigger the system-level `HARDWARE_I2C` fail-safe in §6.1.
 - **`any_wet` becomes `any_active`** — informational only; set when any channel is `Polarizing`, `Protected`, or `Overprotected`. Neither the UI nor any safety gate reads it as "the system is protecting."
 - **`all_protected`** is the only system-level protection assertion.
 - **Hysteresis values are spec'd, not guessed.** Every transition out of `Protected` uses an explicit hysteresis constant listed in Section 8.
@@ -414,31 +414,29 @@ Until the cutover, no new UI reads `wet`, `wet_channels`, or `ref_status` bands 
 
 ---
 
-## 11. Open questions to resolve during doc review
+## 11. Open questions
 
-Each question is a concrete sub-decision with options. The review ships the doc only after every one has an answer or is explicitly deferred.
+The v1 open questions (Q1–Q11) are **resolved**. See the [Decisions log](#decisions-log) below for the settled answers. This section is kept as a history anchor — new open questions discovered during review or implementation go here as they arise.
 
-1. **Per-channel vs single `native_mv`.** Does each channel see a meaningfully different free-corrosion potential with the existing reference placement? Options: (a) keep a shared scalar (today's behavior, simpler); (b) per-channel native from channel-specific preconditions (Phase 2 complexity); (c) hybrid — shared scalar plus a per-channel offset learned at Phase 2 and re-fit on re-capture.
+---
 
-2. **Native recapture cadence.** Options: daily wall-clock (proposed); weekly; drift-triggered only (§3.4); combination. Evidence to gather: 48-hour drift of a stationary cell on the bench rig.
+## Decisions log
 
-3. **`T_POL_STABLE`, `T_RELAX`, `T_POLARIZE_MAX`, `MAX_SHIFT_MV` defaults.** Options: accept proposed values (300 / 120 / 1800 s, 200 mV); pick from bench soak data; pick from vendor literature and mark as "to be re-fit after bench pass." Decide whether this doc ships with interim defaults and a review-after-first-bench-soak note.
+Settled decisions for v1 of this document. Each row maps to the section of the doc where the decision lives.
 
-4. **`CANNOT_POLARIZE` handling.** Options: (a) latch until operator clears (safe, loud); (b) auto-retry with exponential backoff (`FAULT_RETRY_INTERVAL_S` semantics); (c) auto-retry up to `FAULT_RETRY_MAX` then latch as permanent (current `OVERCURRENT` pattern).
-
-5. **`Overprotected` behavior under the inner loop.** Options: (a) ramp duty down under potential control (proposed §5.3); (b) hard-cut to 0% and re-enter `Polarizing` after `T_OVER_COOLDOWN`. Which minimizes oscillation in thin-film condensate on the coil? — bench data needed.
-
-6. **Reference sensor primary.** Options: (a) ADS1115 only; drop INA219-as-voltmeter from the supported matrix (proposed); (b) keep INA219 as a documented fallback; (c) auto-select based on what's present at boot.
-
-7. **`clear_fault` scope.** Options: (a) keep the `CLEAR_FAULT_FILE` file-touch as all-channels (today); (b) add per-channel file-touch (`clear_fault_ch1`); (c) keep file as all-channels, add `iccp clear-fault --channel N` CLI flag only.
-
-8. **`INA219_FAILSAFE_ALL_OFF` scope.** Today it fires on *any* per-channel read failure (even a benign transient). Options: (a) keep as-is (safest); (b) scope to bus-level errors (`errno 5` / OS-level) and let per-channel read failures fault only that channel; (c) add a configurable dead-band window before it triggers.
-
-9. **`OVERPROTECTION` as state vs fault.** Both are specified (§4.1, §6.1). Options: (a) keep both (state for normal inner-loop recovery; fault for sustained over-shift past a wider margin); (b) collapse to state only; (c) collapse to fault only.
-
-10. **Phase 2 parallelism.** Options: (a) per-channel sweep serialized (safer for shared reference); (b) all channels in parallel (faster, closer to production conditions); (c) parallel with per-channel instant-off cuts (today's `COMMISSIONING_OC_SEQUENTIAL_CHANNELS = False` branch).
-
-11. **Dashboard data-contract break tolerance.** §9 adds fields and changes the meaning of `wet`/`wet_channels`. Options: (a) accept the break and update the dashboard in the follow-up plan (proposed); (b) keep both old and new fields in `latest.json` for one release (transitional); (c) gate the new fields behind a config flag until the UI is ready.
+| # | Question | Decision | Home | Notes |
+|---|---|---|---|---|
+| Q1 | `native_mv` per-channel vs scalar | Shared scalar | §3.1 | Single physical reference electrode; `instant-off` removes channel-specific IR artifact. |
+| Q2 | Native recapture cadence | Scheduled daily + drift-triggered warning + on-demand CLI | §3.4 | Drift trigger is a warning in `system_alerts`, not a forced re-capture. |
+| Q3 | Defaults for `T_POL_STABLE`, `T_RELAX`, `T_POLARIZE_MAX`, `MAX_SHIFT_MV` | Accept proposed 300 / 120 / 1800 s, 200 mV as **interim** | §2.1, §3.2, §4.4 | Tagged `[interim — revisit after first bench soak]` in the doc. |
+| Q4 | `CANNOT_POLARIZE` handling | Auto-retry up to `POLARIZE_RETRY_MAX = 3` with `POLARIZE_RETRY_INTERVAL_S = T_POLARIZE_MAX`, then permanent latch | §6.1 | Separate retry interval from the general 60 s `FAULT_RETRY_INTERVAL_S` — polarization is slow. |
+| Q5 | `Overprotected` inner-loop behavior | Ramp duty down under potential control | §5.3 | Hard-cut oscillates; revisit only if potential-control recovery proves unstable on bench. |
+| Q6 | Reference sensor primary | ADS1115 only in the supported matrix; INA219 kept as legacy, out of support | §7.1 | INA219 path lacks slope/stability instrumentation §3 requires. |
+| Q7 | `clear_fault` scope | File-touch stays all-channels; CLI gains `iccp clear-fault --channel N` for per-channel | §6.2 | Preserves the systemd-friendly file path; no per-channel file. |
+| Q8 | `INA219_FAILSAFE_ALL_OFF` scope | Bus-level errors only (`OSError` / `errno 5`) trigger all-off; per-channel transients fault only the affected channel | §4.3, §6.1 | Restores per-channel independence (§4.3 invariant). |
+| Q9 | `OVERPROTECTION` as state vs fault | Keep both | §4.1, §6.1 | State handles normal overshoot with hysteresis; fault triggers only on sustained overshoot past `HYST_OVER_FAULT_MV`. |
+| Q10 | Phase 2 parallelism | Serialized per-channel sweep | §8.1 Phase 2 | Single shared reference; cross-channel bias during ramp must be proven negligible before parallel sweep is reconsidered. |
+| Q11 | Dashboard data-contract break tolerance | Transitional: dual-write old and new fields in `latest.json` for one release | §9.3, §9.4 | New `state` enum written as `state_v2`; legacy `wet`, `wet_channels`, `ref_*`, `ref_shift_mv`, `ref_baseline_set` retained. UI cutover is a follow-up plan. |
 
 ---
 
@@ -450,5 +448,6 @@ The doc is ready to accept when the reviewer can confirm:
 - [ ] §3 fixes the native-baseline procedure against the "Today" sidebar.
 - [ ] §4 replaces the shunt-based `PROTECTING` definition with a shift-based one, and the state machine is unambiguous.
 - [ ] §5–§9 each derive cleanly from §3 and §4 — no requirement hangs in the air.
-- [ ] Every open question in §11 has either a decision or an explicit "defer until after first bench soak."
+- [ ] Every row in the Decisions log is either accepted or flagged for revision with a specific alternative.
+- [ ] Every `[interim — revisit after first bench soak]` tag is justified or replaced with a settled default.
 - [ ] The "Today" sidebars are factually correct against the cited files.

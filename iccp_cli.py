@@ -5,8 +5,9 @@ CoilShield ``iccp`` CLI — the single supported entry point for this project.
 Every subcommand has exactly one canonical spelling. No aliases.
 
   iccp start [args ...]     Run the controller (defaults: --real --verbose --skip-commission)
-  iccp commission [--sim] [--force]
-                            Self-commissioning (writes commissioning.json)
+  iccp commission [--sim] [--force] [--native-only]
+                            Self-commissioning (writes commissioning.json).
+                            --native-only runs Phase 1 only (native baseline re-capture).
   iccp probe [args ...]     Hardware probe (see `iccp probe --help` / hw_probe.py)
   iccp tui [--poll-interval SEC] [--log-dir PATH]
                             Terminal UI (Textual)
@@ -14,7 +15,8 @@ Every subcommand has exactly one canonical spelling. No aliases.
                             Web dashboard (Flask)
   iccp live                 Print logs/latest.json (pretty JSON)
   iccp diag [--request]     Print logs/diagnostic_snapshot.json (or touch request_diag)
-  iccp clear-fault          Touch the clear-fault file (config.settings.CLEAR_FAULT_FILE)
+  iccp clear-fault [--channel N]
+                            Clear all channels (no --channel) or only channel N (0-based).
   iccp version              Print coilshield-iccp package version
   iccp --help / -h          Usage
 
@@ -29,6 +31,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from platform_util import running_on_raspberry_pi
@@ -150,10 +153,11 @@ def _print_help() -> None:
                              Optional: --log-dir /abs/path/logs (same as COILSHIELD_LOG_DIR;
                              must match dashboard / tui).
 
-  iccp commission [--sim] [--force]
+  iccp commission [--sim] [--force] [--native-only]
                              Self-commission (writes commissioning.json).
                              On Pi uses hardware unless --sim. Aborts if latest.json is fresh
                              unless --force (stop the iccp service first).
+                             --native-only runs Phase 1 only (native baseline re-capture).
 
   iccp probe [args ...]      Hardware probe (I2C, INA219 smbus2, ADS1115, DS18B20, PWM).
                              See `iccp probe --help` for options.
@@ -168,7 +172,10 @@ def _print_help() -> None:
 
   iccp live                  Pretty-print logs/latest.json once.
   iccp diag [--request]      Print diagnostic_snapshot.json (or touch request_diag).
-  iccp clear-fault           Touch the fault-clear file (config.settings.CLEAR_FAULT_FILE).
+  iccp clear-fault [--channel N]
+                             Without --channel: touch the all-channel fault-clear file.
+                             With --channel N (0-based): write an atomic JSON side file
+                             that clears only channel N on the next controller tick.
   iccp version               Show coilshield-iccp version.
   iccp --help / -h           This message.
 
@@ -184,14 +191,77 @@ Install:  pip install -e .   (from repo root, in your venv)
     )
 
 
-def _cmd_clear_fault() -> int:
+def _cmd_clear_fault(rest: list[str] | None = None) -> int:
+    """Clear one or all latched faults.
+
+    ``iccp clear-fault`` (no args) touches the all-channel clear file — the controller
+    drains it on the next tick and clears every channel in FAULT.
+
+    ``iccp clear-fault --channel N`` writes an atomic JSON side file (0-based index to
+    match the rest of the code, see docs/iccp-requirements.md §6.2 Decision Q5). Only
+    that channel is cleared; others keep their state.
+    """
     import config.settings as cfg
 
-    path = cfg.CLEAR_FAULT_FILE
+    rest = rest or []
+    channel: int | None = None
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--channel":
+            if i + 1 >= len(rest):
+                print("ERROR: --channel requires an integer argument (0-based)", file=sys.stderr)
+                return 2
+            try:
+                channel = int(rest[i + 1])
+            except ValueError:
+                print(f"ERROR: --channel expects an integer, got {rest[i + 1]!r}", file=sys.stderr)
+                return 2
+            i += 2
+            continue
+        if a.startswith("--channel="):
+            try:
+                channel = int(a.split("=", 1)[1])
+            except ValueError:
+                print(f"ERROR: could not parse {a!r}", file=sys.stderr)
+                return 2
+            i += 1
+            continue
+        print(f"ERROR: unknown argument {a!r}", file=sys.stderr)
+        return 2
+
+    if channel is None:
+        path = cfg.CLEAR_FAULT_FILE
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+            print(f"OK: touched {path}")
+            return 0
+        except OSError as e:
+            print(f"ERROR: could not write {path}: {e}", file=sys.stderr)
+            return 1
+
+    num_ch = int(getattr(cfg, "NUM_CHANNELS", 4))
+    if channel < 0 or channel >= num_ch:
+        print(
+            f"ERROR: --channel {channel} out of range 0..{num_ch - 1}",
+            file=sys.stderr,
+        )
+        return 2
+    path = getattr(cfg, "CLEAR_FAULT_CHANNEL_FILE", None)
+    if path is None:
+        print("ERROR: CLEAR_FAULT_CHANNEL_FILE is not configured", file=sys.stderr)
+        return 1
     try:
+        import json
+        import os
+
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("", encoding="utf-8")
-        print(f"OK: touched {path}")
+        payload = json.dumps({"channel": channel, "ts": time.time()})
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+        print(f"OK: wrote {path} (channel {channel})")
         return 0
     except OSError as e:
         print(f"ERROR: could not write {path}: {e}", file=sys.stderr)
@@ -349,8 +419,16 @@ def _abort_if_concurrent_controller_active(*, force: bool, on_pi_hw: bool) -> in
 
 
 def _cmd_commission(rest: list[str]) -> int:
-    """Run commissioning.run() — same sequence as first boot of the controller."""
+    """Run commissioning.run() — same sequence as first boot of the controller.
+
+    With ``--native-only`` the CLI runs Phase 1 only via
+    :func:`commissioning.run_native_only`, useful for scheduled native re-capture
+    or a maintenance pass after a reference-electrode swap.
+    """
     rest, force_comm = _split_force_flag(rest)
+    native_only = "--native-only" in rest
+    if native_only:
+        rest = [a for a in rest if a != "--native-only"]
     use_sim = "--sim" in rest
     if use_sim:
         os.environ["COILSHIELD_SIM"] = "1"
@@ -398,13 +476,28 @@ def _cmd_commission(rest: list[str]) -> int:
     ref = ReferenceElectrode()
     print(f"[iccp commission] Reference path: {ref_hw_message()}")
     try:
-        commissioned = commissioning.run(
-            ref, ctrl, sim_state=sim_state, verbose=True
-        )
-        print(
-            f"[iccp commission] Done. commissioned_target_ma={commissioned:.3f} "
-            f"(see commissioning.json)"
-        )
+        if native_only:
+            native_mv, reason = commissioning.run_native_only(
+                ref, ctrl, sim_state=sim_state, verbose=True
+            )
+            if native_mv is None:
+                print(
+                    f"[iccp commission] Native capture failed: {reason}",
+                    file=sys.stderr,
+                )
+                return 1
+            print(
+                f"[iccp commission] Native re-captured: native_mv={native_mv:.2f} mV "
+                f"(reason={reason})"
+            )
+        else:
+            commissioned = commissioning.run(
+                ref, ctrl, sim_state=sim_state, verbose=True
+            )
+            print(
+                f"[iccp commission] Done. commissioned_target_ma={commissioned:.3f} "
+                f"(see commissioning.json)"
+            )
     finally:
         ctrl.cleanup()
         if use_hw_gpio:
@@ -484,7 +577,7 @@ def main() -> int:
         return _cmd_diag(rest)
 
     if cmd == "clear-fault":
-        return _cmd_clear_fault()
+        return _cmd_clear_fault(rest)
 
     if cmd == "version":
         return _cmd_version()

@@ -103,11 +103,18 @@ I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
 # After selecting a mux downstream port, optional settle time before talking to INA219/ADS.
 # Non-zero reduces ``[Errno 5] Input/output error`` when switching TCA9548A → ADS1115 / INA219.
 I2C_MUX_POST_SELECT_DELAY_S: float = 0.0005
-# If any anode INA219 read fails in a tick, force 0% PWM on every non-FAULT channel (OPEN).
-# Prevents regulating Anode 1/2 while Anode 3/4 are blind — the usual cause of “anodes should be off
-# but total mA is still high” during I2C storms. Set False only if you intentionally regulate
-# partial buses (not recommended on a shared TCA9548A rig).
+# Bus-level I²C failure policy (see docs/iccp-requirements.md §4.3, Decision Q8).
+# When True, a **bus-level** INA219 read failure (OSError / errno 5 or equivalent — the
+# whole I²C bus is unhealthy) forces every non-FAULT channel to 0% PWM. Per-channel
+# transients that are not bus-level faults the offending channel only and leave siblings
+# regulating. The classification lives in control.py:_bus_level_read_failure().
 INA219_FAILSAFE_ALL_OFF: bool = True
+# errno values that classify an INA219 read failure as a bus-level event. Linux reports 5
+# (EIO) and 121 (EREMOTEIO) for SMBus NACKs on a stuck/shared bus.
+INA219_BUS_LEVEL_ERRNOS: tuple[int, ...] = (5, 121)
+# How many channels must fail with bus-level errors in a single tick before the whole
+# bank drops to 0% PWM. Default 2 avoids a single-INA219 wiring nack tripping the system.
+INA219_FAILSAFE_MIN_BUS_CHANNELS: int = 2
 
 # Dedicated INA219 for reference electrode.
 # On the SAME bus as anodes: address must not collide with INA219_ADDRESSES (e.g. 0x42,
@@ -350,6 +357,39 @@ COMMISSIONING_OC_CONFIRM_TIMEOUT_S = 1.5
 COMMISSIONING_PWM_HZ: int | None = None
 # Sim-only open-circuit baseline (mV-like); name is legacy — field Ag/AgCl uses the same shift math.
 SIM_NATIVE_ZINC_MV = 200.0
+
+# --- Spec v2: shift-based FSM, native re-capture, fault taxonomy (docs/iccp-requirements.md) ---
+# Interim defaults per Decisions log Q3 — revisit after first bench soak where noted.
+# Native baseline capture gates (§3.2, §8.1 Phase 1).
+T_RELAX: float = 120.0                      # s relax before native samples [interim]
+NATIVE_SAMPLE_INTERVAL_S: float = 1.0      # s between samples during median capture
+NATIVE_CAPTURE_RETRIES: int = 3             # §3.3 — before REFERENCE_INVALID
+I_REST_MA: float = 0.3                      # |I| ceiling for “at rest” (stricter than legacy 1.0 mA)
+T_REST_CONFIRM: float = 3.0                 # s the rest gate must hold
+NATIVE_STABILITY_MV: float = 3.0            # rolling std-dev ceiling (W_REF window) [interim]
+W_REF: float = 10.0                        # s — stability window (spec §3.2)
+NATIVE_SLOPE_MV_PER_MIN: float = 2.0
+NATIVE_RECAPTURE_S: float = 24 * 3600.0     # daily scheduled re-capture (§3.4)
+NATIVE_DRIFT_TRIGGER_MV: float = 50.0      # drift warning only (§3.4)
+NATIVE_BENCH_TOL_MV: float = 5.0            # DMM vs controller [interim]
+# FSM timing (§2, §4.4, §6). Per-channel / system timers in control.py.
+T_POL_STABLE: float = 300.0                 # s at shift ≥ target before Protected [interim]
+T_SLIP: float = 60.0                        # s below hysteresis before leaving Protected
+T_POLARIZE_MAX: float = 1800.0              # s (30 min) in Polarizing → CANNOT_POLARIZE [interim]
+T_PROBE_MAX: float = 30.0
+T_OVER_EXIT: float = 30.0
+T_OVER_FAULT: float = 60.0
+T_SYSTEM_STABLE: float = 60.0               # §2.2 — all channels Protected this long → all_protected
+# Hysteresis (mV)
+HYST_PROT_EXIT_MV: float = 10.0
+HYST_OVER_EXIT_MV: float = 10.0
+HYST_OVER_FAULT_MV: float = 50.0
+# Polarize retry (§6.1 Q4)
+POLARIZE_RETRY_MAX: int = 3
+POLARIZE_RETRY_INTERVAL_S: float = T_POLARIZE_MAX  # wait between failed polarize windows
+# Per-channel clear-fault side channel (file or JSON line). Single file; content selects channel.
+# CLI `iccp clear-fault --channel N` writes {"channel": N, "ts": <unix>} here; Controller drains once.
+CLEAR_FAULT_CHANNEL_FILE = PROJECT_ROOT / "clear_fault_channel"
 
 # --- Simulator ---
 # Bench nominal bus (V); intentionally not tied to field supply (~4.85 V) — tune for your rig.

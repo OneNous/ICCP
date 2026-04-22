@@ -39,6 +39,38 @@ PATH_OPEN = "PATH_OPEN"
 PATH_WEAK = "PATH_WEAK"
 PATH_STRONG = "PATH_STRONG"
 
+# state_v2 labels (docs/iccp-requirements.md §2.2). Legacy ChannelState.status is mapped
+# from these where possible, but the spec FSM lives in ChannelState.state_v2 and is what
+# `latest.json.state_v2` / `all_protected` / `any_active` read from.
+STATE_V2_OFF = "Off"
+STATE_V2_PROBING = "Probing"
+STATE_V2_POLARIZING = "Polarizing"
+STATE_V2_PROTECTED = "Protected"
+STATE_V2_OVERPROTECTED = "Overprotected"
+STATE_V2_FAULT = "Fault"
+
+
+def _bus_level_read_failure(r: dict) -> bool:
+    """Classify an INA219 read failure as a bus-level event (I²C bus unhealthy).
+
+    Per docs/iccp-requirements.md §4.3 / Decision Q8, the `all_off` fail-safe should fire
+    only when the bus itself is flaky — not on a single-channel read glitch. Linux reports
+    errno 5 (EIO) / 121 (EREMOTEIO) for SMBus NACKs on the shared bus; those are the only
+    cases we escalate bus-wide. Non-ok reads without that errno (e.g. a one-off NACK with a
+    different errno, or a decode error) stay per-channel.
+    """
+    if r.get("ok"):
+        return False
+    err = str(r.get("error", ""))
+    errno_field = r.get("errno")
+    bus_errnos = tuple(getattr(cfg, "INA219_BUS_LEVEL_ERRNOS", (5, 121)))
+    if isinstance(errno_field, int) and errno_field in bus_errnos:
+        return True
+    for en in bus_errnos:
+        if f"Errno {en}" in err or f"[Errno {en}]" in err:
+            return True
+    return False
+
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -282,6 +314,20 @@ class ChannelState:
         self.last_state_recheck_monotonic: float = time.monotonic()
         wlen = max(4, int(getattr(cfg, "IMPEDANCE_MEDIAN_WINDOW", 32)))
         self._z_window: deque[float] = deque(maxlen=wlen)
+        # --- Shift-based FSM (docs/iccp-requirements.md §2.2, §6) ---
+        self.state_v2: str = STATE_V2_OFF
+        self.state_v2_enter_monotonic: float = time.monotonic()
+        self.shift_above_target_since: float | None = None  # for T_POL_STABLE
+        self.shift_below_target_since: float | None = None  # for T_SLIP (exit Protected)
+        self.shift_over_max_since: float | None = None      # for T_OVER_FAULT
+        self.shift_under_max_since: float | None = None     # for T_OVER_EXIT
+        self.polarizing_since: float | None = None          # for T_POLARIZE_MAX
+        self.probing_since: float | None = None             # for T_PROBE_MAX
+        self.polarize_retry_count: int = 0
+        self.polarize_retry_next_unix: float | None = None
+        self.polarize_backoff_until_mono: float | None = None
+        self.fault_reason: str = ""  # e.g. CANNOT_POLARIZE, OVERPROTECTION, REFERENCE_INVALID
+        self.last_shift_mv: float | None = None
 
 
 class Controller:
@@ -298,6 +344,10 @@ class Controller:
         self._fault_latched = False
         self._faults: list[str] = []
         self._thermal_pause: bool = False
+        # System-level all_protected (§2.2): all channels Protected for T_SYSTEM_STABLE.
+        self._boot_wall_time: float = time.time()
+        self._all_protected_streak_mono: float | None = None
+        self._first_all_protected_wall: float | None = None
 
     def set_thermal_pause(self, active: bool) -> None:
         """When True, `update()` keeps all PWM off but still evaluates read errors and FAULT recovery."""
@@ -355,9 +405,17 @@ class Controller:
             bus_v=float(r.get("bus_v", 0) or 0),
         )
 
-    def update(self, readings: dict[int, dict]) -> tuple[list[str], bool]:
+    def update(
+        self,
+        readings: dict[int, dict],
+        *,
+        shift_mv: float | None = None,
+        ref_valid: bool = True,
+        ref_valid_reason: str = "",
+    ) -> tuple[list[str], bool]:
         self._faults = []
         self._check_clear_fault()
+        self._check_clear_fault_channel()
 
         if self._thermal_pause:
             self.all_outputs_off()
@@ -409,10 +467,19 @@ class Controller:
                 for ch in range(cfg.NUM_CHANNELS)
             )
         )
+        # Bus-level classification (docs/iccp-requirements.md §4.3 / Q8): aggregate fail-safe
+        # fires only when ≥ INA219_FAILSAFE_MIN_BUS_CHANNELS channels report errno-5/121
+        # style failures in the same tick. Below the threshold — e.g. one flaky INA219 —
+        # the channel falls through to the per-channel branch and siblings keep regulating.
+        bus_level_failed = [
+            ch for ch in failed_reads if _bus_level_read_failure(readings.get(ch, {}))
+        ]
+        bus_threshold = max(1, int(getattr(cfg, "INA219_FAILSAFE_MIN_BUS_CHANNELS", 2)))
         if (
             failed_reads
             and bool(getattr(cfg, "INA219_FAILSAFE_ALL_OFF", True))
             and not suppress_read_faults
+            and len(bus_level_failed) >= bus_threshold
         ):
             # Do not regulate a subset of channels while others are unreadable (unsafe).
             self._pwm.all_off()
@@ -762,11 +829,293 @@ class Controller:
         except OSError:
             return
         for state in self._states:
-            if state.status == ChannelState.FAULT:
-                state.status = ChannelState.OPEN
-                state.latch_message = ""
-                state.fault_retry_count = 0  # manual clear resets retry count
-                state.overcurrent_streak = 0
-                state.fault_time = 0.0
+            self._clear_channel_fault(state)
         self._fault_latched = False
-        print("[control] Fault latch cleared.")
+
+    def _check_clear_fault_channel(self) -> None:
+        """Drain per-channel clear side channel (docs/iccp-requirements.md §6.2).
+
+        File is written atomically as JSON: ``{"channel": N, "ts": <unix>}`` (CLI
+        `iccp clear-fault --channel N`). Plain-text ``N`` is also accepted for simplicity.
+        Consumed once per call — the file is deleted whether parsing succeeds or not so a
+        malformed payload cannot wedge the loop. N is 0-based (matches `anode_label`).
+        """
+        path = getattr(cfg, "CLEAR_FAULT_CHANNEL_FILE", None)
+        if path is None or not path.exists():
+            return
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            raw = ""
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        ch: int | None = None
+        if raw:
+            try:
+                import json
+
+                data = json.loads(raw)
+                if isinstance(data, dict) and "channel" in data:
+                    ch = int(data["channel"])
+                elif isinstance(data, int):
+                    ch = int(data)
+            except (ValueError, TypeError, Exception):
+                try:
+                    ch = int(raw)
+                except ValueError:
+                    ch = None
+        if ch is None or not (0 <= ch < cfg.NUM_CHANNELS):
+            return
+        self._clear_channel_fault(self._states[ch])
+        self._fault_latched = any(
+            s.status == ChannelState.FAULT for s in self._states
+        )
+
+    def _clear_channel_fault(self, state: ChannelState) -> None:
+        if state.status != ChannelState.FAULT and state.state_v2 != STATE_V2_FAULT:
+            return
+        state.status = ChannelState.OPEN
+        state.latch_message = ""
+        state.fault_retry_count = 0
+        state.overcurrent_streak = 0
+        state.fault_time = 0.0
+        state.fault_reason = ""
+        state.polarize_retry_count = 0
+        state.polarize_retry_next_unix = None
+        state.polarize_backoff_until_mono = None
+        state.state_v2 = STATE_V2_OFF
+        state.state_v2_enter_monotonic = time.monotonic()
+        state.shift_above_target_since = None
+        state.shift_below_target_since = None
+        state.shift_over_max_since = None
+        state.shift_under_max_since = None
+        state.polarizing_since = None
+        state.probing_since = None
+
+    # ---- Shift-based FSM (docs/iccp-requirements.md §2.2 / §5 / §6) ------------------
+
+    def advance_shift_fsm(
+        self,
+        readings: dict[int, dict],
+        *,
+        shift_mv: float | None,
+        ref_valid: bool,
+        ref_valid_reason: str = "",
+    ) -> None:
+        """Advance `state_v2` for every channel. Call once per tick AFTER `update()`.
+
+        This runs alongside the legacy path FSM: it does not touch PWM duty except in
+        Overprotected (where it ramps duty down to reduce polarization) and when it
+        latches CANNOT_POLARIZE / OVERPROTECTION faults (which zero duty via
+        :meth:`_latch_fault`). All timers are per-channel and driven by `time.monotonic`.
+        """
+        now = time.monotonic()
+        target = float(getattr(cfg, "TARGET_SHIFT_MV", 100))
+        over_max = float(getattr(cfg, "MAX_SHIFT_MV", 200))
+        hy_exit = float(getattr(cfg, "HYST_PROT_EXIT_MV", 10.0))
+        hy_over_exit = float(getattr(cfg, "HYST_OVER_EXIT_MV", 10.0))
+        hy_over_fault = float(getattr(cfg, "HYST_OVER_FAULT_MV", 50.0))
+        t_pol_stable = float(getattr(cfg, "T_POL_STABLE", 30.0))
+        t_slip = float(getattr(cfg, "T_SLIP", 10.0))
+        t_pol_max = float(getattr(cfg, "T_POLARIZE_MAX", 600.0))
+        t_over_fault = float(getattr(cfg, "T_OVER_FAULT", 60.0))
+        t_over_exit = float(getattr(cfg, "T_OVER_EXIT", 15.0))
+        retry_max = int(getattr(cfg, "POLARIZE_RETRY_MAX", 2))
+        retry_interval = float(getattr(cfg, "POLARIZE_RETRY_INTERVAL_S", t_pol_max))
+
+        def _set_state(state: ChannelState, new: str) -> None:
+            if state.state_v2 != new:
+                state.state_v2 = new
+                state.state_v2_enter_monotonic = now
+                if new != STATE_V2_POLARIZING:
+                    state.polarizing_since = None
+                if new != STATE_V2_PROBING:
+                    state.probing_since = None
+
+        for ch, state in enumerate(self._states):
+            r = readings.get(ch, {})
+            state.last_shift_mv = shift_mv
+
+            # Legacy FAULT already holds PWM at 0%; mirror into state_v2 and skip timers.
+            if state.status == ChannelState.FAULT:
+                _set_state(state, STATE_V2_FAULT)
+                state.shift_above_target_since = None
+                state.shift_below_target_since = None
+                state.shift_over_max_since = None
+                state.shift_under_max_since = None
+                continue
+
+            # Reference invalid takes precedence over shift — we cannot prove protection.
+            if not ref_valid and state.state_v2 != STATE_V2_OFF:
+                # Don't hard-latch: switch to Fault with reason for visibility (§6.1).
+                if state.state_v2 != STATE_V2_FAULT:
+                    state.fault_reason = f"REFERENCE_INVALID:{ref_valid_reason or 'unknown'}"
+                    _set_state(state, STATE_V2_FAULT)
+                continue
+
+            # Measurable current decides Probing → Polarizing / Off transitions.
+            r_ok = bool(r.get("ok"))
+            i_ma = float(r.get("current", 0.0) or 0.0) if r_ok else 0.0
+            duty = self._pwm.duty(ch)
+            probe_ma = float(getattr(cfg, "CHANNEL_DRY_MA", 0.1))
+            driving = duty >= 0.06 and r_ok
+
+            # --- Transitions per state_v2 ---
+            if state.state_v2 == STATE_V2_OFF:
+                if driving and i_ma > probe_ma:
+                    state.probing_since = now
+                    _set_state(state, STATE_V2_PROBING)
+                continue
+
+            if state.state_v2 == STATE_V2_PROBING:
+                if not driving:
+                    _set_state(state, STATE_V2_OFF)
+                    continue
+                # CANNOT_POLARIZE retry: wait POLARIZE_RETRY_INTERVAL_S after a failed window (§6.1 Q4).
+                bo = state.polarize_backoff_until_mono
+                if bo is not None and now < bo:
+                    continue
+                if bo is not None and now >= bo:
+                    state.polarize_backoff_until_mono = None
+                state.probing_since = state.probing_since or now
+                # Move to Polarizing as soon as we have a stable non-zero current and
+                # shift is measurable (non-None).
+                if shift_mv is not None and i_ma > probe_ma:
+                    state.polarizing_since = now
+                    _set_state(state, STATE_V2_POLARIZING)
+                continue
+
+            if state.state_v2 == STATE_V2_POLARIZING:
+                if not driving:
+                    _set_state(state, STATE_V2_OFF)
+                    continue
+                if shift_mv is None:
+                    continue
+                if shift_mv >= target:
+                    if state.shift_above_target_since is None:
+                        state.shift_above_target_since = now
+                    if now - state.shift_above_target_since >= t_pol_stable:
+                        state.polarize_retry_count = 0
+                        state.polarize_retry_next_unix = None
+                        _set_state(state, STATE_V2_PROTECTED)
+                    continue
+                else:
+                    state.shift_above_target_since = None
+                pol_t0 = state.polarizing_since or state.state_v2_enter_monotonic
+                if now - pol_t0 >= t_pol_max:
+                    # Exceeded polarize window without reaching target → CANNOT_POLARIZE.
+                    state.polarize_retry_count += 1
+                    if state.polarize_retry_count > retry_max:
+                        state.fault_reason = "CANNOT_POLARIZE:retry_exhausted"
+                        _latch_msg = (
+                            f"{anode_hw_label(ch)} CANNOT_POLARIZE: "
+                            f"shift {shift_mv:.1f} mV < {target:.0f} mV after "
+                            f"{t_pol_max:.0f}s × {retry_max} retries"
+                        )
+                        self._latch_fault(ch, _latch_msg)
+                        _set_state(state, STATE_V2_FAULT)
+                    else:
+                        state.polarize_backoff_until_mono = now + retry_interval
+                        state.polarize_retry_next_unix = None
+                        state.polarizing_since = None
+                        state.shift_above_target_since = None
+                        _set_state(state, STATE_V2_PROBING)
+                continue
+
+            if state.state_v2 == STATE_V2_PROTECTED:
+                if not driving:
+                    _set_state(state, STATE_V2_OFF)
+                    continue
+                if shift_mv is None:
+                    continue
+                if shift_mv > over_max:
+                    state.shift_over_max_since = state.shift_over_max_since or now
+                    state.shift_under_max_since = None
+                    _set_state(state, STATE_V2_OVERPROTECTED)
+                    continue
+                if shift_mv < target - hy_exit:
+                    state.shift_below_target_since = state.shift_below_target_since or now
+                    if now - state.shift_below_target_since >= t_slip:
+                        state.polarizing_since = now
+                        state.shift_above_target_since = None
+                        _set_state(state, STATE_V2_POLARIZING)
+                else:
+                    state.shift_below_target_since = None
+                continue
+
+            if state.state_v2 == STATE_V2_OVERPROTECTED:
+                if shift_mv is None:
+                    continue
+                # Potential-control duty ramp down (§5.3): reduce duty a bit each tick
+                # while overprotected. Keep it gentle — PROTECTING step is already small.
+                new_duty = max(0.0, duty - pwm_ramp_step(ch, regulating=False, increasing=False))
+                self._pwm.set_duty(ch, new_duty)
+                # OVERPROTECTION fault when shift > over_max + HYST_OVER_FAULT for T_OVER_FAULT.
+                if shift_mv > over_max + hy_over_fault:
+                    state.shift_over_max_since = state.shift_over_max_since or now
+                    if now - state.shift_over_max_since >= t_over_fault:
+                        state.fault_reason = "OVERPROTECTION:shift_exceeds_max_band"
+                        msg = (
+                            f"{anode_hw_label(ch)} OVERPROTECTION: "
+                            f"shift {shift_mv:.1f} mV > {over_max + hy_over_fault:.0f} mV "
+                            f"sustained {t_over_fault:.0f}s"
+                        )
+                        self._latch_fault(ch, msg)
+                        _set_state(state, STATE_V2_FAULT)
+                    continue
+                # Exit when shift drops back under MAX − HYST_OVER_EXIT for T_OVER_EXIT.
+                if shift_mv < over_max - hy_over_exit:
+                    state.shift_under_max_since = state.shift_under_max_since or now
+                    if now - state.shift_under_max_since >= t_over_exit:
+                        state.shift_over_max_since = None
+                        state.shift_under_max_since = None
+                        state.shift_above_target_since = now  # already above target by def
+                        _set_state(state, STATE_V2_PROTECTED)
+                else:
+                    state.shift_under_max_since = None
+                continue
+
+            if state.state_v2 == STATE_V2_FAULT:
+                # Retry window handled by legacy _maybe_auto_clear_fault + polarize retry
+                # scheduling (main loop consumes polarize_retry_next_unix).
+                continue
+
+    def t_in_state_v2_s(self, ch: int) -> float:
+        s = self._states[ch]
+        return max(0.0, time.monotonic() - s.state_v2_enter_monotonic)
+
+    def all_protected(self) -> bool:
+        """True when every channel is `Protected` for T_SYSTEM_STABLE continuously (§2.2)."""
+        tss = float(getattr(cfg, "T_SYSTEM_STABLE", 60.0))
+        now = time.monotonic()
+        if not self._states:
+            return False
+        if not all(s.state_v2 == STATE_V2_PROTECTED for s in self._states):
+            self._all_protected_streak_mono = None
+            return False
+        if self._all_protected_streak_mono is None:
+            self._all_protected_streak_mono = now
+        if now - self._all_protected_streak_mono < tss:
+            return False
+        if self._first_all_protected_wall is None:
+            self._first_all_protected_wall = time.time()
+        return True
+
+    def t_to_system_protected_s(self) -> float | None:
+        """Wall seconds from boot until `all_protected` first became True; None if never."""
+        if self._first_all_protected_wall is None:
+            return None
+        return max(0.0, self._first_all_protected_wall - self._boot_wall_time)
+
+    def any_active(self) -> bool:
+        """True when any channel is outside `Off` and `Fault` — used by legacy `wet`."""
+        active = {STATE_V2_PROBING, STATE_V2_POLARIZING, STATE_V2_PROTECTED, STATE_V2_OVERPROTECTED}
+        return any(s.state_v2 in active for s in self._states)
+
+    def channel_state_v2(self) -> dict[int, str]:
+        return {i: s.state_v2 for i, s in enumerate(self._states)}
+
+    def channel_fault_reasons(self) -> dict[int, str]:
+        return {i: s.fault_reason for i, s in enumerate(self._states)}

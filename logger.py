@@ -525,6 +525,18 @@ class DataLogger:
         diag_extra: dict[str, object] | None = None,
         runtime_alerts: list[str] | None = None,
         channel_targets: dict[int, float] | None = None,
+        # --- Spec v2 dual-write (docs/iccp-requirements.md §9.1, §9.2) ---
+        state_v2: dict[int, str] | None = None,
+        channel_fault_reasons: dict[int, str] | None = None,
+        channel_t_in_state_s: dict[int, float] | None = None,
+        all_protected: bool | None = None,
+        any_active: bool | None = None,
+        native_mv: float | None = None,
+        native_age_s: float | None = None,
+        next_native_recapture_s: float | None = None,
+        ref_valid: bool | None = None,
+        ref_valid_reason: str | None = None,
+        t_to_system_protected_s: float | None = None,
     ) -> dict[str, object]:
         wet = any_wet
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -628,6 +640,15 @@ class DataLogger:
                 if raw_err is not None:
                     sensor_err = str(raw_err).strip()[:400]
 
+            # Spec v2 per-channel fields (docs/iccp-requirements.md §9.1). These are
+            # dual-written — legacy `state`, `ma`, `duty`, `target_ma` are kept as-is so
+            # the TUI / dashboard keep working until their cutover. New keys use the
+            # spec names: `state_v2`, `shift_mv`, `native_mv`, `ref_mv`, `duty_pct`,
+            # `shunt_i_ma`, `target_i_ma`, `t_in_state_s`, `fault`, `fault_reason`.
+            state_v2_for_ch = (state_v2 or {}).get(i, "Off")
+            fault_reason_for_ch = (channel_fault_reasons or {}).get(i, "")
+            t_in_state_for_ch = (channel_t_in_state_s or {}).get(i)
+            shift_mv_for_ch = ref_shift_mv  # §3.1 shared reference / shared shift
             channels[i] = {
                 "state": state,
                 "ma": ma,
@@ -650,6 +671,21 @@ class DataLogger:
                 "dV_dI_ohm": dvd_i_ohm,
                 "efficiency_ma_per_pct": eff_ma_pct,
                 "surface_hint": surface,
+                # spec v2 duplicates — do not remove legacy keys above.
+                "state_v2": state_v2_for_ch,
+                "shift_mv": shift_mv_for_ch,
+                "native_mv": native_mv,
+                "ref_mv": ref_raw_mv,
+                "duty_pct": duty,
+                "shunt_i_ma": ma,
+                "target_i_ma": round(tgt_for_ch, 4),
+                "t_in_state_s": (
+                    round(float(t_in_state_for_ch), 2)
+                    if t_in_state_for_ch is not None
+                    else None
+                ),
+                "fault": state_v2_for_ch == "Fault",
+                "fault_reason": fault_reason_for_ch,
             }
 
         self._update_wet_sessions(ts_unix, channels, dt_s)
@@ -776,6 +812,27 @@ class DataLogger:
         )
         payload["ref_depol_rate_mv_s"] = ref_depol_rate_mv_s
         payload["temp_f"] = temp_f
+        # Spec v2 system fields (docs/iccp-requirements.md §9.2). Dual-written alongside
+        # `wet` / `wet_channels`, which remain legacy and still derive from the path FSM.
+        payload["all_protected"] = bool(all_protected) if all_protected is not None else False
+        payload["any_active"] = bool(any_active) if any_active is not None else wet
+        payload["native_mv"] = native_mv
+        payload["native_age_s"] = (
+            round(float(native_age_s), 2) if native_age_s is not None else None
+        )
+        payload["next_native_recapture_s"] = (
+            round(float(next_native_recapture_s), 2)
+            if next_native_recapture_s is not None
+            else None
+        )
+        payload["ref_valid"] = bool(ref_valid) if ref_valid is not None else True
+        if ref_valid_reason:
+            payload["ref_valid_reason"] = str(ref_valid_reason)
+        payload["t_to_system_protected_s"] = (
+            round(float(t_to_system_protected_s), 2)
+            if t_to_system_protected_s is not None
+            else None
+        )
         if diag_extra:
             payload["diag"] = diag_extra
         _atomic_write_same_dir(self._latest_path, json.dumps(payload))
