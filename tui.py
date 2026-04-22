@@ -4,13 +4,14 @@ CoilShield ICCP — Textual terminal control center (SSH-friendly).
 
 Launch (after ``pip install -e .`` from repo root):
     iccp tui
-    coilshield-tui
-    python3 tui.py
 
 Live feed: ``latest.json`` (same as web dashboard). Trends: SQLite ``readings``.
-Match ``COILSHIELD_LOG_DIR`` / ``--log-dir`` to ``main.py`` / systemd.
+Match ``COILSHIELD_LOG_DIR`` / ``--log-dir`` to the controller (``iccp start``).
 
 Tabs: Live | Diagnostics | Commands | Trends. Keys: 1–4 tabs, ? help, q quit.
+
+Direct execution (``python3 tui.py``) is not supported — it prints a redirect and
+exits. The module stays importable so ``iccp tui`` can drive it.
 """
 
 from __future__ import annotations
@@ -66,7 +67,7 @@ CoilShield terminal control center
 
 LIVE DATA
   This app reads ONE file: latest.json under LOG_DIR (see KPI strip for path).
-  The controller (main.py / iccp -start) must write the SAME directory.
+  The controller (`iccp start`, foreground or systemd) must write the SAME directory.
   If numbers freeze: run `iccp live` and compare paths to `systemctl cat iccp`.
 
 TABS
@@ -86,8 +87,8 @@ NOT FROM THIS UI
 
 def read_latest() -> dict:
     """
-    Load latest.json with explicit error kinds (no misleading 'main.py' copy
-    when the file exists but is wrong or corrupt).
+    Load latest.json with explicit error kinds (no misleading 'controller not running'
+    copy when the file exists but is wrong or corrupt).
     """
     path = LATEST_PATH
     if not path.is_file():
@@ -325,7 +326,7 @@ def build_kpi_strip(data: dict) -> tuple[str, str, str, str, str]:
     elif _disk_feed_stale(data) or _json_ts_stale(data):
         banner = (
             "[bold yellow]Stale telemetry[/] — compare path above to systemd "
-            "`Environment=COILSHIELD_LOG_DIR` for main.py."
+            "`Environment=COILSHIELD_LOG_DIR` on the iccp unit."
         )
 
     if data.get("_tui_read_status"):
@@ -444,7 +445,12 @@ def clear_fault_file() -> tuple[bool, str]:
 
 
 def run_allowlisted_probe() -> tuple[int, str]:
-    cmd = [sys.executable, str(PROJECT_ROOT / "hw_probe.py"), "--skip-pwm"]
+    cmd = [
+        sys.executable,
+        "-c",
+        "import sys; sys.argv = ['hw_probe', '--skip-pwm']; "
+        "import hw_probe; raise SystemExit(hw_probe.main())",
+    ]
     try:
         proc = subprocess.run(
             cmd,
@@ -552,7 +558,7 @@ class ProbeModal(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         yield Vertical(
-            Static("[bold]Hardware probe[/]  [dim]hw_probe.py --skip-pwm[/]", id="ptitle"),
+            Static("[bold]Hardware probe[/]  [dim]iccp probe --skip-pwm[/]", id="ptitle"),
             RichLog(id="probe_body", wrap=True, highlight=False, markup=False),
             Static("[dim]q Esc — close[/]", id="phint"),
             id="pcol",
@@ -560,7 +566,7 @@ class ProbeModal(ModalScreen[None]):
 
     async def on_mount(self) -> None:
         log = self.query_one("#probe_body", RichLog)
-        log.write("Running (allowlisted): python3 hw_probe.py --skip-pwm\n\n")
+        log.write("Running (allowlisted): iccp probe --skip-pwm\n\n")
         code, out = await asyncio.to_thread(run_allowlisted_probe)
         log.write(out)
 
@@ -737,7 +743,7 @@ class CoilShieldTUI(App[None]):
         if raw is None:
             log.write(
                 "No diagnostic_snapshot.json yet.\n"
-                "Use Request diagnostic or key d (main.py must be running).\n"
+                "Use Request diagnostic or key d (controller must be running).\n"
             )
         else:
             try:
@@ -822,7 +828,7 @@ class CoilShieldTUI(App[None]):
             if body is None:
                 body = (
                     "Timeout (45s): no new diagnostic_snapshot.json.\n"
-                    "Is main.py running? (Snapshot is rate-limited.)\n"
+                    "Is the controller running? (Snapshot is rate-limited.)\n"
                     f"Expected: {_diagnostic_snapshot_path()}"
                 )
 
@@ -929,5 +935,17 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+_DIRECT_EXEC_REDIRECT = (
+    "Direct execution is not supported. Use the iccp CLI:\n"
+    "  iccp start        # was: python3 main.py\n"
+    "  iccp tui          # was: python3 tui.py\n"
+    "  iccp probe        # was: python3 hw_probe.py\n"
+    "  iccp dashboard    # was: python3 dashboard.py\n"
+    "  iccp commission   # was: ad-hoc commissioning\n"
+    "Install once with: pip install -e . (from repo root)\n"
+)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.stderr.write(_DIRECT_EXEC_REDIRECT)
+    raise SystemExit(2)

@@ -330,7 +330,7 @@ def _verify_phase1_drive_off(
                 "Native measurement aborted — channels not at rest. "
                 "Check for leakage current before measuring baseline. "
                 + msg
-                + " If systemd or another main.py/iccp still runs, stop it first — only one "
+                + " If systemd or another `iccp start` still runs, stop it first — only one "
                 "process may drive PWM; see docs/mosfet-off-verification.md. Otherwise raise "
                 "COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA (and COMMISSIONING_OC_CONFIRM_I_MA) only "
                 "if you accept a weaker idle-current gate."

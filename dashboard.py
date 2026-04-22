@@ -2,18 +2,23 @@
 """
 CoilShield ICCP — web dashboard.
 
-Run alongside main.py:
-    python3 dashboard.py
+Run alongside the controller (``iccp start``):
+    iccp dashboard
 
 Access from any device on the same network:
     http://<pi-ip>:8080
 
-Reads from (same ``config.settings`` as ``main.py``). Telemetry directory:
+Reads from the same ``config.settings`` as the controller. Telemetry directory:
 
 - **Environment:** ``COILSHIELD_LOG_DIR`` or ``ICCP_LOG_DIR`` (absolute path recommended).
-- **CLI (before config import):** ``python3 dashboard.py --log-dir /abs/path/to/logs --host 0.0.0.0``
+- **CLI (before config import):** ``iccp dashboard --log-dir /abs/path/to/logs --host 0.0.0.0``
 
-If the dashboard shows **stale** ``latest.json`` while ``main.py`` is running, the controller is almost certainly writing to a **different** log directory—match env/``--log-dir`` to ``main.py``.
+If the dashboard shows **stale** ``latest.json`` while the controller is running, the
+controller is almost certainly writing to a **different** log directory — match
+env/``--log-dir`` to the controller.
+
+Direct execution (``python3 dashboard.py``) is not supported — it prints a redirect and
+exits. The module stays importable so ``iccp dashboard`` can drive it.
 
 HTTP: /api/live (Cache-Control: no-store; adds feed_age_s, feed_stale_threshold_s, target_ma_avg_live), /api/diagnostic, /api/history (avg_target_ma for mA charts), /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
 
@@ -104,7 +109,7 @@ def _latest() -> dict:
     try:
         return json.loads(LATEST_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return {"error": "no data yet — is main.py running?"}
+        return {"error": "no data yet — is the controller (iccp start) running?"}
 
 
 def _live_envelope() -> dict:
@@ -118,7 +123,7 @@ def _live_envelope() -> dict:
         data["feed_file_mtime_unix"] = None
         data["feed_age_s"] = None
     data["sample_interval_s"] = float(cfg.SAMPLE_INTERVAL_S)
-    # If main.py stops, latest.json stops updating; UI treats age above this as stale.
+    # If the controller stops, latest.json stops updating; UI treats age above this as stale.
     data["feed_stale_threshold_s"] = max(3.0, 3.0 * float(cfg.SAMPLE_INTERVAL_S))
     data["target_ma"] = float(cfg.TARGET_MA)
     # Mean of per-channel effective targets from the snapshot (matches controller setpoints).
@@ -1011,7 +1016,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <details>
           <summary><strong>Feed &amp; accuracy</strong> — how this UI relates to hardware</summary>
           <ul style="margin:8px 0 0 18px;font-size:13px;line-height:1.45;color:var(--csp-text-muted)">
-            <li><strong>Same files as the controller:</strong> match <code>COILSHIELD_LOG_DIR</code> / <code>ICCP_LOG_DIR</code> (or <code>dashboard.py --log-dir</code>) with <code>main.py</code>. Paths appear under Telemetry files.</li>
+            <li><strong>Same files as the controller:</strong> match <code>COILSHIELD_LOG_DIR</code> / <code>ICCP_LOG_DIR</code> (or <code>iccp dashboard --log-dir</code>) with <code>iccp start</code>. Paths appear under Telemetry files.</li>
             <li><strong>Stale feed:</strong> if <code>latest.json</code> stops updating, numbers freeze; age vs <code>feed_stale_threshold_s</code> flags stale. If <code>log.record()</code> throws, <code>recovery_touch_latest</code> still refreshes timestamps and merges a <code>tick_writer_error</code> / system alert.</li>
             <li><strong>Proxies (not lab potentials):</strong> cell voltage ≈ bus×duty%; impedance ≈ bus/I; power ≈ bus×I — see README and <code>docs/iccp-vs-coilshield.md</code>.</li>
             <li><strong>PROTECTING vs “wet current”:</strong> the overview flag is true when any channel FSM is PROTECTING, not merely shunt current above a wet threshold.</li>
@@ -1518,7 +1523,7 @@ async function fetchLive() {
         (stale ? ' <span class="stale">(controller may be stopped)</span>' : '');
       document.getElementById('kpi-feed-age').textContent = age.toFixed(2) + 's';
       document.getElementById('kpi-feed-cap').textContent =
-        stale ? 'Stale — check main.py' : 'OK — within threshold';
+        stale ? 'Stale — check iccp controller' : 'OK — within threshold';
     } else {
       document.getElementById('health-feed').textContent = '—';
       document.getElementById('kpi-feed-age').textContent = '—';
@@ -1551,7 +1556,7 @@ async function fetchLive() {
       hSql.textContent = tp.sqlite_db || '—';
       hMeta.textContent =
         'LOG_DIR from ' + (tp.log_dir_source || '—') +
-        '. Start main.py with the same COILSHIELD_LOG_DIR/ICCP_LOG_DIR and the same Python package checkout so paths match.';
+        '. Start `iccp start` with the same COILSHIELD_LOG_DIR/ICCP_LOG_DIR and the same Python package checkout so paths match.';
     }
 
     const tsExtra = (d.ts_unix != null && d.ts_unix !== '')
@@ -1639,9 +1644,9 @@ async function fetchLive() {
         alertStale.innerHTML =
           '<strong>Live feed is stale</strong> — <code>latest.json</code> has not been updated in ' +
           '<strong>' + age.toFixed(0) + 's</strong>. The numbers below are from the last successful write, not real time. ' +
-          'Start <code>main.py</code> on this host (or fix systemd) and use the <strong>same</strong> telemetry directory as this dashboard. ' +
+          'Start <code>iccp start</code> on this host (or fix systemd) and use the <strong>same</strong> telemetry directory as this dashboard. ' +
           (p ? 'This instance reads: <code>' + p + '</code>' : '') +
-          '<br><span style="font-size:12px;opacity:.95">Tip: <code>export COILSHIELD_LOG_DIR=/abs/path</code> for both processes, or <code>python3 dashboard.py --log-dir /abs/path/logs ...</code></span>';
+          '<br><span style="font-size:12px;opacity:.95">Tip: <code>export COILSHIELD_LOG_DIR=/abs/path</code> for both processes, or <code>iccp dashboard --log-dir /abs/path/logs ...</code></span>';
         anyAlert = true;
       } else {
         alertStale.style.display = 'none';
@@ -1985,12 +1990,24 @@ def main() -> None:
     _warn_sqlite_lag_support()
     _tp = cfg.resolved_telemetry_paths()
     print(f"CoilShield dashboard: http://127.0.0.1:{args.port} (bind {args.host}:{args.port})")
-    print(f"Telemetry paths (must match main.py / iccp -start):")
+    print("Telemetry paths (must match `iccp start`):")
     print(f"  latest.json ← {_tp['latest_json']}")
     print(f"  SQLite      ← {_tp['sqlite_db']}")
     print(f"  LOG_DIR={_tp['log_dir']} (source: {_tp['log_dir_source']})")
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
 
 
+_DIRECT_EXEC_REDIRECT = (
+    "Direct execution is not supported. Use the iccp CLI:\n"
+    "  iccp start        # was: python3 main.py\n"
+    "  iccp tui          # was: python3 tui.py\n"
+    "  iccp probe        # was: python3 hw_probe.py\n"
+    "  iccp dashboard    # was: python3 dashboard.py\n"
+    "  iccp commission   # was: ad-hoc commissioning\n"
+    "Install once with: pip install -e . (from repo root)\n"
+)
+
+
 if __name__ == "__main__":
-    main()
+    sys.stderr.write(_DIRECT_EXEC_REDIRECT)
+    raise SystemExit(2)

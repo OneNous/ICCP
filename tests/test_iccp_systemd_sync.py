@@ -42,7 +42,7 @@ def test_sync_commission_stops_not_restarts(
     ]
 
 
-@pytest.mark.parametrize("cmd", ("live", "tui", "diag", "watch", "monitor"))
+@pytest.mark.parametrize("cmd", ("live", "tui", "diag", "dashboard"))
 def test_sync_read_only_commands_daemon_reload_only(
     monkeypatch: pytest.MonkeyPatch, cmd: str
 ) -> None:
@@ -69,7 +69,7 @@ def test_sync_start_only_daemon_reload(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(iccp_cli.subprocess, "run", fake_run)
     monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
     monkeypatch.delenv("ICCP_SYSTEMD_SYNC", raising=False)
-    iccp_cli._sync_systemd_for_iccp_cli("-start")
+    iccp_cli._sync_systemd_for_iccp_cli("start")
     assert calls == [["sudo", "systemctl", "daemon-reload"]]
 
 

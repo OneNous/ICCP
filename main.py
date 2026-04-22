@@ -2,14 +2,23 @@
 """
 CoilShield ICCP controller — main loop.
 
-Operator CLI (after `pip install -e .` in venv): `iccp -start`, `iccp probe`, `iccp clear-fault`.
+This module is imported and driven by the ``iccp`` CLI. The operator surface is:
 
-Use `--sim` or `COILSHIELD_SIM=1` for the bench simulator; default is hardware (`COILSHIELD_SIM=0`).
-On a Raspberry Pi, `COILSHIELD_SIM=1` in the environment alone is ignored (hardware is used) unless you pass `--sim`.
-Clear fault latch: `touch <PROJECT_ROOT>/clear_fault` or `iccp clear-fault`
-Commissioning reset: `python3 -c "import commissioning; commissioning.reset()"`
-Telemetry directory: match the dashboard — ``--log-dir /abs/path/logs`` or ``COILSHIELD_LOG_DIR`` before import (see ``config/argv_log_dir.py``).
-Sim speed: SIM_TIME_SCALE=10 or `python3 main.py --sim --sim-time-scale 60`
+    iccp start [args ...]       run the controller (defaults: --real --verbose --skip-commission)
+    iccp commission [--sim]     run self-commissioning
+    iccp clear-fault            touch CLEAR_FAULT_FILE
+
+Use ``--sim`` or ``COILSHIELD_SIM=1`` for the bench simulator; default is hardware
+(``COILSHIELD_SIM=0``). On a Raspberry Pi, ``COILSHIELD_SIM=1`` in the environment alone
+is ignored (hardware is used) unless you pass ``--sim``.
+
+Commissioning reset: ``python3 -c "import commissioning; commissioning.reset()"``.
+Telemetry directory: match the dashboard — ``--log-dir /abs/path/logs`` or
+``COILSHIELD_LOG_DIR`` before import (see ``config/argv_log_dir.py``).
+Sim speed: ``SIM_TIME_SCALE=10`` or ``iccp start --sim --sim-time-scale 60``.
+
+Direct execution (``python3 main.py …``) is not supported — it prints a redirect and
+exits. Install with ``pip install -e .`` from the repo root and use ``iccp``.
 """
 
 from __future__ import annotations
@@ -118,7 +127,7 @@ def main() -> int:
         except ImportError:
             print(
                 "RPi.GPIO not available on this machine — run with "
-                "`python3 main.py --sim` (or set COILSHIELD_SIM=1) for bench mode.",
+                "`iccp start --sim` (or set COILSHIELD_SIM=1) for bench mode.",
                 file=sys.stderr,
             )
             return 1
@@ -128,5 +137,17 @@ def main() -> int:
     return run_iccp_forever(args)
 
 
+_DIRECT_EXEC_REDIRECT = (
+    "Direct execution is not supported. Use the iccp CLI:\n"
+    "  iccp start        # was: python3 main.py\n"
+    "  iccp tui          # was: python3 tui.py\n"
+    "  iccp probe        # was: python3 hw_probe.py\n"
+    "  iccp dashboard    # was: python3 dashboard.py\n"
+    "  iccp commission   # was: ad-hoc commissioning\n"
+    "Install once with: pip install -e . (from repo root)\n"
+)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.stderr.write(_DIRECT_EXEC_REDIRECT)
+    raise SystemExit(2)

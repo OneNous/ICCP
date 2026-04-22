@@ -12,11 +12,11 @@
 #   User=onenous
 #   Group=onenous
 #   WorkingDirectory=/home/onenous/coilshield
-#   ExecStart=/home/onenous/coilshield/.venv/bin/iccp -start
+#   ExecStart=/home/onenous/coilshield/.venv/bin/iccp start
 #
 # Strongly recommended: absolute telemetry dir so dashboard + controller always agree:
 #   Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
-# Or pass on ExecStart: .../iccp -start --log-dir /home/onenous/coilshield/logs
+# Or pass on ExecStart: .../iccp start --log-dir /home/onenous/coilshield/logs
 #
 # Gate pins: ExecStartPre drives anode MOSFET BCM lines OUTPUT LOW before iccp starts
 # (and again on every service restart). Edit both paths if your install dir differs.
@@ -34,7 +34,7 @@ User=onenous
 Group=onenous
 WorkingDirectory=/home/onenous/coilshield
 ExecStartPre=/home/onenous/coilshield/.venv/bin/python3 /home/onenous/coilshield/scripts/anode_gates_hold_low.py
-ExecStart=/home/onenous/coilshield/.venv/bin/iccp -start
+ExecStart=/home/onenous/coilshield/.venv/bin/iccp start
 Restart=on-failure
 RestartSec=10
 Environment=COILSHIELD_SIM=0

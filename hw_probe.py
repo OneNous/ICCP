@@ -12,7 +12,7 @@ Steps:
   4 — DS18B20 (1-Wire) if present
   5 — PWM GPIO walk (optional)
 
-Also callable via:  iccp probe [same flags]
+Launch (after ``pip install -e .`` from repo root):  iccp probe [flags]
 
 Useful flags:
   • --ads1115 [ADDR]   Quick ADS1115 AIN0..3 only (default ADDR 0x48); plan checklist.
@@ -21,9 +21,12 @@ Useful flags:
 
 Pi tips:
   • Prefer **no sudo** and add user to **i2c** group:  sudo usermod -aG i2c $USER
-    then log out/in.  Then:  python3 hw_probe.py
+    then log out/in.  Then:  iccp probe
   • If you must use sudo, use the **same** Python that has smbus2:
-      sudo $(which python3) hw_probe.py
+      sudo $(which iccp) probe
+
+Direct execution (``python3 hw_probe.py``) is not supported — it prints a redirect and
+exits. The module stays importable so ``iccp probe`` can drive it.
 """
 
 from __future__ import annotations
@@ -132,7 +135,7 @@ def _i2c_diagnostic(e: BaseException, bus: int) -> None:
     except OSError as e2:
         print(f"      {dev}: {e2}")
     print("      • Add user to i2c group:  sudo usermod -aG i2c $USER  (then re-login)")
-    print("      • Or use same interpreter as venv:  sudo $(which python3) hw_probe.py")
+    print("      • Or use the venv's iccp binary:  sudo $(which iccp) probe")
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +205,7 @@ def run_i2c_scan(bus: int) -> None:
             if mxa is not None and mxc is not None:
                 print(
                     f"    • If ADS1115 is on TCA9548A port {mxc}, it only appears after mux "
-                    "select — run STEP 3 or `python3 hw_probe.py --ads1115-only`."
+                    "select — run STEP 3 or `iccp probe --ads1115-only`."
                 )
 
     if extra:
@@ -519,7 +522,7 @@ def _hex_int(s: str) -> int:
 
 
 def print_summary() -> None:
-    section("Summary — confirm before iccp -start / main.py")
+    section("Summary — confirm before `iccp start`")
     print("""
   INA219: 4 addresses on scan; bus_v sensible; mA tracks load
   ADS1115: AIN0..3 read without error (reference on AIN0 typically)
@@ -615,5 +618,17 @@ def main() -> int:
     return 0
 
 
+_DIRECT_EXEC_REDIRECT = (
+    "Direct execution is not supported. Use the iccp CLI:\n"
+    "  iccp start        # was: python3 main.py\n"
+    "  iccp tui          # was: python3 tui.py\n"
+    "  iccp probe        # was: python3 hw_probe.py\n"
+    "  iccp dashboard    # was: python3 dashboard.py\n"
+    "  iccp commission   # was: ad-hoc commissioning\n"
+    "Install once with: pip install -e . (from repo root)\n"
+)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.stderr.write(_DIRECT_EXEC_REDIRECT)
+    sys.exit(2)

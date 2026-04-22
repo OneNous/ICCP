@@ -1,7 +1,7 @@
 # CoilShield — optional *standalone* early GPIO (only if you do NOT use ExecStartPre)
 #
 # Prefer: deploy/iccp.service already runs scripts/anode_gates_hold_low.py via
-# ExecStartPre= before every iccp -start (covers boot + restarts with one unit).
+# ExecStartPre= before every iccp start (covers boot + restarts with one unit).
 #
 # Use THIS separate unit when the Pi must hold gates LOW at boot even if the main
 # iccp.service is disabled (bench / headless bring-up).

@@ -6,7 +6,7 @@ GPIO lines used for the MOSFET gates are **not configured** until a Python proce
 
 1. **Hardware (required for safety):** **Gate-to-source** pull-downs (**tens of kΩ** from **gate to MOSFET source**, not a few Ω from “some” node to GND). A **100 Ω** path from a rail to ground does **not** turn off an N-FET and does **not** remove **VIN** on the INA219 breakout — that pin is your **stack / bus feed**; if the FET is on, you will still read ~**4.8 V** there until the gate is held **low vs source** and the channel is off.
 2. **Software (hold until iccp runs):** Run **`scripts/anode_gates_hold_low.py`** before the controller:
-   - **Recommended:** `deploy/iccp.service` uses **`ExecStartPre=`** so systemd runs the script **immediately before every** `iccp -start` (boot and restarts).
+   - **Recommended:** `deploy/iccp.service` uses **`ExecStartPre=`** so systemd runs the script **immediately before every** `iccp start` (boot and restarts).
    - **Optional:** `deploy/iccp-anode-gpio-init.service` as a separate **boot oneshot** if you need gates LOW even when the main `iccp` unit is **disabled**.
 
 The script sets BCM pins **OUTPUT LOW** and skips `GPIO.cleanup()` so pins may stay latched until `iccp` reopens them. Pull-downs still define behavior when the SoC is not driving the line.
@@ -15,12 +15,12 @@ Firmware normally turns channels “off” with RPi.GPIO **soft-PWM** at **0% du
 
 ## 1. Single process owns PWM
 
-Only one of **`iccp -start`**, **`main.py`**, or **`iccp commission`** should control the Pi’s PWM GPIO at a time.
+Only one of **`iccp start`** (foreground or systemd unit) or **`iccp commission`** should control the Pi's PWM GPIO at a time.
 
 - Stop the service: `sudo systemctl stop iccp`
-- Confirm nothing else: `ps aux | grep -E 'iccp|main.py'`
+- Confirm nothing else: `ps aux | grep -E 'iccp'`
 - If `latest.json` was updated seconds ago, `iccp commission` aborts unless you pass **`--force`** (unsafe if a controller is still running).
-- On the Pi, **`iccp tui`**, **`iccp live`**, and **`iccp diag`** run **`daemon-reload`** only (they do not **`restart iccp`**). Set **`ICCP_SYSTEMD_SYNC=0`** to skip all automatic **`systemctl`** calls from the CLI. See README (Commissioning → CLI vs systemd).
+- On the Pi, **`iccp tui`**, **`iccp dashboard`**, **`iccp live`**, and **`iccp diag`** run **`daemon-reload`** only (they do not **`restart iccp`**). Set **`ICCP_SYSTEMD_SYNC=0`** to skip all automatic **`systemctl`** calls from the CLI. See README (Commissioning → CLI vs systemd).
 
 If shunt current **drops to near zero** after stopping the service, the earlier tens-of-mA reading was **another process driving PWM**, not weak FETs.
 

@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
 """
-CoilShield `iccp` CLI — entry point for console_scripts `iccp`.
+CoilShield ``iccp`` CLI — the single supported entry point for this project.
 
-  iccp -start [args ...]   Run ICCP (defaults: --real --verbose --skip-commission)
-  iccp commission [--sim] [--force]  Commissioning (writes commissioning.json; see --help body)
-  iccp probe [args ...]    Full hardware probe (see hw_probe.py)
-  iccp clear-fault         Touch clear_fault (uses config CLEAR_FAULT_FILE)
-  iccp version             Package / install version
+Every subcommand has exactly one canonical spelling. No aliases.
 
-  iccp live                Print logs/latest.json (pretty JSON; run while main.py is active).
+  iccp start [args ...]     Run the controller (defaults: --real --verbose --skip-commission)
+  iccp commission [--sim] [--force]
+                            Self-commissioning (writes commissioning.json)
+  iccp probe [args ...]     Hardware probe (see `iccp probe --help` / hw_probe.py)
+  iccp tui [--poll-interval SEC] [--log-dir PATH]
+                            Terminal UI (Textual)
+  iccp dashboard [--host H] [--port P] [--log-dir PATH]
+                            Web dashboard (Flask)
+  iccp live                 Print logs/latest.json (pretty JSON)
+  iccp diag [--request]     Print logs/diagnostic_snapshot.json (or touch request_diag)
+  iccp clear-fault          Touch the clear-fault file (config.settings.CLEAR_FAULT_FILE)
+  iccp version              Print coilshield-iccp package version
+  iccp --help / -h          Usage
 
-  iccp diag [--request]    Print logs/diagnostic_snapshot.json if present.
-                             --request touches logs/request_diag (main loop writes snapshot).
-
-  iccp tui [--poll-interval SEC] [--log-dir PATH]   SSH-friendly live Textual UI (same as coilshield-tui).
-
-  iccp --help              Usage
-
-  On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload``; read-only
-  commands (``tui``, ``live``, ``diag``) stop there. Others run ``restart iccp`` except
-  ``commission`` / ``probe`` (``stop``) and foreground ``-start`` (reload only). Set
-  ICCP_SYSTEMD_SYNC=0 to disable. See ``_sync_systemd_for_iccp_cli``.
+On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload`` unless
+``ICCP_SYSTEMD_SYNC=0``. ``tui`` / ``dashboard`` / ``live`` / ``diag`` stop there.
+``commission`` / ``probe`` run ``stop <unit>``. ``start`` only ``daemon-reload``
+(never ``restart`` — avoids two controllers). Everything else runs ``restart <unit>``.
 """
 
 from __future__ import annotations
@@ -37,33 +38,23 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent
 
 
-# First argv token after `iccp` — must match dispatch in main() (typos skip systemd sync).
 _ICCP_CLI_COMMANDS: frozenset[str] = frozenset(
     {
-        "-start",
-        "--start",
         "start",
         "commission",
-        "--commission",
-        "-commission",
         "probe",
-        "clear-fault",
-        "clear_fault",
-        "clear-faults",
-        "version",
-        "-V",
-        "--version",
+        "tui",
+        "dashboard",
         "live",
         "diag",
-        "tui",
-        "watch",
-        "monitor",
+        "clear-fault",
+        "version",
     }
 )
 
-# Subcommands that only read telemetry / UI — never restart the controller via systemd.
+# Subcommands that only read telemetry / show UI — never restart the controller.
 _ICCP_CLI_READ_ONLY_SYSTEMD_KEYS: frozenset[str] = frozenset(
-    {"tui", "watch", "monitor", "live", "diag"}
+    {"tui", "dashboard", "live", "diag"}
 )
 
 
@@ -75,11 +66,11 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
     - ``ICCP_SYSTEMD_SYNC=0`` — disable entirely (CI, laptops, or no sudo).
     - ``ICCP_SYSTEMD_UNIT`` — unit name (default ``iccp``).
 
-    Foreground ``iccp -start``: only ``daemon-reload`` (never ``restart`` — avoids two
-    controllers). ``commission`` / ``probe``: ``daemon-reload`` then ``stop`` the
-    unit (``restart`` would leave PWM running and break commission). Read-only
-    ``tui`` / ``live`` / ``diag`` (and ``watch`` / ``monitor``): ``daemon-reload`` only.
-    Other commands: ``daemon-reload`` then ``restart``.
+    Foreground ``iccp start``: only ``daemon-reload`` (never ``restart`` — avoids two
+    controllers). ``commission`` / ``probe``: ``daemon-reload`` then ``stop`` the unit
+    (``restart`` would leave PWM running and break commission). Read-only ``tui`` /
+    ``dashboard`` / ``live`` / ``diag``: ``daemon-reload`` only. Other commands:
+    ``daemon-reload`` then ``restart``.
     """
     if not running_on_raspberry_pi():
         return
@@ -114,29 +105,28 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
         )
         return
 
-    key = cmd.lower().lstrip("-")
-    if key == "start":
+    if cmd == "start":
         print(
-            "[iccp] systemctl daemon-reload OK (no restart before foreground -start — "
+            "[iccp] systemctl daemon-reload OK (no restart before foreground start — "
             "would duplicate a systemd-run controller)."
         )
         return
-    if key == "commission":
+    if cmd == "commission":
         _run(["stop", unit])
         print(
             f"[iccp] systemctl stop {unit} (before commission; `restart` would leave the "
             "service driving PWM)."
         )
         return
-    if key == "probe":
+    if cmd == "probe":
         _run(["stop", unit])
         print(f"[iccp] systemctl stop {unit} (before probe — frees PWM / I2C).")
         return
 
-    if key in _ICCP_CLI_READ_ONLY_SYSTEMD_KEYS:
+    if cmd in _ICCP_CLI_READ_ONLY_SYSTEMD_KEYS:
         print(
             "[iccp] systemctl daemon-reload OK "
-            "(tui / live / diag do not restart the service)."
+            "(tui / dashboard / live / diag do not restart the service)."
         )
         return
 
@@ -152,38 +142,44 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
 
 def _print_help() -> None:
     print(
-        """CoilShield ICCP
+        """CoilShield ICCP — single CLI surface.
 
-  iccp -start [args ...]     Run controller. Sets COILSHIELD_SIM=0 unless you pass --sim.
+  iccp start [args ...]      Run controller. Sets COILSHIELD_SIM=0 unless you pass --sim.
                              Default argv: --real --verbose --skip-commission
-                             On Pi: refuses if systemd iccp is already active (use --force to override).
-                             Optional: --log-dir /abs/path/logs (same as COILSHIELD_LOG_DIR; match dashboard)
+                             On Pi: refuses if systemd iccp is already active (use --force).
+                             Optional: --log-dir /abs/path/logs (same as COILSHIELD_LOG_DIR;
+                             must match dashboard / tui).
 
-  iccp commission [--sim] [--force]  Self-commission (writes commissioning.json).
-                             On Pi uses hardware unless --sim. If latest.json is very fresh,
-                             commission aborts unless --force (stop systemd iccp first).
+  iccp commission [--sim] [--force]
+                             Self-commission (writes commissioning.json).
+                             On Pi uses hardware unless --sim. Aborts if latest.json is fresh
+                             unless --force (stop the iccp service first).
 
   iccp probe [args ...]      Hardware probe (I2C, INA219 smbus2, ADS1115, DS18B20, PWM).
-                             Same options as hw_probe.py (--continuous, --skip-pwm, …).
+                             See `iccp probe --help` for options.
 
-  iccp clear-fault           Create/truncate clear_fault (see config.settings CLEAR_FAULT_FILE).
+  iccp tui [--poll-interval SEC] [--log-dir PATH]
+                             Live terminal dashboard (Textual). Same data as the web UI.
+                             Keys: d/D diag, f clear fault, t paths, p probe.
 
-  iccp version               Show coilshield-iccp version (from pip metadata).
+  iccp dashboard [--host H] [--port P] [--log-dir PATH]
+                             Web dashboard (Flask). Reads the same latest.json / SQLite the
+                             controller writes; use matching --log-dir / COILSHIELD_LOG_DIR.
 
-  iccp tui [--poll-interval SEC] [--log-dir PATH]   Live terminal dashboard (Textual). Same data as
-                             the web UI from latest.json. Keys: d/D diag, f clear fault, t paths, p probe.
+  iccp live                  Pretty-print logs/latest.json once.
+  iccp diag [--request]      Print diagnostic_snapshot.json (or touch request_diag).
+  iccp clear-fault           Touch the fault-clear file (config.settings.CLEAR_FAULT_FILE).
+  iccp version               Show coilshield-iccp version.
+  iccp --help / -h           This message.
 
-  iccp --help                This message.
-
-On a Raspberry Pi, recognized commands run ``sudo systemctl daemon-reload`` automatically.
-``tui`` / ``live`` / ``diag`` stop there (read-only). Others run ``restart iccp`` except
-``commission`` / ``probe`` (``stop`` first) and foreground ``-start`` (reload only).
-``-start`` does not stop the unit — if it is already ``active``, ``-start`` exits unless you pass
-``--force``. Set ICCP_SYSTEMD_SYNC=0 to disable auto systemctl calls. Override unit name
-with ICCP_SYSTEMD_UNIT=myunit.
+On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload`` automatically.
+``tui`` / ``dashboard`` / ``live`` / ``diag`` stop there (read-only). ``commission`` /
+``probe`` run ``stop iccp`` first. Foreground ``start`` runs ``daemon-reload`` only (never
+``restart``) — if the iccp unit is already ``active``, ``start`` exits unless you pass
+``--force``. Other subcommands run ``restart iccp``. Disable with ICCP_SYSTEMD_SYNC=0;
+override unit name with ICCP_SYSTEMD_UNIT=myunit.
 
 Install:  pip install -e .   (from repo root, in your venv)
-  Quickest monitor after install:  iccp tui   or   coilshield-tui
 """
     )
 
@@ -232,7 +228,7 @@ def _cmd_diag(rest: list[str]) -> int:
             print(f"ERROR: could not touch {req}: {e}", file=sys.stderr)
             return 1
         print(
-            f"OK: {req} — start or keep main.py running; snapshot → "
+            f"OK: {req} — keep the controller running; snapshot → "
             f"{snap.name} (rate-limited)."
         )
         return 0
@@ -267,11 +263,6 @@ def _split_force_flag(rest: list[str]) -> tuple[list[str], bool]:
     return out, force
 
 
-def _split_commission_force_flag(rest: list[str]) -> tuple[list[str], bool]:
-    """Strip ``--force`` from commission argv; return (remaining_argv, force)."""
-    return _split_force_flag(rest)
-
-
 def _systemd_unit_is_active_non_sudo(unit: str) -> bool | None:
     """
     True if ``systemctl is-active`` reports ``active``.
@@ -298,7 +289,7 @@ def _systemd_unit_is_active_non_sudo(unit: str) -> bool | None:
 
 def _abort_if_systemd_iccp_active_for_foreground_start(force: bool) -> int | None:
     """
-    If the packaged systemd unit is already running, refuse ``iccp -start`` so two
+    If the packaged systemd unit is already running, refuse ``iccp start`` so two
     controllers do not share PWM / I2C. Override with ``--force`` (unsafe if unsure).
     """
     if force:
@@ -312,11 +303,11 @@ def _abort_if_systemd_iccp_active_for_foreground_start(force: bool) -> int | Non
     if _systemd_unit_is_active_non_sudo(unit) is not True:
         return None
     print(
-        "[iccp -start] ERROR: "
+        "[iccp start] ERROR: "
         f"systemd unit {unit!r} is already active — another controller owns PWM/GPIO.\n"
         f"  Stop it first:  sudo systemctl stop {unit}\n"
-        "  Or use only the service (recommended), not foreground -start in parallel.\n"
-        "  Override (unsafe):  iccp -start --force",
+        "  Or use only the service (recommended), not foreground start in parallel.\n"
+        "  Override (unsafe):  iccp start --force",
         file=sys.stderr,
     )
     return 1
@@ -324,9 +315,8 @@ def _abort_if_systemd_iccp_active_for_foreground_start(force: bool) -> int | Non
 
 def _abort_if_concurrent_controller_active(*, force: bool, on_pi_hw: bool) -> int | None:
     """
-    If latest.json is very fresh, another iccp/main likely still owns PWM — abort unless --force.
-
-    Returns exit code (e.g. 1) to stop commission, or None to continue.
+    If latest.json is very fresh, another controller likely still owns PWM —
+    abort unless --force.
     """
     if force or not on_pi_hw:
         return None
@@ -347,9 +337,9 @@ def _abort_if_concurrent_controller_active(*, force: bool, on_pi_hw: bool) -> in
             f"{p} was updated {age:.1f}s ago (threshold {thr:.0f}s) — a controller is probably "
             "still running.\n"
             "  Stop it first, e.g.:  sudo systemctl stop iccp\n"
-            "  (or stop any manual main.py / iccp -start). Two processes share the same PWM "
-            "GPIO; this CLI's all_off() cannot turn off the other process's duty — shunts stay "
-            "high and native baseline aborts.\n"
+            "  (or stop any manual `iccp start`). Two processes share the same PWM "
+            "GPIO; this CLI's all_off() cannot turn off the other process's duty — shunts "
+            "stay high and native baseline aborts.\n"
             "  Override (unsafe):  iccp commission --force",
             file=sys.stderr,
         )
@@ -359,7 +349,7 @@ def _abort_if_concurrent_controller_active(*, force: bool, on_pi_hw: bool) -> in
 
 
 def _cmd_commission(rest: list[str]) -> int:
-    """Run commissioning.run() — same sequence as first boot of main.py (no --skip-commission)."""
+    """Run commissioning.run() — same sequence as first boot of the controller."""
     rest, force_comm = _split_force_flag(rest)
     use_sim = "--sim" in rest
     if use_sim:
@@ -431,7 +421,7 @@ def main() -> int:
     argv = sys.argv[1:]
     root = _project_root()
 
-    if not argv or argv[0] in ("-h", "--help", "help"):
+    if not argv or argv[0] in ("-h", "--help"):
         _print_help()
         return 0
 
@@ -439,7 +429,10 @@ def main() -> int:
     rest = argv[1:]
 
     if cmd not in _ICCP_CLI_COMMANDS:
-        print(f"Unknown command: {cmd!r}. Try: iccp --help", file=sys.stderr)
+        print(
+            f"Unknown command: {cmd!r}. Run `iccp --help` for the full list.",
+            file=sys.stderr,
+        )
         return 2
 
     os.chdir(root)
@@ -452,7 +445,7 @@ def main() -> int:
 
     _sync_systemd_for_iccp_cli(cmd)
 
-    if cmd in ("-start", "--start", "start"):
+    if cmd == "start":
         rest, force_start = _split_force_flag(rest)
         blocked = _abort_if_systemd_iccp_active_for_foreground_start(force_start)
         if blocked is not None:
@@ -463,20 +456,26 @@ def main() -> int:
 
         return int(app.main())
 
+    if cmd == "commission":
+        return _cmd_commission(rest)
+
     if cmd == "probe":
         sys.argv = ["hw_probe.py"] + rest
         import hw_probe
 
         return int(hw_probe.main())
 
-    if cmd in ("commission", "--commission", "-commission"):
-        return _cmd_commission(rest)
+    if cmd == "tui":
+        import tui as tui_mod
 
-    if cmd in ("clear-fault", "clear_fault", "clear-faults"):
-        return _cmd_clear_fault()
+        return int(tui_mod.main(rest))
 
-    if cmd in ("version", "-V", "--version"):
-        return _cmd_version()
+    if cmd == "dashboard":
+        sys.argv = ["dashboard.py"] + rest
+        import dashboard as dash_mod
+
+        dash_mod.main()
+        return 0
 
     if cmd == "live":
         return _cmd_live()
@@ -484,10 +483,11 @@ def main() -> int:
     if cmd == "diag":
         return _cmd_diag(rest)
 
-    if cmd in ("tui", "watch", "monitor"):
-        import tui as tui_mod
+    if cmd == "clear-fault":
+        return _cmd_clear_fault()
 
-        return int(tui_mod.main(rest))
+    if cmd == "version":
+        return _cmd_version()
 
     print(f"Internal error: command {cmd!r} missing handler.", file=sys.stderr)
     return 2

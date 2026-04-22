@@ -10,8 +10,13 @@
 #
 # Example (user onenous @ 0neNous-pi):
 #   WorkingDirectory=/home/onenous/coilshield
-#   ExecStart=/home/onenous/coilshield/.venv/bin/python3 /home/onenous/coilshield/dashboard.py --host 0.0.0.0 --port 8080
+#   ExecStart=/home/onenous/coilshield/.venv/bin/iccp dashboard --host 0.0.0.0 --port 8080
 #   Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
+#
+# Note: the CLI auto-syncs systemd on recognized commands. For this dashboard unit,
+# set a distinct ICCP_SYSTEMD_UNIT so the CLI reconciles the right service when you
+# run `iccp dashboard` interactively elsewhere (e.g. Environment=ICCP_SYSTEMD_UNIT=iccp-dashboard),
+# or set ICCP_SYSTEMD_SYNC=0 to skip systemctl from the CLI entirely.
 
 [Unit]
 Description=CoilShield ICCP web dashboard
@@ -23,7 +28,7 @@ Type=simple
 User=onenous
 Group=onenous
 WorkingDirectory=/home/onenous/coilshield
-ExecStart=/home/onenous/coilshield/.venv/bin/python3 /home/onenous/coilshield/dashboard.py --host 0.0.0.0 --port 8080
+ExecStart=/home/onenous/coilshield/.venv/bin/iccp dashboard --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=5
 # Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs

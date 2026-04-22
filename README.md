@@ -5,24 +5,42 @@ Impressed-current cathodic protection monitor/controller for HVAC-style coils.
 
 **How this maps to “standard ICCP”:** the inner loop regulates **shunt current** toward `TARGET_MA`; the **reference** path defaults to **ADS1115** (legacy: **INA219**) for **polarization shift** vs a commissioned baseline and **nudges** `TARGET_MA`—still not the same as holding structure potential to an industry criterion (e.g. −0.85 V CSE). See [docs/iccp-comparison.md](docs/iccp-comparison.md) for diagrams, **external standards links**, and [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md) for a line-by-line mapping to the code.
 
+## One CLI, one way
+
+Every supported operation goes through the single `iccp` console script (installed by `pip install -e .`). Direct execution of `python3 main.py`, `python3 tui.py`, `python3 hw_probe.py`, or `python3 dashboard.py` prints a redirect and exits. The `coilshield-tui` console script has been removed — use **`iccp tui`**.
+
+| You want to… | Run |
+|--------------|-----|
+| Start the controller (foreground) | `iccp start` |
+| Commission (write `commissioning.json`) | `iccp commission` |
+| Hardware probe (I2C / INA219 / ADS1115 / PWM) | `iccp probe` |
+| Terminal UI | `iccp tui` |
+| Web dashboard | `iccp dashboard` |
+| Pretty-print current telemetry | `iccp live` |
+| Print or request diagnostic snapshot | `iccp diag [--request]` |
+| Clear fault latch | `iccp clear-fault` |
+| Package version | `iccp version` |
+
+Full reference: [docs/iccp-cli-reference.md](docs/iccp-cli-reference.md).
+
 ## Simulator (bench / no hardware)
 
-`main.py` defaults to **hardware** (`COILSHIELD_SIM` unset means `0`). For a laptop or bench run without a Pi, pass **`--sim`** (or export **`COILSHIELD_SIM=1`**) so sensors and GPIO stay simulated.
+The controller defaults to **hardware** (`COILSHIELD_SIM` unset means `0`). For a laptop or bench run without a Pi, pass **`--sim`** (or export **`COILSHIELD_SIM=1`**) so sensors and GPIO stay simulated.
 
 ```bash
 cd ~/coilshield
-python3 main.py --sim -v
+iccp start --sim -v
 # equivalent:
-COILSHIELD_SIM=1 python3 main.py --sim
+COILSHIELD_SIM=1 iccp start --sim
 # Full loop with sim reference + temp, skip commissioning wait:
-python3 main.py --sim --verbose --skip-commission
+iccp start --sim --verbose --skip-commission
 ```
 
-On the Raspberry Pi, run without `--sim` (or **`python3 main.py --real`** to force `COILSHIELD_SIM=0` if your shell had sim set).
+On the Raspberry Pi, just run **`iccp start`** (or **`iccp start --real`** to force `COILSHIELD_SIM=0` if your shell had sim set).
 
 ## Raspberry Pi
 
-If the log line says `sim=True` but you expect hardware, check **`COILSHIELD_SIM`** in your environment or systemd unit (`Environment=COILSHIELD_SIM=1` is easy to copy from a laptop). **`main.py` clears that on a Raspberry Pi** unless you start with **`--sim`**.
+If the log line says `sim=True` but you expect hardware, check **`COILSHIELD_SIM`** in your environment or systemd unit (`Environment=COILSHIELD_SIM=1` is easy to copy from a laptop). **The controller clears that on a Raspberry Pi** unless you start with **`--sim`**.
 
 1. Enable I2C: `sudo raspi-config` → Interface Options → I2C, or  
    `sudo raspi-config nonint do_i2c 0` then reboot if needed.
@@ -37,7 +55,7 @@ If the log line says `sim=True` but you expect hardware, check **`COILSHIELD_SIM
 
 **ADS1115 reference calibration:** Default **`ADS1115_FSR_V = 2.048`** (±2.048 V PGA) matches many Ag/AgCl divider rigs against a handheld meter; raise to **4.096** only if the AIN node can exceed ±2.048 V. At a steady PWM state, compare a **DMM (V DC)** at **AIN** to logged `ref_raw_mv` — set **`REF_ADS_SCALE`** (or env **`COILSHIELD_REF_ADS_SCALE`**) so `ref_raw_mv/1000` matches the meter if the divider still disagrees. Optional numeric **`ref_ads_scale`** in `commissioning.json` overrides `REF_ADS_SCALE` at runtime after commissioning loads.
 
-**Live data:** While `main.py` runs, **`logs/latest.json`** is updated every tick (same JSON as dashboard **`/api/live`** and `tui.py`). Paths come from **`config.settings`** (`PROJECT_ROOT/logs` by default). To put telemetry elsewhere (and keep dashboard + controller aligned), set the same environment on both processes: **`COILSHIELD_LOG_DIR`** or **`ICCP_LOG_DIR`** to an **absolute** directory (relative paths are resolved under the project root), or pass **`--log-dir /abs/path/logs`** to **`main.py`**, **`iccp -start`**, **`dashboard.py`**, or **`tui.py` / `iccp tui`** (parsed before `config.settings` loads). The dashboard **System health → Telemetry files** card and **`GET /api/live`** field **`telemetry_paths`** show the resolved paths this instance is using. Optional: set **`LATEST_JSON_INCLUDE_DIAG = True`** in `config/settings.py` for a throttled **`diag`** object (mux map, ref ALRT latch flags). For a **deep I2C snapshot** (INA219 registers, ADS config), touch **`logs/request_diag`** once per minute (see **`DIAGNOSTIC_MIN_INTERVAL_S`**) or run **`iccp diag --request`** while the controller is running; read **`logs/diagnostic_snapshot.json`** or **`GET /api/diagnostic`** on the dashboard. **`iccp live`** prints the path it reads, then the current `latest.json`.
+**Live data:** While **`iccp start`** is running, **`logs/latest.json`** is updated every tick (same JSON the dashboard and TUI read). Paths come from **`config.settings`** (`PROJECT_ROOT/logs` by default). To put telemetry elsewhere (and keep dashboard + controller aligned), set the same environment on both processes: **`COILSHIELD_LOG_DIR`** or **`ICCP_LOG_DIR`** to an **absolute** directory (relative paths are resolved under the project root), or pass **`--log-dir /abs/path/logs`** to **`iccp start`**, **`iccp dashboard`**, or **`iccp tui`** (parsed before `config.settings` loads). The dashboard **System health → Telemetry files** card and **`GET /api/live`** field **`telemetry_paths`** show the resolved paths this instance is using. Optional: set **`LATEST_JSON_INCLUDE_DIAG = True`** in `config/settings.py` for a throttled **`diag`** object (mux map, ref ALRT latch flags). For a **deep I2C snapshot** (INA219 registers, ADS config), touch **`logs/request_diag`** once per minute (see **`DIAGNOSTIC_MIN_INTERVAL_S`**) or run **`iccp diag --request`** while the controller is running; read **`logs/diagnostic_snapshot.json`** or **`GET /api/diagnostic`** on the dashboard. **`iccp live`** prints the path it reads, then the current `latest.json`.
 3. Verify bus: `sudo i2cdetect -y 1` (expect **four** anode INA219s at **`40` `41` `44` `45`** by default). The **reference** INA219 may be on the same bus (e.g. **`42`**) or on a **second** `i2c-gpio` bus — see `I2C_BUS`, `REF_I2C_BUS`, and `REF_INA219_ADDRESS` in `config/settings.py`; re-strap A0/A1 on breakouts if you use other addresses.
 4. If the matrix is all `--`, run **`./scripts/diagnose_i2c.sh`** (lists adapters, scans anode and optional ref buses). First run **`sudo i2cdetect -l`** and scan the **`i2c-N`** that matches the **header** I2C (on many Pis this is **`bcm2835 (i2c@7e804000)` → bus `1`**). Bus **`2`** is often a different controller, not the pins on 3/5—an empty scan there is normal if nothing is wired to it. A full grid of `--` on the **correct** bus means no device acknowledged the bus: check **power**, **SDA/SCL/GND** to each breakout, and **3.3 V** I2C levels.
 
@@ -77,13 +95,13 @@ The Pi drives each anode MOSFET with **RPi.GPIO software PWM** at **`PWM_FREQUEN
 
 ### Commissioning
 
-On first start (no `commissioning.json` in the project root), `main.py` runs **self-commissioning**: **Phase 1** turns all channels off, then (when **`COMMISSIONING_PHASE1_OFF_VERIFY`**) confirms **software PWM is 0%** on every channel and **INA219 shunt \|I\|** is below **`COMMISSIONING_OC_CONFIRM_I_MA`** within **`COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S`** (logged immediately so you see gates-off before the long settle), **then** waits **`COMMISSIONING_SETTLE_S`**. Shunts may still be decaying right after `all_off()`; a pre-settle INA warning is possible on slow rigs. The **same off-check runs again** immediately after settle and **before** the native averaging window. After that, one control tick snapshots statuses; the native loop **does not call `update()`** between reads — **`all_off()`** each sample with **zero duties** passed into **`reference.read()`** so **probe / regulate duty** never runs during averaging. It then averages **`COMMISSIONING_NATIVE_SAMPLE_COUNT`** reference samples spaced by **`COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S`** (default **30 × 2 s**) → saves **`native_mv`**. **Phase 2** ramps per-channel target current (`COMMISSIONING_RAMP_STEP_MA` per step): after each **`COMMISSIONING_RAMP_SETTLE_S`** regulate segment, **per-channel PWM duties are saved**, outputs are cut to **0 %** (all channels together, or one channel at a time if **`COMMISSIONING_OC_SEQUENTIAL_CHANNELS`**), an **INA219 “off” gate** runs (`COMMISSIONING_OCBUS_CONFIRM_MODE` / **`COMMISSIONING_OC_CONFIRM_I_MA`**) before trusting the reference ADC, then an **open-circuit decay curve** is sampled on the ADS1115 at **`COMMISSIONING_ADS1115_DR`** (max rate by default) and the **inflection mV** (`find_oc_inflection_mv`) is used as the OC reading (when **`COMMISSIONING_OC_CURVE_ENABLED`**; otherwise legacy dwell uses **`COMMISSIONING_INSTANT_OFF_S`** + one read). For **slow OC knees** (e.g. tap water), set **`COMMISSIONING_OC_DURATION_MODE`** and use **`COMMISSIONING_OC_CURVE_DURATION_S`** / **`COMMISSIONING_OC_CURVE_POLL_S`** instead of the fixed burst count. **Duties are restored only via `set_duty`**, not by ramping through `update()`, then **one** control tick runs for coherence. **Shift** = `native_mv − that reading`. When shift reaches `TARGET_SHIFT_MV` **five** consecutive times, **`commissioned_target_ma`** and timestamps are written to `commissioning.json`. **Reference noise:** ADS1115 path uses **`REF_ADS_MEDIAN_SAMPLES`** rapid medians per `read()`; optional **`ADS1115_ALRT_GPIO`** (default **BCM 24** when ALERT/RDY is wired) can use **`GPIO.wait_for_edge`** when **`ADS1115_ALRT_USE_WAIT_FOR_EDGE`** is true (default is **false** on new installs — see Bookworm note above). If RPi.GPIO raises **RuntimeError** (e.g. *Error waiting for edge*), firmware **falls back to polled conversion timing** for the rest of the process. Set **`ADS1115_ALRT_GPIO = None`** to skip ALRT setup entirely. **`OVERCURRENT_LATCH_TICKS`** (default **1**) requires that many consecutive over-max current samples before an **OVERCURRENT** fault — raise to **2** or **3** if a channel spuriously faults on single-sample glitches during commissioning. Optional **`COMMISSIONING_PWM_HZ`** overrides **`PWM_FREQUENCY_HZ`** (default **100 Hz**) only during **Phase 1** and each **instant-off / OC curve** window if you need a different frequency for those steps only. Longer ramp soak helps high-Z bench water; tune shorter on real coil + condensate.
+On first start (no `commissioning.json` in the project root), the controller runs **self-commissioning**: **Phase 1** turns all channels off, then (when **`COMMISSIONING_PHASE1_OFF_VERIFY`**) confirms **software PWM is 0%** on every channel and **INA219 shunt \|I\|** is below **`COMMISSIONING_OC_CONFIRM_I_MA`** within **`COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S`** (logged immediately so you see gates-off before the long settle), **then** waits **`COMMISSIONING_SETTLE_S`**. Shunts may still be decaying right after `all_off()`; a pre-settle INA warning is possible on slow rigs. The **same off-check runs again** immediately after settle and **before** the native averaging window. After that, one control tick snapshots statuses; the native loop **does not call `update()`** between reads — **`all_off()`** each sample with **zero duties** passed into **`reference.read()`** so **probe / regulate duty** never runs during averaging. It then averages **`COMMISSIONING_NATIVE_SAMPLE_COUNT`** reference samples spaced by **`COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S`** (default **30 × 2 s**) → saves **`native_mv`**. **Phase 2** ramps per-channel target current (`COMMISSIONING_RAMP_STEP_MA` per step): after each **`COMMISSIONING_RAMP_SETTLE_S`** regulate segment, **per-channel PWM duties are saved**, outputs are cut to **0 %** (all channels together, or one channel at a time if **`COMMISSIONING_OC_SEQUENTIAL_CHANNELS`**), an **INA219 “off” gate** runs (`COMMISSIONING_OCBUS_CONFIRM_MODE` / **`COMMISSIONING_OC_CONFIRM_I_MA`**) before trusting the reference ADC, then an **open-circuit decay curve** is sampled on the ADS1115 at **`COMMISSIONING_ADS1115_DR`** (max rate by default) and the **inflection mV** (`find_oc_inflection_mv`) is used as the OC reading (when **`COMMISSIONING_OC_CURVE_ENABLED`**; otherwise legacy dwell uses **`COMMISSIONING_INSTANT_OFF_S`** + one read). For **slow OC knees** (e.g. tap water), set **`COMMISSIONING_OC_DURATION_MODE`** and use **`COMMISSIONING_OC_CURVE_DURATION_S`** / **`COMMISSIONING_OC_CURVE_POLL_S`** instead of the fixed burst count. **Duties are restored only via `set_duty`**, not by ramping through `update()`, then **one** control tick runs for coherence. **Shift** = `native_mv − that reading`. When shift reaches `TARGET_SHIFT_MV` **five** consecutive times, **`commissioned_target_ma`** and timestamps are written to `commissioning.json`. **Reference noise:** ADS1115 path uses **`REF_ADS_MEDIAN_SAMPLES`** rapid medians per `read()`; optional **`ADS1115_ALRT_GPIO`** (default **BCM 24** when ALERT/RDY is wired) can use **`GPIO.wait_for_edge`** when **`ADS1115_ALRT_USE_WAIT_FOR_EDGE`** is true (default is **false** on new installs — see Bookworm note above). If RPi.GPIO raises **RuntimeError** (e.g. *Error waiting for edge*), firmware **falls back to polled conversion timing** for the rest of the process. Set **`ADS1115_ALRT_GPIO = None`** to skip ALRT setup entirely. **`OVERCURRENT_LATCH_TICKS`** (default **1**) requires that many consecutive over-max current samples before an **OVERCURRENT** fault — raise to **2** or **3** if a channel spuriously faults on single-sample glitches during commissioning. Optional **`COMMISSIONING_PWM_HZ`** overrides **`PWM_FREQUENCY_HZ`** (default **100 Hz**) only during **Phase 1** and each **instant-off / OC curve** window if you need a different frequency for those steps only. Longer ramp soak helps high-Z bench water; tune shorter on real coil + condensate.
 
 **Bench / dev without waiting on hardware:** run with **`--skip-commission`** so the controller starts immediately (native baseline will not be set until you commission for real).
 
-**`iccp` CLI vs systemd (Pi):** the CLI runs **`sudo systemctl daemon-reload`** on recognized commands. **`iccp tui`**, **`iccp live`**, and **`iccp diag`** (and **`watch`** / **`monitor`**) stop there — they do **not** restart the `iccp` service. **`iccp commission`** / **`iccp probe`** then run **`sudo systemctl stop iccp`** (not `restart`, so PWM is not left running). Other subcommands use **`daemon-reload` + `restart iccp`** unless you set **`ICCP_SYSTEMD_SYNC=0`**. Foreground **`iccp -start`** only **`daemon-reload`** — **it does not stop** the `iccp` unit. If that unit is already **`active`**, **`iccp -start` exits** unless you pass **`--force`** (unsafe if two controllers are really running). Prefer **either** the service **or** foreground `-start`, not both, to avoid **GPIO “channel already in use”** and I2C contention. **`iccp commission`** also refuses to run if **`latest.json`** was updated within a few seconds (another writer may still be alive) unless **`iccp commission --force`** — after **Ctrl+C** on foreground `-start`, **wait ~5 s** or ensure the process is gone. High shunt current at “off” is often a **second process** or gate drive — see [docs/mosfet-off-verification.md](docs/mosfet-off-verification.md). Phase 1 can use **static gate LOW** (`COMMISSIONING_PHASE1_STATIC_GATE_LOW`) instead of soft-PWM-at-0 alone.
+**`iccp` CLI vs systemd (Pi):** the CLI runs **`sudo systemctl daemon-reload`** on recognized commands. **`iccp tui`**, **`iccp dashboard`**, **`iccp live`**, and **`iccp diag`** stop there — they do **not** restart the `iccp` service. **`iccp commission`** / **`iccp probe`** then run **`sudo systemctl stop iccp`** (not `restart`, so PWM is not left running). Other subcommands use **`daemon-reload` + `restart iccp`** unless you set **`ICCP_SYSTEMD_SYNC=0`**. Foreground **`iccp start`** only **`daemon-reload`** — **it does not stop** the `iccp` unit. If that unit is already **`active`**, **`iccp start` exits** unless you pass **`--force`** (unsafe if two controllers are really running). Prefer **either** the service **or** foreground `iccp start`, not both, to avoid **GPIO "channel already in use"** and I2C contention. **`iccp commission`** also refuses to run if **`latest.json`** was updated within a few seconds (another writer may still be alive) unless **`iccp commission --force`** — after **Ctrl+C** on foreground `iccp start`, **wait ~5 s** or ensure the process is gone. High shunt current at "off" is often a **second process** or gate drive — see [docs/mosfet-off-verification.md](docs/mosfet-off-verification.md). Phase 1 can use **static gate LOW** (`COMMISSIONING_PHASE1_STATIC_GATE_LOW`) instead of soft-PWM-at-0 alone.
 
-**I2C / INA219 sanity check (especially after wiring or mux changes):** run **`iccp probe`** (same as `hw_probe.py`) on the Pi; use **`--init`** if you want to force INA219 CONFIG writes before raw reads. This uses **smbus2** only and is the quickest way to see NACKs, wrong TCA9548A ports, or bus errors separate from the main control loop.
+**I2C / INA219 sanity check (especially after wiring or mux changes):** run **`iccp probe`** on the Pi; use **`--init`** if you want to force INA219 CONFIG writes before raw reads. This uses **smbus2** only and is the quickest way to see NACKs, wrong TCA9548A ports, or bus errors separate from the main control loop.
 
 **Force re-commissioning** (e.g. after replacing the zinc rod or major rewiring): from the repo root, run:
 
@@ -91,7 +109,7 @@ On first start (no `commissioning.json` in the project root), `main.py` runs **s
 python3 -c "import commissioning; commissioning.reset()"
 ```
 
-…or delete `commissioning.json` manually, then restart `main.py`.
+…or delete `commissioning.json` manually, then restart **`iccp start`**.
 
 ### Bench series resistor vs this firmware
 
@@ -101,7 +119,7 @@ On a **bench rig** with a fixed supply, no feedback, and no PWM, a **series resi
 
 **Do keep a small gate resistor** (order ~100 Ω) from each GPIO to its MOSFET gate to protect the driver output—that is standard practice and is **not** the same as series cell current limiting.
 
-**Power-up / script off:** Until Python configures the BCM lines, gate pins may **float**; an N-FET can then conduct and put **full bus voltage** on the anode path (commissioning Phase 1 will always see high shunt current). Add **gate-to-source pull-downs** (**tens of kΩ** gate→**source**, not a low-Ω bleed from **VIN** on the INA219 — that rail stays at stack voltage while the FET is on). **`deploy/iccp.service`** runs **`scripts/anode_gates_hold_low.py`** via **`ExecStartPre=`** before each **`iccp -start`** so gates are driven **LOW** until the controller takes over. For Pi-on without the main unit, see **`deploy/iccp-anode-gpio-init.service`**. Details: [docs/mosfet-off-verification.md](docs/mosfet-off-verification.md) §0.
+**Power-up / script off:** Until Python configures the BCM lines, gate pins may **float**; an N-FET can then conduct and put **full bus voltage** on the anode path (commissioning Phase 1 will always see high shunt current). Add **gate-to-source pull-downs** (**tens of kΩ** gate→**source**, not a low-Ω bleed from **VIN** on the INA219 — that rail stays at stack voltage while the FET is on). **`deploy/iccp.service`** runs **`scripts/anode_gates_hold_low.py`** via **`ExecStartPre=`** before each **`iccp start`** so gates are driven **LOW** until the controller takes over. For Pi-on without the main unit, see **`deploy/iccp-anode-gpio-init.service`**. Details: [docs/mosfet-off-verification.md](docs/mosfet-off-verification.md) §0.
 
 ## Web dashboard (live + history + benchmarks)
 
@@ -109,22 +127,20 @@ Run the controller and dashboard from the repo root (e.g. `~/coilshield`):
 
 ```bash
 # Terminal 1 — controller (sim on Mac / Pi without wiring)
-COILSHIELD_SIM=1 python3 main.py --sim --verbose
+iccp start --sim --verbose
 
 # Terminal 2 — dashboard (LAN: http://<pi-ip>:8080)
-python3 dashboard.py --host 0.0.0.0 --port 8080
+iccp dashboard --host 0.0.0.0 --port 8080
 ```
 
-**Terminal monitor (SSH, no browser):** the same `logs/latest.json` snapshot drives a Textual TUI. After `pip install -e .`, the shortest launch is **`coilshield-tui`** or **`iccp tui`** (same app). From the repo without install: `python3 tui.py`.
+**Terminal monitor (SSH, no browser):** the same `logs/latest.json` snapshot drives a Textual TUI.
 
 ```bash
 iccp tui
-# or:  coilshield-tui
-# or:  python3 tui.py
 # optional:  iccp tui --poll-interval 0.5 --log-dir /abs/path/logs
 ```
 
-Inside the TUI: **`d`** request a diagnostic snapshot (touches `request_diag`; `main.py` must be running), **`D`** re-read `diagnostic_snapshot.json` only, **`f`** clear fault latch, **`t`** show resolved telemetry paths, **`p`** run allowlisted `hw_probe.py --skip-pwm` in a modal, **`1` / `2`** switch Live vs Diagnostics tab, **`q`** quit.
+Inside the TUI: **`d`** request a diagnostic snapshot (touches `request_diag`; the controller must be running), **`D`** re-read `diagnostic_snapshot.json` only, **`f`** clear fault latch, **`t`** show resolved telemetry paths, **`p`** run an allowlisted `iccp probe --skip-pwm` in a modal, **`1` / `2`** switch Live vs Diagnostics tab, **`q`** quit.
 
 SSH: use a capable `TERM` (e.g. `xterm-256color`) for full colors. Optional: run inside **tmux** so the session survives disconnect.
 
@@ -139,9 +155,9 @@ Install Flask on the Pi if needed: `python3 -m pip install flask --break-system-
 | `iccp_YYYY-MM-DD.csv` | Buffered CSV (lags the DB by `LOG_INTERVAL_S`; normal) |
 | `iccp_faults.log` | Deduped fault lines + `fsync` on new fault signature |
 
-**First deploy / DB upgrade:** start `main.py` once before relying on the dashboard so `DataLogger` can run SQLite migrations (adds impedance columns on older DBs).
+**First deploy / DB upgrade:** run **`iccp start`** once before relying on the dashboard so `DataLogger` can run SQLite migrations (adds impedance columns on older DBs).
 
-**Dashboard vs hardware (accuracy):** The UI reads `latest.json` (and SQLite for trends)—it is not a second measurement path. Use the **same** `COILSHIELD_LOG_DIR` / `ICCP_LOG_DIR` (or `dashboard.py --log-dir`) as `main.py`; the live API exposes `telemetry_paths` and feed age so you can spot a mismatched directory or a stopped controller. If the feed stays stale, follow [docs/stale-dashboard-feed.md](docs/stale-dashboard-feed.md). **Proxies:** cell voltage ≈ bus×duty%, impedance ≈ bus/I, power ≈ bus×I (see [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md)). **PROTECTING:** the “any channel wet” style flag in telemetry is true when any anode FSM is **PROTECTING**, not merely shunt current above a wet threshold. **Targets:** each channel row includes **`target_ma`** (effective setpoint that tick: `CHANNEL_TARGET_MA` or runtime `TARGET_MA` after commissioning/outer loop); the overview still reports **`target_ma`** from settings for reference, plus **`target_ma_avg_live`** when per-channel values are present. If `log.record()` fails, **`recovery_touch_latest`** still updates `ts` / `ts_unix` and merges a writer error into `system_alerts` so the feed age does not lie stale for hours. History charts downsample rows and plot **average** stored target per tick (`avg_target_ma`).
+**Dashboard vs hardware (accuracy):** The UI reads `latest.json` (and SQLite for trends) — it is not a second measurement path. Use the **same** `COILSHIELD_LOG_DIR` / `ICCP_LOG_DIR` (or `iccp dashboard --log-dir`) as **`iccp start`**; the live API exposes `telemetry_paths` and feed age so you can spot a mismatched directory or a stopped controller. If the feed stays stale, follow [docs/stale-dashboard-feed.md](docs/stale-dashboard-feed.md). **Proxies:** cell voltage ≈ bus×duty%, impedance ≈ bus/I, power ≈ bus×I (see [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md)). **PROTECTING:** the “any channel wet” style flag in telemetry is true when any anode FSM is **PROTECTING**, not merely shunt current above a wet threshold. **Targets:** each channel row includes **`target_ma`** (effective setpoint that tick: `CHANNEL_TARGET_MA` or runtime `TARGET_MA` after commissioning/outer loop); the overview still reports **`target_ma`** from settings for reference, plus **`target_ma_avg_live`** when per-channel values are present. If `log.record()` fails, **`recovery_touch_latest`** still updates `ts` / `ts_unix` and merges a writer error into `system_alerts` so the feed age does not lie stale for hours. History charts downsample rows and plot **average** stored target per tick (`avg_target_ma`).
 
 **Primary benchmark metrics (logged every tick when sensors OK):**
 
@@ -189,7 +205,7 @@ Use every session either:
 
 ```bash
 source .venv/bin/activate
-iccp -start
+iccp start
 ```
 
 or without activating:
@@ -210,6 +226,18 @@ python3 -m pip install --user -e .
 ```
 
 Ensure `~/.local/bin` is on your `PATH` for login shells (many Pi images already include it). Then run `~/.local/bin/iccp --help` to confirm.
+
+### Upgrading an existing Pi install
+
+The `iccp -start` / `iccp watch` / `iccp monitor` / `coilshield-tui` entry points and direct `python3 main.py` / `tui.py` / `hw_probe.py` / `dashboard.py` invocations have been removed. Use `iccp <subcommand>` for everything. After pulling this change on a Pi where the systemd unit was installed from an older `deploy/iccp.service`:
+
+```bash
+sudo cp deploy/iccp.service /etc/systemd/system/iccp.service
+sudo systemctl daemon-reload
+sudo systemctl restart iccp
+```
+
+Without this step, the unit will fail because its `ExecStart` still points at the now-removed `iccp -start` alias.
 
 ## Development workflow (Mac → Pi)
 
