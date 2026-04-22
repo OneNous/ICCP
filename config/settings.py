@@ -366,7 +366,8 @@ NATIVE_SAMPLE_INTERVAL_S: float = 1.0      # s between samples during median cap
 NATIVE_CAPTURE_RETRIES: int = 3             # §3.3 — before REFERENCE_INVALID
 I_REST_MA: float = 0.3                      # |I| ceiling for “at rest” (stricter than legacy 1.0 mA)
 T_REST_CONFIRM: float = 3.0                 # s the rest gate must hold
-NATIVE_STABILITY_MV: float = 3.0            # rolling std-dev ceiling (W_REF window) [interim]
+# max−min of ref samples in capture_native() must be ≤ this (mV) over T_RELAX; not std-dev
+NATIVE_STABILITY_MV: float = 30.0           # peak-to-peak ceiling during native capture [interim]
 W_REF: float = 10.0                        # s — stability window (spec §3.2)
 NATIVE_SLOPE_MV_PER_MIN: float = 2.0
 NATIVE_RECAPTURE_S: float = 24 * 3600.0     # daily scheduled re-capture (§3.4)

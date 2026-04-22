@@ -24,6 +24,34 @@ if TYPE_CHECKING:
 
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
 
+def _native_capture_fail_hint(cap_reason: str) -> str:
+    """User-facing line for failed Phase 1 capture (see reference.capture_native reasons)."""
+    t_relax = float(getattr(cfg, "T_RELAX", 30.0))
+    stab = float(getattr(cfg, "NATIVE_STABILITY_MV", 5.0))
+    islope = float(getattr(cfg, "NATIVE_SLOPE_MV_PER_MIN", 2.0))
+    if "unstable_p2p" in cap_reason:
+        return (
+            "The reference (ADS) wobble (max−min) over the relax window exceeded NATIVE_STABILITY_MV. "
+            f"On wet/noisy pans this is common — try NATIVE_STABILITY_MV = 8.0 or 10.0 (now {stab:g} mV), "
+            f"or longer T_RELAX (now {t_relax:g} s) / quieter fluid. See config/settings.py."
+        )
+    if "slope_" in cap_reason or "slope" in cap_reason:
+        return (
+            "The reference drifted across the first vs last third of samples. "
+            f"Try NATIVE_SLOPE_MV_PER_MIN = 0 (disable) or raise the limit (now {islope:g} mV/min), "
+            "or extend T_RELAX. See config/settings.py."
+        )
+    if "rest_current" in cap_reason or "I_REST" in cap_reason:
+        i = float(getattr(cfg, "I_REST_MA", 1.0))
+        return (
+            f"Shunt current did not rest below I_REST_MA ({i:g} mA) before capture — see "
+            "I_REST_MA, COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA, docs/mosfet-off-verification.md."
+        )
+    if "read_failed" in cap_reason:
+        return "ADS1115 or mux read failed during capture — check I2C, TCA channel, and wiring."
+    return f"See reference.capture_native / NATIVE_STABILITY_MV / T_RELAX in config.settings."
+
+
 COMMISSIONING_SETTLE_S: int = getattr(cfg, "COMMISSIONING_SETTLE_S", 60)
 TARGET_RAMP_STEP_MA: float = float(getattr(cfg, "COMMISSIONING_RAMP_STEP_MA", 0.15))
 RAMP_SETTLE_S: float = float(getattr(cfg, "COMMISSIONING_RAMP_SETTLE_S", 60.0))
@@ -660,8 +688,8 @@ def run(
     native_mv, cap_reason = _phase1_spec_native_capture(reference, controller, sim_state)
     if native_mv is None:
         raise RuntimeError(
-            f"Phase 1 native capture failed: {cap_reason} "
-            "(fix wiring, reference ADC, or shunt at rest — see COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA / I_REST_MA)"
+            f"Phase 1 native capture failed: {cap_reason}. "
+            f"{_native_capture_fail_hint(cap_reason)}"
         )
     pan_tf = temp_mod.read_fahrenheit()
     reference.save_native(native_mv, native_temp_f=pan_tf)
