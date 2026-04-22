@@ -17,9 +17,10 @@ CoilShield `iccp` CLI — entry point for console_scripts `iccp`.
 
   iccp --help              Usage
 
-  On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload`` and then
-  ``restart iccp`` (or ``stop iccp`` before commission/probe). Set ICCP_SYSTEMD_SYNC=0 to
-  disable. See ``_sync_systemd_for_iccp_cli``.
+  On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload``; read-only
+  commands (``tui``, ``live``, ``diag``) stop there. Others run ``restart iccp`` except
+  ``commission`` / ``probe`` (``stop``) and foreground ``-start`` (reload only). Set
+  ICCP_SYSTEMD_SYNC=0 to disable. See ``_sync_systemd_for_iccp_cli``.
 """
 
 from __future__ import annotations
@@ -29,15 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-
-def _running_on_raspberry_pi() -> bool:
-    try:
-        model = Path("/proc/device-tree/model").read_text(
-            encoding="utf-8", errors="replace"
-        )
-    except OSError:
-        return False
-    return "Raspberry Pi" in model
+from platform_util import running_on_raspberry_pi
 
 
 def _project_root() -> Path:
@@ -68,6 +61,11 @@ _ICCP_CLI_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
+# Subcommands that only read telemetry / UI — never restart the controller via systemd.
+_ICCP_CLI_READ_ONLY_SYSTEMD_KEYS: frozenset[str] = frozenset(
+    {"tui", "watch", "monitor", "live", "diag"}
+)
+
 
 def _sync_systemd_for_iccp_cli(cmd: str) -> None:
     """
@@ -79,10 +77,11 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
 
     Foreground ``iccp -start``: only ``daemon-reload`` (never ``restart`` — avoids two
     controllers). ``commission`` / ``probe``: ``daemon-reload`` then ``stop`` the
-    unit (``restart`` would leave PWM running and break commission). Other commands:
-    ``daemon-reload`` then ``restart``.
+    unit (``restart`` would leave PWM running and break commission). Read-only
+    ``tui`` / ``live`` / ``diag`` (and ``watch`` / ``monitor``): ``daemon-reload`` only.
+    Other commands: ``daemon-reload`` then ``restart``.
     """
-    if not _running_on_raspberry_pi():
+    if not running_on_raspberry_pi():
         return
     flag = os.environ.get("ICCP_SYSTEMD_SYNC", "1").strip().lower()
     if flag in ("0", "off", "false", "no", "disable", "disabled"):
@@ -134,6 +133,13 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
         print(f"[iccp] systemctl stop {unit} (before probe — frees PWM / I2C).")
         return
 
+    if key in _ICCP_CLI_READ_ONLY_SYSTEMD_KEYS:
+        print(
+            "[iccp] systemctl daemon-reload OK "
+            "(tui / live / diag do not restart the service)."
+        )
+        return
+
     if _run(["restart", unit]) == 0:
         print(f"[iccp] systemctl daemon-reload && systemctl restart {unit}")
     else:
@@ -150,6 +156,7 @@ def _print_help() -> None:
 
   iccp -start [args ...]     Run controller. Sets COILSHIELD_SIM=0 unless you pass --sim.
                              Default argv: --real --verbose --skip-commission
+                             On Pi: refuses if systemd iccp is already active (use --force to override).
                              Optional: --log-dir /abs/path/logs (same as COILSHIELD_LOG_DIR; match dashboard)
 
   iccp commission [--sim] [--force]  Self-commission (writes commissioning.json).
@@ -168,9 +175,12 @@ def _print_help() -> None:
 
   iccp --help                This message.
 
-On a Raspberry Pi, recognized commands run ``sudo systemctl daemon-reload`` automatically,
-then ``restart iccp`` (or ``stop iccp`` before commission/probe). Set ICCP_SYSTEMD_SYNC=0
-to disable. Override unit name with ICCP_SYSTEMD_UNIT=myunit.
+On a Raspberry Pi, recognized commands run ``sudo systemctl daemon-reload`` automatically.
+``tui`` / ``live`` / ``diag`` stop there (read-only). Others run ``restart iccp`` except
+``commission`` / ``probe`` (``stop`` first) and foreground ``-start`` (reload only).
+``-start`` does not stop the unit — if it is already ``active``, ``-start`` exits unless you pass
+``--force``. Set ICCP_SYSTEMD_SYNC=0 to disable auto systemctl calls. Override unit name
+with ICCP_SYSTEMD_UNIT=myunit.
 
 Install:  pip install -e .   (from repo root, in your venv)
   Quickest monitor after install:  iccp tui   or   coilshield-tui
@@ -245,8 +255,8 @@ def _cmd_version() -> int:
     return 0
 
 
-def _split_commission_force_flag(rest: list[str]) -> tuple[list[str], bool]:
-    """Strip ``--force`` from commission argv; return (remaining_argv, force)."""
+def _split_force_flag(rest: list[str]) -> tuple[list[str], bool]:
+    """Strip ``--force`` from argv; return (remaining_argv, force)."""
     force = False
     out: list[str] = []
     for a in rest:
@@ -255,6 +265,61 @@ def _split_commission_force_flag(rest: list[str]) -> tuple[list[str], bool]:
             continue
         out.append(a)
     return out, force
+
+
+def _split_commission_force_flag(rest: list[str]) -> tuple[list[str], bool]:
+    """Strip ``--force`` from commission argv; return (remaining_argv, force)."""
+    return _split_force_flag(rest)
+
+
+def _systemd_unit_is_active_non_sudo(unit: str) -> bool | None:
+    """
+    True if ``systemctl is-active`` reports ``active``.
+
+    Returns None if ``systemctl`` is unavailable or the state cannot be read
+    (do not block foreground start).
+    """
+    try:
+        r = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    state = (r.stdout or "").strip()
+    if r.returncode == 0 and state == "active":
+        return True
+    if state in ("inactive", "failed", "activating", "deactivating"):
+        return False
+    return None
+
+
+def _abort_if_systemd_iccp_active_for_foreground_start(force: bool) -> int | None:
+    """
+    If the packaged systemd unit is already running, refuse ``iccp -start`` so two
+    controllers do not share PWM / I2C. Override with ``--force`` (unsafe if unsure).
+    """
+    if force:
+        return None
+    if not running_on_raspberry_pi():
+        return None
+    flag = os.environ.get("ICCP_SYSTEMD_SYNC", "1").strip().lower()
+    if flag in ("0", "off", "false", "no", "disable", "disabled"):
+        return None
+    unit = (os.environ.get("ICCP_SYSTEMD_UNIT") or "iccp").strip() or "iccp"
+    if _systemd_unit_is_active_non_sudo(unit) is not True:
+        return None
+    print(
+        "[iccp -start] ERROR: "
+        f"systemd unit {unit!r} is already active — another controller owns PWM/GPIO.\n"
+        f"  Stop it first:  sudo systemctl stop {unit}\n"
+        "  Or use only the service (recommended), not foreground -start in parallel.\n"
+        "  Override (unsafe):  iccp -start --force",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def _abort_if_concurrent_controller_active(*, force: bool, on_pi_hw: bool) -> int | None:
@@ -295,11 +360,11 @@ def _abort_if_concurrent_controller_active(*, force: bool, on_pi_hw: bool) -> in
 
 def _cmd_commission(rest: list[str]) -> int:
     """Run commissioning.run() — same sequence as first boot of main.py (no --skip-commission)."""
-    rest, force_comm = _split_commission_force_flag(rest)
+    rest, force_comm = _split_force_flag(rest)
     use_sim = "--sim" in rest
     if use_sim:
         os.environ["COILSHIELD_SIM"] = "1"
-    elif _running_on_raspberry_pi():
+    elif running_on_raspberry_pi():
         if os.environ.get("COILSHIELD_SIM", "0").strip() == "1":
             print(
                 "[iccp commission] Raspberry Pi: ignoring COILSHIELD_SIM=1 from environment."
@@ -320,7 +385,7 @@ def _cmd_commission(rest: list[str]) -> int:
     from reference import ReferenceElectrode, ref_hw_message
 
     sim = sensors.SIM_MODE
-    on_pi_hw = not sim and _running_on_raspberry_pi()
+    on_pi_hw = not sim and running_on_raspberry_pi()
     abort = _abort_if_concurrent_controller_active(force=force_comm, on_pi_hw=on_pi_hw)
     if abort is not None:
         return abort
@@ -388,6 +453,10 @@ def main() -> int:
     _sync_systemd_for_iccp_cli(cmd)
 
     if cmd in ("-start", "--start", "start"):
+        rest, force_start = _split_force_flag(rest)
+        blocked = _abort_if_systemd_iccp_active_for_foreground_start(force_start)
+        if blocked is not None:
+            return blocked
         os.environ.setdefault("COILSHIELD_SIM", "0")
         sys.argv = ["main.py", "--real", "--verbose", "--skip-commission"] + rest
         import main as app

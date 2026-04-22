@@ -13,10 +13,10 @@ import iccp_cli
 
 
 def test_split_commission_force_flag() -> None:
-    r, f = iccp_cli._split_commission_force_flag(["--sim", "--force"])
+    r, f = iccp_cli._split_force_flag(["--sim", "--force"])
     assert f is True
     assert r == ["--sim"]
-    r2, f2 = iccp_cli._split_commission_force_flag(["--sim", "x"])
+    r2, f2 = iccp_cli._split_force_flag(["--sim", "x"])
     assert f2 is False
     assert r2 == ["--sim", "x"]
 

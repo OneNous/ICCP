@@ -17,7 +17,7 @@ def test_sync_disabled_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
         return type("R", (), {"returncode": 0, "stderr": ""})()
 
     monkeypatch.setattr(iccp_cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(iccp_cli, "_running_on_raspberry_pi", lambda: True)
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
     monkeypatch.setenv("ICCP_SYSTEMD_SYNC", "0")
     iccp_cli._sync_systemd_for_iccp_cli("tui")
     assert calls == []
@@ -33,7 +33,7 @@ def test_sync_commission_stops_not_restarts(
         return type("R", (), {"returncode": 0, "stderr": ""})()
 
     monkeypatch.setattr(iccp_cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(iccp_cli, "_running_on_raspberry_pi", lambda: True)
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
     monkeypatch.delenv("ICCP_SYSTEMD_SYNC", raising=False)
     iccp_cli._sync_systemd_for_iccp_cli("commission")
     assert calls == [
@@ -42,7 +42,10 @@ def test_sync_commission_stops_not_restarts(
     ]
 
 
-def test_sync_tui_restarts(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("cmd", ("live", "tui", "diag", "watch", "monitor"))
+def test_sync_read_only_commands_daemon_reload_only(
+    monkeypatch: pytest.MonkeyPatch, cmd: str
+) -> None:
     calls: list[list[str]] = []
 
     def fake_run(cmd: list[str], **kwargs: object) -> object:
@@ -50,13 +53,10 @@ def test_sync_tui_restarts(monkeypatch: pytest.MonkeyPatch) -> None:
         return type("R", (), {"returncode": 0, "stderr": ""})()
 
     monkeypatch.setattr(iccp_cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(iccp_cli, "_running_on_raspberry_pi", lambda: True)
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
     monkeypatch.delenv("ICCP_SYSTEMD_SYNC", raising=False)
-    iccp_cli._sync_systemd_for_iccp_cli("live")
-    assert calls == [
-        ["sudo", "systemctl", "daemon-reload"],
-        ["sudo", "systemctl", "restart", "iccp"],
-    ]
+    iccp_cli._sync_systemd_for_iccp_cli(cmd)
+    assert calls == [["sudo", "systemctl", "daemon-reload"]]
 
 
 def test_sync_start_only_daemon_reload(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -67,14 +67,14 @@ def test_sync_start_only_daemon_reload(monkeypatch: pytest.MonkeyPatch) -> None:
         return type("R", (), {"returncode": 0, "stderr": ""})()
 
     monkeypatch.setattr(iccp_cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(iccp_cli, "_running_on_raspberry_pi", lambda: True)
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
     monkeypatch.delenv("ICCP_SYSTEMD_SYNC", raising=False)
     iccp_cli._sync_systemd_for_iccp_cli("-start")
     assert calls == [["sudo", "systemctl", "daemon-reload"]]
 
 
 def test_main_unknown_command_exits_before_chdir(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(iccp_cli, "_running_on_raspberry_pi", lambda: True)
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
     called: list[str] = []
 
     def no_sync(cmd: str) -> None:
@@ -84,6 +84,39 @@ def test_main_unknown_command_exits_before_chdir(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(sys, "argv", ["iccp", "not-a-real-subcommand"])
     assert iccp_cli.main() == 2
     assert called == []
+
+
+def test_abort_foreground_start_when_systemd_unit_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
+    monkeypatch.delenv("ICCP_SYSTEMD_SYNC", raising=False)
+
+    def fake_run(cmd: list[str], **kwargs: object) -> object:
+        if cmd[:3] == ["systemctl", "is-active", "iccp"]:
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": "active\n", "stderr": ""},
+            )()
+        return type("R", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(iccp_cli.subprocess, "run", fake_run)
+    assert iccp_cli._abort_if_systemd_iccp_active_for_foreground_start(False) == 1
+    assert iccp_cli._abort_if_systemd_iccp_active_for_foreground_start(True) is None
+
+
+def test_abort_foreground_start_skipped_when_systemctl_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
+    monkeypatch.delenv("ICCP_SYSTEMD_SYNC", raising=False)
+
+    def boom(cmd: list[str], **kwargs: object) -> object:
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(iccp_cli.subprocess, "run", boom)
+    assert iccp_cli._abort_if_systemd_iccp_active_for_foreground_start(False) is None
 
 
 def test_custom_systemd_unit(
@@ -96,7 +129,7 @@ def test_custom_systemd_unit(
         return type("R", (), {"returncode": 0, "stderr": ""})()
 
     monkeypatch.setattr(iccp_cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(iccp_cli, "_running_on_raspberry_pi", lambda: True)
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
     monkeypatch.delenv("ICCP_SYSTEMD_SYNC", raising=False)
     monkeypatch.setenv("ICCP_SYSTEMD_UNIT", "coilshield")
     iccp_cli._sync_systemd_for_iccp_cli("version")

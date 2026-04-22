@@ -20,6 +20,7 @@ Only one of **`iccp -start`**, **`main.py`**, or **`iccp commission`** should co
 - Stop the service: `sudo systemctl stop iccp`
 - Confirm nothing else: `ps aux | grep -E 'iccp|main.py'`
 - If `latest.json` was updated seconds ago, `iccp commission` aborts unless you pass **`--force`** (unsafe if a controller is still running).
+- On the Pi, **`iccp tui`**, **`iccp live`**, and **`iccp diag`** run **`daemon-reload`** only (they do not **`restart iccp`**). Set **`ICCP_SYSTEMD_SYNC=0`** to skip all automatic **`systemctl`** calls from the CLI. See README (Commissioning → CLI vs systemd).
 
 If shunt current **drops to near zero** after stopping the service, the earlier tens-of-mA reading was **another process driving PWM**, not weak FETs.
 

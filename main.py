@@ -19,16 +19,7 @@ import os
 import sys
 from pathlib import Path
 
-
-def _running_on_raspberry_pi() -> bool:
-    """True when /proc/device-tree/model looks like a Raspberry Pi board."""
-    try:
-        model = Path("/proc/device-tree/model").read_text(
-            encoding="utf-8", errors="replace"
-        )
-    except OSError:
-        return False
-    return "Raspberry Pi" in model
+from platform_util import running_on_raspberry_pi
 
 
 def _apply_argv_log_dir(argv: list[str]) -> None:
@@ -92,7 +83,7 @@ def main() -> int:
         os.environ["COILSHIELD_SIM"] = "0"
     # Leftover COILSHIELD_SIM=1 from a dev machine (systemd, profile, etc.) forces sim
     # on import; on real Pi hardware we default to INA219 unless --sim was passed.
-    if not args.sim and _running_on_raspberry_pi():
+    if not args.sim and running_on_raspberry_pi():
         if os.environ.get("COILSHIELD_SIM", "0").strip() == "1":
             print(
                 "[main] Raspberry Pi: ignoring COILSHIELD_SIM=1 from the environment "
