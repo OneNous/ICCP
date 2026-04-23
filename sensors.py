@@ -307,8 +307,30 @@ def read_all_real() -> dict[int, ChannelReading]:
             for iccp_ch, sensor in enumerate(_sensors):
                 if iccp_ch >= cfg.NUM_CHANNELS:
                     break
-                _remux_ina219_channel(iccp_ch, mux_bus)
                 try:
+                    try:
+                        _remux_ina219_channel(iccp_ch, mux_bus)
+                    except OSError as e:
+                        en = getattr(e, "errno", None)
+                        do_reopen = bool(
+                            en in (5, 121)
+                            and mux_bus is not None
+                            and getattr(
+                                cfg, "I2C_MUX_SMBUS_REOPEN_ON_SELECT_EIO", True
+                            )
+                        )
+                        if not do_reopen:
+                            raise
+                        time.sleep(0.02)
+                        try:
+                            mux_bus.close()
+                        except OSError:
+                            pass
+                        import smbus2
+
+                        mux_bus = smbus2.SMBus(busnum)
+                        _remux_ina219_channel(iccp_ch, mux_bus)
+
                     bus_v = 0.0
                     current_ma = 0.0
                     shunt_mv = 0.0

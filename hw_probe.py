@@ -15,6 +15,7 @@ Steps:
 Launch (after ``pip install -e .`` from repo root):  iccp probe [flags]
 
 Useful flags:
+  • --continuous / --live  All INA + ADS AIN0..3 every ``--interval`` s until Ctrl+C.
   • --ads1115 [ADDR]   Quick ADS1115 AIN0..3 only (default ADDR 0x48); plan checklist.
   • --init             Force INA219 CONFIG write on each channel before reads.
   • --ads1115-only     Same as --ads1115 with address from config/settings.
@@ -511,7 +512,14 @@ def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
             )
 
 
-def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: bool) -> None:
+def run_continuous(
+    bus: int,
+    shunt_ohms: float,
+    skip_ads: bool,
+    *,
+    force_init: bool,
+    interval_s: float = 1.0,
+) -> None:
     from i2c_bench import (
         INA219_DEFAULT_CONFIG_WORD,
         ads1115_read_single_ended,
@@ -519,8 +527,16 @@ def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: b
         ina219_write_config,
     )
 
-    section("CONTINUOUS MODE — Ctrl+C to stop")
-    print("  INA219 four channels + ADS1115 AIN0 once per tick (unless --skip-ads).\n")
+    ref_ain = int(getattr(cfg, "ADS1115_CHANNEL", 0) if cfg is not None else 0)
+    section("LIVE / CONTINUOUS — Ctrl+C to stop")
+    if skip_ads:
+        print(f"  Every {interval_s:.2f} s: INA219 only (no ADS).")
+    else:
+        print(
+            f"  Every {interval_s:.2f} s: all INA219 ch + ADS1115 AIN0..3 "
+            f"(firmware ref = AIN{ref_ain})."
+        )
+    print()
 
     try:
         import smbus2
@@ -596,13 +612,21 @@ def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: b
                     mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None) if cfg else None
                     mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None) if cfg else None
                     mux_select_on_bus(ads_bus, mux_addr, mux_ch)
-                    v0 = ads1115_read_single_ended(
-                        ads_bus, ADS1115_ADDRESS, 0, ADS1115_FSR_V
+                    print(
+                        f"  {'ADS':<6} {'Volts':>10} {'mV':>10}  (ref → AIN{ref_ain} per settings)"
                     )
-                    print(f"  ADS  AIN0   {v0:>8.4f} V   (FSR ±{ADS1115_FSR_V} V)")
+                    print("  " + "─" * 38)
+                    for ach in range(4):
+                        v_ach = ads1115_read_single_ended(
+                            ads_bus, ADS1115_ADDRESS, ach, ADS1115_FSR_V
+                        )
+                        tag = "  ← ref" if ach == ref_ain else ""
+                        print(
+                            f"  AIN{ach}  {v_ach:>10.5f} {v_ach * 1000.0:>10.2f}{tag}"
+                        )
                 except OSError as e:
                     print(f"  ADS  read error: {e}")
-            time.sleep(1.0)
+            time.sleep(max(0.05, float(interval_s)))
     except KeyboardInterrupt:
         print("\n  Stopped.")
     finally:
@@ -888,7 +912,20 @@ def main() -> int:
     ap.add_argument("--skip-ads", action="store_true", help="Skip ADS1115 step")
     ap.add_argument("--skip-temp", action="store_true", help="Skip DS18B20 step")
     ap.add_argument("--skip-pwm", action="store_true", help="Skip PWM GPIO test")
-    ap.add_argument("--continuous", action="store_true", help="Live INA219 + ADS AIN0 table")
+    ap.add_argument(
+        "--continuous",
+        "--live",
+        action="store_true",
+        dest="continuous",
+        help="Stream all INA + ADS AIN0..3 every --interval s (Ctrl+C stops).",
+    )
+    ap.add_argument(
+        "--interval",
+        type=float,
+        default=1.0,
+        metavar="SEC",
+        help="Update period for --continuous / --live (default 1.0, min 0.05 s)",
+    )
     ap.add_argument(
         "--ads1115",
         nargs="?",
@@ -934,6 +971,7 @@ def main() -> int:
                 args.shunt,
                 skip_ads=args.skip_ads,
                 force_init=args.init,
+                interval_s=args.interval,
             )
             return 0
 

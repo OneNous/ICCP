@@ -69,13 +69,37 @@ INA219_DEFAULT_CONFIG_WORD: int = (
 
 
 def mux_select_on_bus(bus: Any, mux_addr: int | None, mux_ch: int | None) -> None:
-    """TCA9548A: select downstream port (0–7). No-op if mux_addr or mux_ch is None."""
+    """TCA9548A: select downstream port (0–7). No-op if mux_addr or mux_ch is None.
+
+    Retries on Linux errno 5/121 (often clears after short delay) — same class of
+    transients as INA219/ADS first-touch on a shared RPi I²C adapter.
+    """
     if mux_addr is None or mux_ch is None:
         return
     if mux_ch < 0 or mux_ch > 7:
         raise ValueError("mux channel must be 0..7")
-    bus.write_byte(int(mux_addr), 1 << int(mux_ch))
-    mux_post_select_stabilize()
+    max_a = 8
+    delay0 = 0.1
+    try:
+        import config.settings as _cfg
+
+        max_a = max(1, int(getattr(_cfg, "I2C_MUX_SELECT_MAX_ATTEMPTS", 8)))
+        delay0 = max(0.0, float(getattr(_cfg, "I2C_MUX_SELECT_RETRY_DELAY_S", 0.1)))
+    except Exception:
+        pass
+    control = 1 << int(mux_ch)
+    mxa = int(mux_addr)
+    for attempt in range(1, max_a + 1):
+        try:
+            bus.write_byte(mxa, control)
+            mux_post_select_stabilize()
+            return
+        except OSError as e:
+            en = getattr(e, "errno", None)
+            if en not in (5, 121) or attempt >= max_a:
+                raise
+            w = min(1.0, delay0 * attempt)
+            time.sleep(w)
 
 
 def mux_post_select_stabilize() -> None:

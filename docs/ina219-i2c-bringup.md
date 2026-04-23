@@ -32,7 +32,7 @@ This checklist matches the default mux layout in [`config/settings.py`](../confi
 ## 4) Software verification (on the Pi)
 
 1. Stop the service if it holds the bus: e.g. `sudo systemctl stop iccp` (frees I²C / PWM as applicable).
-2. Run **`iccp probe`** (or `python -m hw_probe`): every **STEP 1b** line for anodes and for ADS should be green.
+2. Run **`iccp probe`** (or `python -m hw_probe`): every **STEP 1b** line for anodes and for ADS should be green. For **ongoing** confirmation (values updating every second or faster), use **`iccp probe --continuous`** or **`iccp probe --live --interval 0.5`** — it streams all four INA channels and **ADS AIN0..3** (marks **`ADS1115_CHANNEL`** as ref), same smbus2 path as the one-shot steps, until Ctrl+C.
 3. Start: **`iccp start`** (or your normal foreground command) and confirm the log line:  
    **`[sensors] INA219 initialized on 4 channels`** (with your address list), and **no** `Hardware init failed` / empty `_sensors` follow-up.
 4. TUI / dashboard: anode rows should show real **BusV** / **mA**, not `no hardware` / `--` when the cell is powered and gated.
@@ -40,6 +40,12 @@ This checklist matches the default mux layout in [`config/settings.py`](../confi
 ### `iccp probe` green but `iccp start` / `iccp commission` still sees no hardware
 
 **Same `config` as probe (for a given `iccp` install):** The `iccp` CLI always `chdir`s to the package root and prepends it to `sys.path` before subcommands load, so `iccp probe` and `iccp commission` read the **same** [`config/settings.py`](../config/settings.py) (`I2C_MUX_ADDRESS`, `I2C_MUX_CHANNELS_INA219`, `I2C_MUX_CHANNEL_ADS1115`, `INA219_ADDRESSES`, etc.) — not a different mux map in another file. Real mismatches are usually a **different `iccp` on `PATH`** (another venv, `sudo` picking system Python instead of `sudo $(which iccp) ...`), a **non-editable** install in `site-packages` vs a checkout you are editing, or a **different** Python loading `config` (two checkouts on one Pi).
+
+**`iccp commission` Phase 1 passes, then Phase 2 crashes with `OSError: [Errno 5] Input/output error` in `mux_select` / `write_byte` to 0x70:** Phase 1 used the ref on **port 4**; Phase 2 steps **all anode INA** ports 0–3. That is still the **TCA9548A control write** (same as probe), not Python “logic.” Firmware already **retries** mux writes and can **re-open** `/dev/i2c-N` once after a stuck select (see `I2C_MUX_SELECT_MAX_ATTEMPTS`, `I2C_MUX_SMBUS_REOPEN_ON_SELECT_EIO` in settings). If it still fails, treat it as **hardware / electrical** until `iccp probe --live` can cycle **0–3 and 4** for minutes without EIO:
+
+- **Cabling:** short, twisted SDA/SCL, solid common **GND**; 2.2k–4.7k **pull-ups** to 3.3V if the run is long or the mux is under-fed.
+- **Power:** 3.3V on the mux VCC and each INA during CP activity (loads and PWM can expose marginal supplies).
+- **Narrow the fault:** if only certain ports EIO, suspect that **downstream** branch, strap, or INA, not the Pi alone.
 
 **Why probe can work while the controller/commissioning does not:** `iccp probe` uses **smbus2** for raw I²C (mux select, INA/ADS pokes) via [`hw_probe.py`](../hw_probe.py). `iccp start` and `iccp commission` **import** [`sensors.py`](../sensors.py), which runs **`pi-ina219`** `INA219.configure()` at import time. If that throws, you get **`[sensors] Hardware init failed: ...`**, an empty in-memory sensor list, and anode paths report **`no hardware`** even when probe’s STEP 1/1b was green. That is a **sensors** import / library init path — not a second, hidden config file with different mux values.
 

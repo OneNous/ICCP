@@ -118,6 +118,14 @@ I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
 # Non-zero reduces ``[Errno 5] Input/output error`` when switching TCA9548A → ADS1115 / INA219.
 # 0.001–0.002 s can help if mux→INA/ADS still EIOs after per-channel INA init retries.
 I2C_MUX_POST_SELECT_DELAY_S: float = 0.0005
+# TCA9548A ``write_byte`` control writes can transiently EIO (errno 5/121) on shared Pi
+# I²C like INA219/ADS — same backoff pattern as INA219 init (see :func:`i2c_bench.mux_select_on_bus`).
+I2C_MUX_SELECT_MAX_ATTEMPTS: int = 12
+I2C_MUX_SELECT_RETRY_DELAY_S: float = 0.1
+# If mux select still raises EIO after all retries, ``sensors.read_all_real`` can close
+# and reopen the SMBus handle once per channel (Pi kernels sometimes need this after
+# a stuck transaction). Set False only for unit tests or unusual bus drivers.
+I2C_MUX_SMBUS_REOPEN_ON_SELECT_EIO: bool = True
 # Bus-level I²C failure policy (see docs/iccp-requirements.md §4.3, Decision Q8).
 # When True, a **bus-level** INA219 read failure (OSError / errno 5 or equivalent — the
 # whole I²C bus is unhealthy) forces every non-FAULT channel to 0% PWM. Per-channel

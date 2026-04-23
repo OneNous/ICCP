@@ -18,7 +18,7 @@ Every subcommand has exactly one canonical spelling. No aliases.
   iccp clear-fault [--channel N]
                             Clear all channels (no --channel) or only channel N (0-based).
   iccp version              Print coilshield-iccp package version
-  iccp --help / -h          Usage
+  iccp --help / -h / help  Usage (all commands + quick guide)
 
 On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload`` unless
 ``ICCP_SYSTEMD_SYNC=0``. ``tui`` / ``dashboard`` / ``live`` / ``diag`` stop there.
@@ -147,6 +147,16 @@ def _print_help() -> None:
     print(
         """CoilShield ICCP — single CLI surface.
 
+  Typical order on a Pi (after wiring):
+    1)  sudo systemctl stop iccp   — free I²C / PWM (probe/commission also stop the unit)
+    2)  iccp probe                  — I²C sweep + INA/ADS checks; add --live --interval 0.5
+         to stream readings and confirm the mux and sensors (see: iccp probe --help)
+    3)  iccp commission             — native ref + target current (needs stable hardware)
+    4)  iccp start  or  systemctl   — run the controller; match --log-dir with tui/dashboard
+
+  Per-command flags:  iccp <command> --help
+    e.g.  iccp probe --help   iccp tui --help   iccp start --help
+
   iccp start [args ...]      Run controller. Sets COILSHIELD_SIM=0 unless you pass --sim.
                              Default argv: --real --verbose --skip-commission
                              On Pi: refuses if systemd iccp is already active (use --force).
@@ -177,7 +187,7 @@ def _print_help() -> None:
                              With --channel N (0-based): write an atomic JSON side file
                              that clears only channel N on the next controller tick.
   iccp version               Show coilshield-iccp version.
-  iccp --help / -h           This message.
+  iccp --help / -h / help   This list (and guide above).
 
 On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload`` automatically.
 ``tui`` / ``dashboard`` / ``live`` / ``diag`` stop there (read-only). ``commission`` /
@@ -514,7 +524,7 @@ def main() -> int:
     argv = sys.argv[1:]
     root = _project_root()
 
-    if not argv or argv[0] in ("-h", "--help"):
+    if not argv or argv[0] in ("-h", "--help", "help"):
         _print_help()
         return 0
 

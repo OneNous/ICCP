@@ -46,7 +46,7 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 
 **When to use it:** After wiring changes, mux/address changes, or when you see NACKs / wrong readings and want to isolate bus and sensors from the main loop.
 
-**Common flags** (see **`iccp probe --help`**): **`--init`**, **`--ads1115`**, **`--ads1115-only`**, **`--continuous`**, **`--skip-pwm`**, etc.
+**Common flags** (see **`iccp probe --help`**): **`--init`**, **`--ads1115`**, **`--ads1115-only`**, **`--continuous`** / **`--live`** (stream all INA + ADS AIN0..3; use **`--interval SEC`**), **`--skip-pwm`**, etc.
 
 **Notes:** On Pi, systemd runs **`stop`** on the **`iccp`** unit before probe so I2C/PWM are free. **STEP 1** is a flat “idle” I²C address sweep. If a **TCA9548A** is configured in `config.settings` (`I2C_MUX_ADDRESS` and related `I2C_MUX_CHANNEL_*` fields), only the mux (often **0x70**) may show on that sweep; **STEP 1b** then selects each configured downstream port and pings the expected INA219 and ADS1115—same model as the controller. A raw `i2cdetect` without per-port select does not see devices behind the mux. Datasheet notes: [tca9548a-datasheet-notes.md](knowledge-base/components/tca9548a-datasheet-notes.md) (mux) · [ina219-datasheet-notes.md](ina219-datasheet-notes.md) (INA219) · [ads1115-datasheet-notes.md](knowledge-base/components/ads1115-datasheet-notes.md) (ADS1115).
 
