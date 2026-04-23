@@ -18,9 +18,11 @@ This directory holds **long-form** reference pages for parts and **platform GPIO
 
 **Shorter project notes** (cross-links, Pi-specific caveats) remain at repo root under `docs/`:
 
+- [../architecture-channel-i2c-reference.md](../architecture-channel-i2c-reference.md) — anode channel ↔ INA / mux / ref (ADS) behavior and `no hardware` paths
 - [../raspberry-pi-gpio.md](../raspberry-pi-gpio.md)
 - [../anode-mosfet-irlz44.md](../anode-mosfet-irlz44.md)
 - [../ina219-datasheet-notes.md](../ina219-datasheet-notes.md)
+- [../ina219-i2c-bringup.md](../ina219-i2c-bringup.md)
 - [../mosfet-off-verification.md](../mosfet-off-verification.md)
 
 **Disclaimer:** Values and tables are transcribed for engineering convenience. **Authority** is always the vendor’s **current** datasheet or **upstream** Raspberry Pi documentation (revision, footnotes, and figures).

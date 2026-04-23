@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import glob
+import math
 import os
 import sys
 import time
@@ -119,6 +120,29 @@ def _mux_select_anode_for_probe(sm: object, ch_index: int) -> None:
         mux_select_on_bus(sm, int(mux_addr), int(per[ch_index]))
     elif leg is not None:
         mux_select_on_bus(sm, int(mux_addr), int(leg))
+
+
+def _format_z_ohm_effective(bus_v: float, current_ma: float) -> str:
+    """Effective |Vbus|/|I| in Ω (same idea as main controller impedance proxy)."""
+    if not math.isfinite(bus_v) or not math.isfinite(current_ma):
+        return "—"
+    if abs(current_ma) < 0.0005:
+        return "—"
+    i_a = abs(current_ma) / 1000.0
+    if i_a < 1e-12:
+        return "—"
+    z = abs(bus_v) / i_a
+    if not math.isfinite(z) or z < 0:
+        return "—"
+    if z > 1e9:
+        return f"{z:.2e} Ω"
+    if z >= 1e6:
+        return f"{z / 1e6:.2f} MΩ"
+    if z >= 1e3:
+        return f"{z / 1e3:.2f} kΩ"
+    if z > 1e3:
+        return f"{z:.0f} Ω"
+    return f"{z:.1f} Ω"
 
 
 def _i2c_diagnostic(e: BaseException, bus: int) -> None:
@@ -642,7 +666,13 @@ def run_ds18b20_probe() -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_pwm_test() -> None:
+def run_pwm_test(
+    bus: int,
+    shunt_ohms: float,
+    *,
+    force_init: bool = False,
+    read_ina219: bool = True,
+) -> None:
     section("STEP 5 — PWM GPIO test")
 
     try:
@@ -651,7 +681,48 @@ def run_pwm_test() -> None:
         print("  [!] RPi.GPIO not available. Run on the Pi itself.")
         return
 
+    from i2c_bench import INA219_DEFAULT_CONFIG_WORD, ina219_read, ina219_write_config
+
+    sm = None
+    ina_ok = False
+    if read_ina219:
+        try:
+            import smbus2
+
+            sm = smbus2.SMBus(bus)
+            ina_ok = True
+        except OSError as e:
+            print(f"  [!] I2C bus {bus} not opened — INA219 line omitted: {e}")
+        except ImportError:
+            print("  [!] smbus2 not installed — INA219 line omitted")
+
+    if ina_ok and sm is not None and force_init:
+        print(
+            f"  (--init) INA219 CONFIG 0x{INA219_DEFAULT_CONFIG_WORD:04X} before PWM …"
+        )
+        nch = min(len(PWM_PINS_BCM), len(INA219_ADDRESSES))
+        for ch in range(nch):
+            _mux_select_anode_for_probe(sm, ch)
+            try:
+                ina219_write_config(
+                    sm, int(INA219_ADDRESSES[ch]), INA219_DEFAULT_CONFIG_WORD
+                )
+                time.sleep(0.015)
+            except OSError as e:
+                print(f"  [!] init 0x{INA219_ADDRESSES[ch]:02X}: {e}")
+
     duty_steps = [0, 10, 25, 50, 75]
+    if ina_ok:
+        ina_note = (
+            "  After each step, INA219 (this anode) reports shunt mA, Vbus, "
+            "and Z ≈ |Vbus|/|I| (effective Ω).\n"
+        )
+    elif not read_ina219:
+        ina_note = "  (INA219 is skipped because --skip-ina.)\n"
+    else:
+        ina_note = (
+            "  I2C bus not opened — use DMM for mA/Ω, or fix smbus2 and permissions.\n"
+        )
 
     print(f"""
   Testing pins BCM {PWM_PINS_BCM} one at a time at {PWM_FREQ_HZ} Hz.
@@ -659,41 +730,84 @@ def run_pwm_test() -> None:
   At each duty level:
     Gate (GPIO)  → meter ≈ duty% × {GPIO_HIGH_V:.1f} V average
     Anode        → meter ≈ duty% × {SUPPLY_V:.1f} V if MOSFET switches
-""")
+{ina_note}""")
 
-    GPIO.setmode(GPIO.BCM)
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
 
-    for ch_idx, pin in enumerate(PWM_PINS_BCM):
-        section(f"  {anode_label(ch_idx)} — BCM pin {pin}")
-        GPIO.setup(pin, GPIO.OUT)
-        GPIO.output(pin, GPIO.LOW)
-        pwm = GPIO.PWM(pin, PWM_FREQ_HZ)
-        pwm.start(0)
+        for ch_idx, pin in enumerate(PWM_PINS_BCM):
+            ina_addr: int | None = None
+            if ch_idx < len(INA219_ADDRESSES):
+                ina_addr = int(INA219_ADDRESSES[ch_idx])
 
-        print(f"\n  Probe: {anode_label(ch_idx)} MOSFET gate → GND\n")
+            section(f"  {anode_label(ch_idx)} — BCM pin {pin}")
+            GPIO.setup(pin, GPIO.OUT)
+            GPIO.output(pin, GPIO.LOW)
+            pwm = GPIO.PWM(pin, PWM_FREQ_HZ)
+            pwm.start(0)
 
-        for duty in duty_steps:
-            pwm.ChangeDutyCycle(duty)
-            gate_v = GPIO_HIGH_V * duty / 100.0
-            anode_v = SUPPLY_V * duty / 100.0
-            print(
-                f"  Duty {duty:3d}%  →  gate ≈ {gate_v:.2f} V   anode avg ≈ {anode_v:.2f} V"
-            )
-            pause("           Measure now, then press Enter ...")
+            print(f"\n  Probe: {anode_label(ch_idx)} MOSFET gate → GND\n")
 
-        pwm.stop()
-        GPIO.output(pin, GPIO.LOW)
-        GPIO.setup(pin, GPIO.IN)
-        print(f"\n  {anode_label(ch_idx)} done — pin LOW then INPUT.")
+            for duty in duty_steps:
+                pwm.ChangeDutyCycle(duty)
+                # Let soft-PWM and cell settle (several periods at 100 Hz default).
+                time.sleep(0.22)
+                gate_v = GPIO_HIGH_V * duty / 100.0
+                anode_v = SUPPLY_V * duty / 100.0
+                ina_str = ""
+                if ina_ok and sm is not None and ina_addr is not None:
+                    _mux_select_anode_for_probe(sm, ch_idx)
+                    time.sleep(0.02)
+                    samples_ma: list[float] = []
+                    samples_bv: list[float] = []
+                    for _ in range(3):
+                        _mux_select_anode_for_probe(sm, ch_idx)
+                        r = ina219_read(sm, ina_addr, shunt_ohms)
+                        if r.get("ok"):
+                            samples_ma.append(float(r["current_ma"]))
+                            samples_bv.append(float(r["bus_v"]))
+                        time.sleep(0.04)
+                    if samples_ma:
+                        ma = sum(samples_ma) / len(samples_ma)
+                        bv = sum(samples_bv) / len(samples_bv)
+                        z_s = _format_z_ohm_effective(bv, ma)
+                        ina_str = (
+                            f"   shunt mA = {ma:8.3f}   Vbus = {bv:5.2f} V   Z ≈ {z_s}"
+                        )
+                    else:
+                        ina_str = "   INA219: (no successful read)"
+                elif read_ina219 and ina_addr is None:
+                    ina_str = "   INA: (no address for this index)"
 
-        if ch_idx < len(PWM_PINS_BCM) - 1:
-            next_pin = PWM_PINS_BCM[ch_idx + 1]
-            pause(
-                f"\n  Move meter to {anode_label(ch_idx + 1)} gate (BCM {next_pin}) → GND, "
-                f"then Enter..."
-            )
+                print(
+                    f"  Duty {duty:3d}%  →  gate ≈ {gate_v:.2f} V   anode avg ≈ {anode_v:.2f} V"
+                    f"{ina_str}"
+                )
+                pause("           Measure now, then press Enter ...")
 
-    GPIO.cleanup()
+            pwm.stop()
+            GPIO.output(pin, GPIO.LOW)
+            GPIO.setup(pin, GPIO.IN)
+            print(f"\n  {anode_label(ch_idx)} done — pin LOW then INPUT.")
+
+            if ch_idx < len(PWM_PINS_BCM) - 1:
+                next_pin = PWM_PINS_BCM[ch_idx + 1]
+                pause(
+                    f"\n  Move meter to {anode_label(ch_idx + 1)} gate (BCM {next_pin}) → GND, "
+                    f"then Enter..."
+                )
+
+    finally:
+        try:
+            GPIO.cleanup()
+        except Exception:
+            pass
+        if sm is not None:
+            try:
+                sm.close()
+            except OSError:
+                pass
     print("\n  All PWM pins tested.")
 
 
@@ -707,7 +821,7 @@ def print_summary() -> None:
   INA219: 4 addresses on scan; bus_v sensible; mA tracks load
   ADS1115: AIN0..3 read without error (reference on AIN0 typically)
   DS18B20: optional — 28-* in sysfs when 1-Wire enabled
-  PWM: gate follows duty × 3.3 V; anode follows if MOSFET correct
+  PWM: gate follows duty × 3.3 V; anode follows if MOSFET correct; INA219 mA/Ω on line
 """)
 
 
@@ -786,7 +900,12 @@ def main() -> int:
 
         if not args.skip_pwm:
             pause("\n  Ready for PWM test? Enter...")
-            run_pwm_test()
+            run_pwm_test(
+                args.bus,
+                args.shunt,
+                force_init=args.init,
+                read_ina219=not args.skip_ina,
+            )
 
         print_summary()
 

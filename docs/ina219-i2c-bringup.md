@@ -2,7 +2,7 @@
 
 This checklist matches the default mux layout in [`config/settings.py`](../config/settings.py): **TCA9548A @ 0x70**, **ports 0–3** to each anode INA219 (`INA219_ADDRESSES` **0x40, 0x41, 0x44, 0x45**), **port 4** to the reference **ADS1115** @ 0x48. If the reference path works but every anode shows `READ ERROR: no hardware`, the bus and mux may be fine; **ch4 vs ch0–3** often isolates a wiring, power, or address issue on the INA side.
 
-**Related:** root cause in [`sensors.py`](../sensors.py) (empty `_sensors` after import-time init failure) — see also [`docs/ina219-datasheet-notes.md`](ina219-datasheet-notes.md).
+**Related:** [architecture-channel-i2c-reference.md](architecture-channel-i2c-reference.md) (channel index ↔ address ↔ mux, ref vs anode code paths, import order). Root cause in [`sensors.py`](../sensors.py) (empty `_sensors` after import-time init failure) — see also [`ina219-datasheet-notes.md`](ina219-datasheet-notes.md).
 
 ## 1) Align `config/settings.py` with the board
 
