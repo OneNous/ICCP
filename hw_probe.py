@@ -109,7 +109,7 @@ def _safe_gpio_cleanup() -> None:
 def _mux_select_anode_for_probe(sm: object, ch_index: int) -> bool:
     """TCA9548A: match sensors.py — per-channel port or one legacy port before INA219 I/O.
 
-    Returns False if the mux control write failed (e.g. ``OSError`` errno 5) after retry.
+    Returns False if the mux control write failed (e.g. EIO/ETIMEDOUT) after retry.
     """
     if cfg is None:
         return True
@@ -126,12 +126,21 @@ def _mux_select_anode_for_probe(sm: object, ch_index: int) -> bool:
         port = int(leg)
     else:
         return True
+    trans = (5, 121, 110)
+    if cfg is not None:
+        try:
+            trans = tuple(
+                int(x) for x in getattr(cfg, "I2C_TRANSIENT_ERRNOS", (5, 121, 110))
+            )
+        except Exception:
+            pass
     for attempt in range(2):
         try:
             mux_select_on_bus(sm, int(mux_addr), port)
             return True
         except OSError as e:
-            if getattr(e, "errno", None) == 5 and attempt == 0:
+            en = getattr(e, "errno", None)
+            if en is not None and int(en) in trans and attempt == 0:
                 time.sleep(0.003)
                 continue
             return False
@@ -821,7 +830,7 @@ def run_pwm_test(
                     if not _mux_select_anode_for_probe(sm, ch_idx):
                         if not mux_eio_warned:
                             print(
-                                "  [!] TCA9548A mux write failed (errno 5 EIO). Use one "
+                                "  [!] TCA9548A mux write failed (I²C EIO/timeout). Use one "
                                 "I2C client: e.g.  sudo systemctl stop iccp  then re-run this "
                                 "step, or use  --skip-pwm  /  --skip-ina. (See dmesg for i2c-1.)\n"
                             )

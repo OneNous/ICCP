@@ -64,7 +64,13 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
         set_thermal_pause=lambda _active: None,
     )
 
-    commissioning.run(ref, ctrl, sim_state=sensors.SimSensorState(), verbose=False)
+    commissioning.run(
+        ref,
+        ctrl,
+        sim_state=sensors.SimSensorState(),
+        verbose=False,
+        anode_placement_prompts=False,
+    )
 
     assert comm_path.is_file()
     data = json.loads(comm_path.read_text())

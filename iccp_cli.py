@@ -5,9 +5,10 @@ CoilShield ``iccp`` CLI — the single supported entry point for this project.
 Every subcommand has exactly one canonical spelling. No aliases.
 
   iccp start [args ...]     Run the controller (defaults: --real --verbose --skip-commission)
-  iccp commission [--sim] [--force] [--native-only]
+  iccp commission [--sim] [--force] [--native-only] [--no-anode-prompts]
                             Self-commissioning (writes commissioning.json).
                             --native-only runs Phase 1 only (native baseline re-capture).
+                            Pauses for anode in/out unless --no-anode-prompts (or non-TTY / sim).
   iccp probe [args ...]     Hardware probe (see `iccp probe --help` / hw_probe.py)
   iccp tui [--poll-interval SEC] [--log-dir PATH]
                             Terminal UI (Textual)
@@ -163,11 +164,14 @@ def _print_help() -> None:
                              Optional: --log-dir /abs/path/logs (same as COILSHIELD_LOG_DIR;
                              must match dashboard / tui).
 
-  iccp commission [--sim] [--force] [--native-only]
+  iccp commission [--sim] [--force] [--native-only] [--no-anode-prompts]
                              Self-commission (writes commissioning.json).
                              On Pi uses hardware unless --sim. Aborts if latest.json is fresh
                              unless --force (stop the iccp service first).
                              --native-only runs Phase 1 only (native baseline re-capture).
+                             Without --no-anode-prompts, waits for Enter: anodes out (Phase 1),
+                             then anodes in (before Phase 2). Disabled for sim, pipes, or
+                             COMMISSIONING_ANODE_PLACEMENT_PROMPTS=0 / ICCP_COMMISSION_NO_ANODE_PROMPTS=1.
 
   iccp probe [args ...]      Hardware probe (I2C, INA219 smbus2, ADS1115, DS18B20, PWM).
                              See `iccp probe --help` for options.
@@ -439,6 +443,10 @@ def _cmd_commission(rest: list[str]) -> int:
     native_only = "--native-only" in rest
     if native_only:
         rest = [a for a in rest if a != "--native-only"]
+    no_anode_prompts = "--no-anode-prompts" in rest
+    if no_anode_prompts:
+        rest = [a for a in rest if a != "--no-anode-prompts"]
+    anode_prompt_kw = {"anode_placement_prompts": False} if no_anode_prompts else {}
     use_sim = "--sim" in rest
     if use_sim:
         os.environ["COILSHIELD_SIM"] = "1"
@@ -488,7 +496,7 @@ def _cmd_commission(rest: list[str]) -> int:
     try:
         if native_only:
             native_mv, reason = commissioning.run_native_only(
-                ref, ctrl, sim_state=sim_state, verbose=True
+                ref, ctrl, sim_state=sim_state, verbose=True, **anode_prompt_kw
             )
             if native_mv is None:
                 print(
@@ -502,7 +510,7 @@ def _cmd_commission(rest: list[str]) -> int:
             )
         else:
             commissioned = commissioning.run(
-                ref, ctrl, sim_state=sim_state, verbose=True
+                ref, ctrl, sim_state=sim_state, verbose=True, **anode_prompt_kw
             )
             print(
                 f"[iccp commission] Done. commissioned_target_ma={commissioned:.3f} "

@@ -9,6 +9,7 @@ from control import Controller
 
 
 def test_any_read_error_forces_all_channels_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "NUM_CHANNELS", 4, raising=False)
     monkeypatch.setattr(cfg, "INA219_FAILSAFE_ALL_OFF", True, raising=False)
     ctrl = Controller()
     readings: dict[int, dict] = {
@@ -27,6 +28,7 @@ def test_any_read_error_forces_all_channels_open(monkeypatch: pytest.MonkeyPatch
 def test_failsafe_disabled_skips_aggregate_hold_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(cfg, "NUM_CHANNELS", 4, raising=False)
     monkeypatch.setattr(cfg, "INA219_FAILSAFE_ALL_OFF", False, raising=False)
     ctrl = Controller()
     ok = {"ok": True, "current": 0.4, "bus_v": 5.0}

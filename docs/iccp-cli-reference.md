@@ -35,6 +35,7 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 - **`--sim`**: simulator (also used automatically off-Pi).
 - **`--force`**: skip the guard that aborts if **`latest.json`** was updated very recently (another controller may still own PWM). Use only when you are sure nothing else is driving the stack.
 - **`--native-only`**: run Phase 1 only — re-capture the native baseline via the new `reference.capture_native` primitive (static gate off, rest-current gate, stability + slope gates, median of samples) and persist it to **`commissioning.json`** with a fresh `native_measured_unix` / `native_recapture_due_unix`. Does not touch `commissioned_target_ma`. Per docs/iccp-requirements.md §3.4 / §8.1 Phase 1.
+- **Default (interactive):** two **Press Enter** pauses on a TTY — confirm anodes are **out** of the bath before open-circuit native (Phase 1), then **in** before the CP ramp (Phase 2). Skipped in **`--sim`**, when stdin is not a TTY, or with **`--no-anode-prompts`**, or set **`COMMISSIONING_ANODE_PLACEMENT_PROMPTS = False`** in `config.settings`, or env **`ICCP_COMMISSION_NO_ANODE_PROMPTS=1`**.
 
 **Notes:** On Pi, commission stops the **`iccp`** systemd unit first (`stop`, not `restart`) so PWM is not left running by the service. Requires **`RPi.GPIO`** on real hardware.
 
@@ -48,7 +49,7 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 
 **Common flags** (see **`iccp probe --help`**): **`--init`**, **`--ads1115`**, **`--ads1115-only`**, **`--continuous`** / **`--live`** (stream all INA + ADS AIN0..3; use **`--interval SEC`**), **`--skip-pwm`**, etc.
 
-**Notes:** On Pi, systemd runs **`stop`** on the **`iccp`** unit before probe so I2C/PWM are free. **STEP 1** is a flat “idle” I²C address sweep. If a **TCA9548A** is configured in `config.settings` (`I2C_MUX_ADDRESS` and related `I2C_MUX_CHANNEL_*` fields), only the mux (often **0x70**) may show on that sweep; **STEP 1b** then selects each configured downstream port and pings the expected INA219 and ADS1115—same model as the controller. A raw `i2cdetect` without per-port select does not see devices behind the mux. Datasheet notes: [tca9548a-datasheet-notes.md](knowledge-base/components/tca9548a-datasheet-notes.md) (mux) · [ina219-datasheet-notes.md](ina219-datasheet-notes.md) (INA219) · [ads1115-datasheet-notes.md](knowledge-base/components/ads1115-datasheet-notes.md) (ADS1115).
+**Notes:** On Pi, systemd runs **`stop`** on the **`iccp`** unit before probe so I2C/PWM are free. **STEP 1** is a flat “idle” I²C address sweep. With **no mux** in `config.settings` (default), that sweep should list all INA and ADS addresses. If a **TCA9548A** is configured (`I2C_MUX_ADDRESS` and `I2C_MUX_CHANNEL_*`), only the mux (often **0x70**) may show on **STEP 1**; **STEP 1b** then selects each configured downstream port and pings the expected INA219 and ADS1115—same model as the controller. A raw `i2cdetect` without per-port select does not see devices behind the mux. Datasheet notes: [tca9548a-datasheet-notes.md](knowledge-base/components/tca9548a-datasheet-notes.md) (mux) · [ina219-datasheet-notes.md](ina219-datasheet-notes.md) (INA219) · [ads1115-datasheet-notes.md](knowledge-base/components/ads1115-datasheet-notes.md) (ADS1115).
 
 ---
 

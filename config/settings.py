@@ -41,8 +41,14 @@ I2C_BUS = 1
 #   dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=20,i2c_gpio_scl=12
 REF_I2C_BUS = 1
 
-INA219_ADDRESSES = [0x40, 0x41, 0x44, 0x45]
-NUM_CHANNELS = 4
+# INA list length must match NUM_CHANNELS (firmware Anode 1..N = idx 0..N-1).
+#
+# **Field: Anode 1 / 0x40 INA shorted (mux damaged) — run three INAs only.** UI “Anode 1..3”
+# are the three working cells (former physical anodes 2–4: 0x41, 0x44, 0x45). After replacing
+# the INA at 0x40, restore four channels: [0x40, 0x41, 0x44, 0x45], NUM_CHANNELS=4,
+# PWM_GPIO_PINS=(17, 27, 22, 23). See docs/ina219-i2c-bringup.md (fewer than four INA219s).
+INA219_ADDRESSES = [0x41, 0x44, 0x45]
+NUM_CHANNELS = 3
 
 # ADS1115 reference ADC (header I2C; optional TCA9548A via I2C_MUX_*).
 # I²C 7-bit overlap: ADS1115 ADDR pin selects 0x48-0x4B; INA219 A0/A1 can strap 0x48-0x4F.
@@ -103,26 +109,28 @@ REF_ADC_BACKEND = "ads1115"
 # Field default Ag/AgCl sense; legacy bench Cu was ``copper_bench`` — informational for logs/docs.
 REF_ELECTRODE_KIND = "ag_agcl"
 
-# TCA9548A @ 0x70 (typical A2/A1/A0 straps). Map must match the PCB:
-#   • INA219 anodes: ch0..3 → devices at INA219_ADDRESSES (0x40,0x41,0x44,0x45 by default).
-#   • Reference ADS1115: ch4 → ADS1115 @ ADS1115_ADDRESS (0x48 default).
-# Control byte = 1 << port. See docs/ina219-i2c-bringup.md for bring-up.
-# Bench / no-mux: I2C_MUX_ADDRESS = None and all mux channel fields None.
-I2C_MUX_ADDRESS: int | None = 0x70
-I2C_MUX_CHANNEL_ADS1115: int | None = 4
+# Optional TCA9548A (e.g. @ 0x70) when anodes and ADS sit on different downstream ports.
+# Default: **no mux** — all INA219 + ADS1115 on the same SDA/SCL (unique 7-bit addresses).
+# Muxed rig example: I2C_MUX_ADDRESS=0x70, I2C_MUX_CHANNELS_INA219=(0,1,2,3), I2C_MUX_CHANNEL_ADS1115=4
+#   • INA219: ch0..3 at INA219_ADDRESSES; ref ADS on I2C_MUX_CHANNEL_ADS1115.
+# Control byte = 1 << port. See docs/ina219-i2c-bringup.md.
+I2C_MUX_ADDRESS: int | None = None
+I2C_MUX_CHANNEL_ADS1115: int | None = None
 # Single downstream port shared by every anode INA219 (ignored if I2C_MUX_CHANNELS_INA219 set).
 I2C_MUX_CHANNEL_INA219: int | None = None
-# Per anode index 0..NUM_CHANNELS-1: TCA9548A port before that INA219 (bit mask 0x01,0x02,0x04,0x08).
-I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
+# Per anode index 0..NUM_CHANNELS-1: TCA9548A port before that INA219; None = no per-port select.
+I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = None
 # After selecting a mux downstream port, optional settle time before talking to INA219/ADS.
 # Non-zero reduces ``[Errno 5] Input/output error`` when switching TCA9548A → ADS1115 / INA219.
 # 0.001–0.002 s can help if mux→INA/ADS still EIOs after per-channel INA init retries.
 I2C_MUX_POST_SELECT_DELAY_S: float = 0.0005
-# TCA9548A ``write_byte`` control writes can transiently EIO (errno 5/121) on shared Pi
-# I²C like INA219/ADS. Keep attempts LOW (2) for the hot read path — each retry adds
-# delay to every control-loop tick. The SMBus-reopen fallback in sensors.read_all_real
-# handles persistent failures. Init paths (import, commissioning) tolerate more retries
-# because they run once; set INA219_INIT_MAX_ATTEMPTS / REF_ADS1115_INIT_MAX_ATTEMPTS separately.
+# Transient I²C errnos retried in mux select, INA import init, reference reads, etc.:
+# 5 EIO, 121 EREMOTEIO, 110 ETIMEDOUT (common when SCL is stuck / clock-stretch or bus hangs).
+I2C_TRANSIENT_ERRNOS: tuple[int, ...] = (5, 121, 110)
+# TCA9548A ``write_byte`` can hit those errnos on shared Pi I²C. Keep attempts LOW (2) for
+# the hot read path — each retry adds delay to every control-loop tick. The SMBus-reopen
+# fallback in sensors.read_all_real handles persistent failures. Init paths (import,
+# commissioning) use INA219_INIT_MAX_ATTEMPTS / REF_ADS1115_INIT_MAX_ATTEMPTS separately.
 I2C_MUX_SELECT_MAX_ATTEMPTS: int = 2
 I2C_MUX_SELECT_RETRY_DELAY_S: float = 0.003
 # If mux select still raises EIO after all retries, ``sensors.read_all_real`` can close
@@ -135,9 +143,8 @@ I2C_MUX_SMBUS_REOPEN_ON_SELECT_EIO: bool = True
 # transients that are not bus-level faults the offending channel only and leave siblings
 # regulating. The classification lives in control.py:_bus_level_read_failure().
 INA219_FAILSAFE_ALL_OFF: bool = True
-# errno values that classify an INA219 read failure as a bus-level event. Linux reports 5
-# (EIO) and 121 (EREMOTEIO) for SMBus NACKs on a stuck/shared bus.
-INA219_BUS_LEVEL_ERRNOS: tuple[int, ...] = (5, 121)
+# errno values that classify an INA219 read failure as a bus-level event (stuck/hung bus).
+INA219_BUS_LEVEL_ERRNOS: tuple[int, ...] = (5, 121, 110)
 # How many channels must fail with bus-level errors in a single tick before the whole
 # bank drops to 0% PWM. Default 2 avoids a single-INA219 wiring nack tripping the system.
 INA219_FAILSAFE_MIN_BUS_CHANNELS: int = 2
@@ -266,7 +273,9 @@ PWM_MIN_DUTY = 1
 PWM_MAX_DUTY = 80
 
 # --- GPIO (BCM) ---
-PWM_GPIO_PINS = (17, 27, 22, 23)
+# Aligned with INA219_ADDRESSES: one gate GPIO per row (idx 0 = “Anode 1” in UI = first address).
+# With 3 channels: (27, 22, 23) = former anodes 2–4; BCM 17 left unused until ch0 INA is replaced.
+PWM_GPIO_PINS = (27, 22, 23)
 LED_STATUS_GPIO = 25
 
 # Shared electrochemical return / electrolyte: one MOSFET duty (software bank) for all
@@ -359,6 +368,10 @@ COMMISSIONING_PHASE1_OFF_VERIFY = True
 # Phase 1: stop soft-PWM and hold each gate pin at static LOW (same idea as PWMBank.cleanup).
 # Improves “true off” vs ChangeDutyCycle(0) alone; set False only if your hardware misbehaves.
 COMMISSIONING_PHASE1_STATIC_GATE_LOW = True
+# Pauses: confirm anodes **removed** before open-circuit native (Phase 1), then **installed**
+# before CP ramp (Phase 2). Off in `COILSHIELD_SIM=1`, non-TTY, or
+# `iccp commission --no-anode-prompts` / env `ICCP_COMMISSION_NO_ANODE_PROMPTS=1`.
+COMMISSIONING_ANODE_PLACEMENT_PROMPTS: bool = True
 COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S = 3.0
 # Stricter ceiling (mA) for “at rest” before native averaging — abort if exceeded after long settle.
 # Keep in line with COMMISSIONING_OC_CONFIRM_I_MA so bench parasitic / INA offset does not abort Phase 1.

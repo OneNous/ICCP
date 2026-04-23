@@ -71,8 +71,8 @@ INA219_DEFAULT_CONFIG_WORD: int = (
 def mux_select_on_bus(bus: Any, mux_addr: int | None, mux_ch: int | None) -> None:
     """TCA9548A: select downstream port (0–7). No-op if mux_addr or mux_ch is None.
 
-    Retries on Linux errno 5/121 (often clears after short delay) — same class of
-    transients as INA219/ADS first-touch on a shared RPi I²C adapter.
+    Retries on Linux transient I²C errnos (see ``config.settings.I2C_TRANSIENT_ERRNOS``)
+    — same class of issues as INA219/ADS first-touch on a shared RPi I²C adapter.
     """
     if mux_addr is None or mux_ch is None:
         return
@@ -80,11 +80,15 @@ def mux_select_on_bus(bus: Any, mux_addr: int | None, mux_ch: int | None) -> Non
         raise ValueError("mux channel must be 0..7")
     max_a = 8
     delay0 = 0.1
+    transient: tuple[int, ...] = (5, 121, 110)
     try:
         import config.settings as _cfg
 
         max_a = max(1, int(getattr(_cfg, "I2C_MUX_SELECT_MAX_ATTEMPTS", 8)))
         delay0 = max(0.0, float(getattr(_cfg, "I2C_MUX_SELECT_RETRY_DELAY_S", 0.1)))
+        transient = tuple(
+            int(x) for x in getattr(_cfg, "I2C_TRANSIENT_ERRNOS", (5, 121, 110))
+        )
     except Exception:
         pass
     control = 1 << int(mux_ch)
@@ -96,7 +100,7 @@ def mux_select_on_bus(bus: Any, mux_addr: int | None, mux_ch: int | None) -> Non
             return
         except OSError as e:
             en = getattr(e, "errno", None)
-            if en not in (5, 121) or attempt >= max_a:
+            if en is None or int(en) not in transient or attempt >= max_a:
                 raise
             w = min(1.0, delay0 * attempt)
             time.sleep(w)

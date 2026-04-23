@@ -221,6 +221,17 @@ def _init_ref_ina219() -> None:
         _ref_ina = None
 
 
+def _i2c_transient_errno(e: BaseException) -> bool:
+    """True if ``e`` is an OSError/TimeoutError with a errno we retry (mux/ADS/INA)."""
+    if not isinstance(e, OSError):
+        return False
+    en = getattr(e, "errno", None)
+    if en is None:
+        return False
+    t = tuple(int(x) for x in getattr(cfg, "I2C_TRANSIENT_ERRNOS", (5, 121, 110)))
+    return int(en) in t
+
+
 def _init_ref_ads1115() -> None:
     """Open SMBus, mux to ADS1115, test read; multiple attempts on EIO (busy I²C at import)."""
     global _ref_smbus, _REF_INIT_ERROR
@@ -265,6 +276,17 @@ def _init_ref_ads1115() -> None:
                 f"(±{fsr} V, electrode={kind!r}){tag}"
             )
             return
+        except KeyboardInterrupt:
+            if sm is not None:
+                try:
+                    sm.close()
+                except Exception:
+                    pass
+            print(
+                "\n[reference] ADS1115 init interrupted (Ctrl+C).",
+                file=sys.stderr,
+            )
+            raise
         except Exception as e:
             last_err = e
             _REF_INIT_ERROR = str(e)
@@ -281,7 +303,14 @@ def _init_ref_ads1115() -> None:
                     f"[reference] ADS1115 init attempt {attempt}/{max_a} failed:{es} {e!s} — "
                     f"retrying in {w:.2f}s"
                 )
-                time.sleep(w)
+                try:
+                    time.sleep(w)
+                except KeyboardInterrupt:
+                    print(
+                        "\n[reference] ADS1115 init interrupted (Ctrl+C).",
+                        file=sys.stderr,
+                    )
+                    raise
     _ref_smbus = None
     _REF_INIT_ERROR = str(last_err) if last_err else "init failed"
     print(
@@ -368,7 +397,7 @@ def _read_raw_mv_hw() -> float:
                         _REF_LAST_READ_FAILED = False
                         return float(statistics.median(samples))
                 except OSError as e:
-                    if getattr(e, "errno", None) == 5 and attempt == 0:
+                    if _i2c_transient_errno(e) and attempt == 0:
                         time.sleep(0.003)
                         continue
                     raise
@@ -437,7 +466,7 @@ def _read_raw_mv_hw() -> float:
                 _REF_LAST_READ_FAILED = False
                 return float(statistics.median(samples))
         except OSError as e:
-            if getattr(e, "errno", None) == 5 and attempt == 0:
+            if _i2c_transient_errno(e) and attempt == 0:
                 time.sleep(0.003)
                 continue
             _REF_LAST_READ_FAILED = True
@@ -448,7 +477,7 @@ def _read_raw_mv_hw() -> float:
             print(f"[reference] ADS1115 read failed: {e}")
             return 0.0
     _REF_LAST_READ_FAILED = True
-    print("[reference] ADS1115 read failed: repeated I/O error (errno 5)")
+    print("[reference] ADS1115 read failed: repeated I/O error (transient I²C errnos)")
     return 0.0
 
 
@@ -711,7 +740,7 @@ def _read_ads_mv_scaled_once(
         return float(ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr))
 
     n_sub = max(1, int(median_subsamples))
-    # Same bus as anode INA219 reads: serialize with i2c_bus_lock + errno-5 retry
+    # Same bus as anode INA219 reads: serialize with i2c_bus_lock + transient I²C retry
     # (matches _read_raw_mv_hw). OC burst used to interleave without the lock → EIO.
     for attempt in range(2):
         try:
@@ -722,7 +751,7 @@ def _read_ads_mv_scaled_once(
                 sub = [_one_volt() * 1000.0 * scale for _ in range(n_sub)]
                 return round(float(statistics.median(sub)), 4)
         except OSError as e:
-            if getattr(e, "errno", None) == 5 and attempt == 0:
+            if _i2c_transient_errno(e) and attempt == 0:
                 time.sleep(0.003)
                 continue
             print(f"[reference] ADS1115 read failed: {e}")
@@ -730,7 +759,7 @@ def _read_ads_mv_scaled_once(
         except Exception as e:
             print(f"[reference] ADS1115 read failed: {e}")
             return 0.0
-    print("[reference] ADS1115 read failed: repeated I/O error (errno 5)")
+    print("[reference] ADS1115 read failed: repeated I/O error (transient I²C errnos)")
     return 0.0
 
 

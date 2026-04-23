@@ -1,7 +1,7 @@
 """Bus-scoped INA219 fail-safe — docs/iccp-requirements.md §4.3 (Decision Q8).
 
 Non-bus read errors must stay per-channel so a single flaky INA219 cannot force
-every siblings' PWM to 0%. Bus-level errno-5 / errno-121 failures across
+every siblings' PWM to 0%. Bus-level errno-5 / errno-121 / errno-110 failures across
 ``INA219_FAILSAFE_MIN_BUS_CHANNELS`` channels escalate to the aggregate
 `all_off` path that zeros the entire bus and appends the "forced OPEN" banner.
 """
@@ -14,9 +14,10 @@ import config.settings as cfg
 from control import Controller, _bus_level_read_failure
 
 
-def test_bus_level_classifier_recognizes_errno_5_and_121() -> None:
+def test_bus_level_classifier_recognizes_errno_5_121_110() -> None:
     assert _bus_level_read_failure({"ok": False, "errno": 5}) is True
     assert _bus_level_read_failure({"ok": False, "errno": 121}) is True
+    assert _bus_level_read_failure({"ok": False, "errno": 110}) is True
     # String-only is enough when the kernel bubbled up the usual OSError repr.
     assert _bus_level_read_failure(
         {"ok": False, "error": "OSError: [Errno 5] Input/output error"}
@@ -72,6 +73,7 @@ def test_single_bus_error_below_threshold_stays_per_channel(
 def test_bus_errors_above_threshold_trigger_all_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(cfg, "NUM_CHANNELS", 4, raising=False)
     monkeypatch.setattr(cfg, "INA219_FAILSAFE_ALL_OFF", True, raising=False)
     monkeypatch.setattr(cfg, "INA219_FAILSAFE_MIN_BUS_CHANNELS", 2, raising=False)
     ctrl = Controller()

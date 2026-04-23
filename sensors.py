@@ -92,7 +92,8 @@ def _ina219_import_init_retryable(exc: BaseException) -> bool:
     """True for Linux I/O errors on I²C that often clear after short delay and retry."""
     if isinstance(exc, OSError):
         en = getattr(exc, "errno", None)
-        return en in (5, 121)
+        t = tuple(int(x) for x in getattr(cfg, "I2C_TRANSIENT_ERRNOS", (5, 121, 110)))
+        return en is not None and int(en) in t
     return False
 
 
@@ -258,13 +259,10 @@ def _ina219_one_off_diag(iccp_ch: int, addr: int) -> dict[str, Any] | None:
 
 def read_all_real() -> dict[int, ChannelReading]:
     """
-    Read all 4 ICCP channels from INA219 hardware.
+    Read all ``cfg.NUM_CHANNELS`` ICCP channels from INA219 hardware.
 
-    Channel mapping (firmware idx → INA219; Anode N = idx + 1):
-        idx 0 (Anode 1) → 0x40
-        idx 1 (Anode 2) → 0x41
-        idx 2 (Anode 3) → 0x44
-        idx 3 (Anode 4) → 0x45
+    Channel mapping: firmware ``idx`` → ``INA219_ADDRESSES[idx]``; Anode N in copy = ``idx + 1``.
+    Default four-board layout: idx 0..3 → 0x40, 0x41, 0x44, 0x45.
 
     If ``I2C_MUX_CHANNELS_INA219`` is set, selects that TCA9548A port (0..7) before
     each channel read (one downstream branch at a time). Legacy single-port layout
@@ -312,8 +310,15 @@ def read_all_real() -> dict[int, ChannelReading]:
                         _remux_ina219_channel(iccp_ch, mux_bus)
                     except OSError as e:
                         en = getattr(e, "errno", None)
+                        trans = tuple(
+                            int(x)
+                            for x in getattr(
+                                cfg, "I2C_TRANSIENT_ERRNOS", (5, 121, 110)
+                            )
+                        )
                         do_reopen = bool(
-                            en in (5, 121)
+                            en is not None
+                            and int(en) in trans
                             and mux_bus is not None
                             and getattr(
                                 cfg, "I2C_MUX_SMBUS_REOPEN_ON_SELECT_EIO", True
@@ -343,7 +348,14 @@ def read_all_real() -> dict[int, ChannelReading]:
                             power_mw = sensor.power()  # mW
                             break
                         except OSError as e:
-                            if getattr(e, "errno", None) == 5 and attempt == 0:
+                            enr = getattr(e, "errno", None)
+                            trans = tuple(
+                                int(x)
+                                for x in getattr(
+                                    cfg, "I2C_TRANSIENT_ERRNOS", (5, 121, 110)
+                                )
+                            )
+                            if enr is not None and int(enr) in trans and attempt == 0:
                                 time.sleep(0.002)
                                 _remux_ina219_channel(iccp_ch, mux_bus)
                                 continue

@@ -100,7 +100,7 @@ Interpret **MIN/TYP/MAX** and **test conditions** from the PDF for your **VCC** 
 | … | … | … | … | … |
 | H | H | H | 119 | **0x77** |
 
-CoilShield’s default **`I2C_MUX_ADDRESS = 0x70`** matches **all straps low**.
+A typical **muxed** CoilShield profile uses **`I2C_MUX_ADDRESS = 0x70`**, which matches **all straps low** on the TCA9548A. The stock [`config/settings.py`](../../../config/settings.py) in this repo defaults to **no mux** (`I2C_MUX_ADDRESS = None`); set **0x70** only when a multiplexer is on the bus.
 
 ### Single-register device (§7.5.3)
 

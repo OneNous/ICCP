@@ -47,7 +47,8 @@ def test_controller_update_unifies_duty_in_bank_mode(monkeypatch) -> None:
             ctrl._states[ch].status = ChannelState.REGULATE  # noqa: SLF001
         _, _ = ctrl.update(r)
         d = ctrl.duties()
-        assert d[0] == d[1] == d[2] == d[3]
+        d0 = d[0]
+        assert all(d[i] == d0 for i in range(cfg.NUM_CHANNELS))
     finally:
         cfg.SHARED_RETURN_PWM = False
 
@@ -57,7 +58,7 @@ def test_set_output_duty_pct_drives_unified() -> None:
     try:
         c = Controller()
         c.set_output_duty_pct(2, 35.0)
-        assert c.output_duty_pct(0) == c.output_duty_pct(3) == 35.0
+        assert all(c.output_duty_pct(i) == 35.0 for i in range(cfg.NUM_CHANNELS))
     finally:
         cfg.SHARED_RETURN_PWM = False
         c.all_outputs_off()

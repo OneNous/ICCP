@@ -7,6 +7,7 @@ Reset: delete commissioning.json or call commissioning.reset().
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import sys
 import time
@@ -23,6 +24,59 @@ if TYPE_CHECKING:
     from control import Controller
 
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
+
+def _anode_placement_should_interact(
+    anode_placement_prompts: bool | None,
+) -> bool:
+    """True when we should block on operator Enter (removed / installed anodes)."""
+    import sensors
+
+    if anode_placement_prompts is False:
+        return False
+    if sensors.SIM_MODE:
+        return False
+    if anode_placement_prompts is None and not bool(
+        getattr(cfg, "COMMISSIONING_ANODE_PLACEMENT_PROMPTS", True)
+    ):
+        return False
+    if (os.environ.get("ICCP_COMMISSION_NO_ANODE_PROMPTS", "") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return False
+    return bool(sys.stdin.isatty())
+
+
+def _anode_placement_pause(
+    step: str,
+    *,
+    anode_placement_prompts: bool | None,
+) -> None:
+    if not _anode_placement_should_interact(anode_placement_prompts):
+        return
+    ts = f"[commission {time.strftime('%H:%M:%S')}]"
+    if step == "before_phase1":
+        banner = (
+            f"\n{ts} Anode placement — before native Ecorr (Phase 1)\n"
+            "  • Confirm anode assemblies are **removed** from the electrolyte (open-circuit).\n"
+            "  Press Enter to start the reference measurement… "
+        )
+    elif step == "after_phase1":
+        banner = (
+            f"\n{ts} Anode placement — before CP ramp (Phase 2)\n"
+            "  • Phase 1 (native) is done. **Install** anode assemblies in the cell.\n"
+            "  Press Enter to continue with current ramp and polarization check… "
+        )
+    else:  # pragma: no cover
+        banner = f"\n{ts} (internal: unknown anode step {step!r})\nPress Enter… "
+
+    try:
+        print(banner, end="", flush=True)
+        input()
+    except EOFError:
+        pass
+
 
 def _native_capture_fail_hint(cap_reason: str) -> str:
     """User-facing line for failed Phase 1 capture (see reference.capture_native reasons)."""
@@ -674,6 +728,7 @@ def run(
     controller: Controller,
     sim_state: Any | None = None,
     verbose: bool = True,
+    anode_placement_prompts: bool | None = None,
 ) -> float:
     import sensors
 
@@ -685,6 +740,7 @@ def run(
     log("Phase 1 — measuring native corrosion potential (spec capture / median)")
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
+    _anode_placement_pause("before_phase1", anode_placement_prompts=anode_placement_prompts)
     native_mv, cap_reason = _phase1_spec_native_capture(reference, controller, sim_state)
     if native_mv is None:
         raise RuntimeError(
@@ -701,6 +757,8 @@ def run(
         f"Target polarization shift: ≥{cfg.TARGET_SHIFT_MV} mV (native − reading); "
         f"ref typically falls toward ~{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
     )
+
+    _anode_placement_pause("after_phase1", anode_placement_prompts=anode_placement_prompts)
 
     # Phase 2 — ramp until target shift
     log("Phase 2 — ramping current toward target polarization")
@@ -810,6 +868,7 @@ def run_native_only(
     controller: Controller,
     sim_state: Any | None = None,
     verbose: bool = True,
+    anode_placement_prompts: bool | None = None,
 ) -> tuple[float | None, str]:
     """Phase 1 only: re-capture the native baseline without ramp/lock phases.
 
@@ -825,6 +884,7 @@ def run_native_only(
             print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
 
     log("Phase 1 (native-only) — measuring native corrosion potential")
+    _anode_placement_pause("before_phase1", anode_placement_prompts=anode_placement_prompts)
     native_mv, reason = _phase1_spec_native_capture(reference, controller, sim_state)
 
     if native_mv is None:

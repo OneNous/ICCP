@@ -9,7 +9,7 @@ Every user-facing “Anode N” maps to a **0-based index** `ch` with **`N = ch 
 | Concern | Config / code |
 |--------|----------------|
 | Shunt / bus sense | [`INA219_ADDRESSES[ch]`](../config/settings.py) — list order is the only binding to “which INA is anode 1..4” |
-| TCA port before that INA | [`I2C_MUX_CHANNELS_INA219[ch]`](../config/settings.py) (when `I2C_MUX_ADDRESS` is set) |
+| TCA port before that INA | [`I2C_MUX_CHANNELS_INA219[ch]`](../config/settings.py) (only when `I2C_MUX_ADDRESS` is set; `None` = all INA on the same bus, no mux) |
 | PWM MOSFET | [`PWM_GPIO_PINS[ch]`](../config/settings.py) |
 | Labels in faults / logs | [`channel_labels.py`](../channel_labels.py) `anode_hw_label(ch)` combines GPIO + INA addr + optional TCA port |
 

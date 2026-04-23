@@ -16,7 +16,13 @@ def test_mux_downstream_returns_none_when_no_mux_in_settings(
     assert hw_probe.mux_downstream_i2c_probe(1) is None
 
 
-def test_mux_downstream_pings_ina_per_port_and_ads() -> None:
+def test_mux_downstream_pings_ina_per_port_and_ads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercises TCA path; repo default may be no-mux, so set mux here explicitly."""
+    monkeypatch.setattr(cfg, "I2C_MUX_ADDRESS", 0x70)
+    monkeypatch.setattr(cfg, "I2C_MUX_CHANNEL_ADS1115", 4)
+    monkeypatch.setattr(cfg, "I2C_MUX_CHANNELS_INA219", (0, 1, 2, 3))
     smbus2 = pytest.importorskip("smbus2")
     bus = MagicMock()
     bus.read_byte = MagicMock(return_value=0)
