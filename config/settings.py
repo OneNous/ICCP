@@ -45,6 +45,9 @@ INA219_ADDRESSES = [0x40, 0x41, 0x44, 0x45]
 NUM_CHANNELS = 4
 
 # ADS1115 reference ADC (header I2C; optional TCA9548A via I2C_MUX_*).
+# I²C 7-bit overlap: ADS1115 ADDR pin selects 0x48-0x4B; INA219 A0/A1 can strap 0x48-0x4F.
+# Default anodes (0x40-0x45) avoid colliding with default ADS1115 @ 0x48 — do not place another
+# device at the same address on the same downstream bus segment (e.g. a fifth INA219 at 0x48).
 ADS1115_ADDRESS = 0x48
 ADS1115_BUS = 1
 ADS1115_CHANNEL = 0
@@ -218,7 +221,7 @@ OVERCURRENT_LATCH_TICKS = 1
 #             switching often couples into measurement runs; was a common bench default.
 #   ≥20 kHz — inaudible; energy pushed above much ADC settling bandwidth (layout
 #             still dominates); soft-PWM duty resolution and gate losses — verify on scope.
-PWM_FREQUENCY_HZ = 100
+PWM_FREQUENCY_HZ = 1000
 # Base step (% duty per control tick). Used as default when the per-mode keys below are omitted
 # (code uses getattr(..., PWM_STEP)).
 PWM_STEP = 1
@@ -242,6 +245,18 @@ PWM_MAX_DUTY = 80
 # --- GPIO (BCM) ---
 PWM_GPIO_PINS = (17, 27, 22, 23)
 LED_STATUS_GPIO = 25
+
+# Shared electrochemical return / electrolyte: one MOSFET duty (software bank) for all
+# anode gate GPIOs. When True, CHANNEL_PWM_STEP_* per-channel dicts are ignored; ramps use
+# the global PWM_STEP_* scalars. See docs/hardware-shared-anode-bank.md.
+SHARED_RETURN_PWM: bool = True
+
+# High-side anode 5V disconnect (per channel), optional. When set, de-energize on
+# all_outputs_off / process shutdown. Wiring TBD: energize = anodes powered to INA219 chain.
+# Example (placeholder): (5, 6, 12, 13) — do not use until board matches.
+ANODE_RELAY_GPIO_PINS: tuple[int, ...] | None = None
+# If True, relay coil energized (anodes to supply path on) when GPIO is HIGH; de-energize drives LOW.
+ANODE_RELAY_ENERGIZE_HIGH: bool = True
 
 # --- Bus voltage limits ---
 MIN_BUS_V = 3.0

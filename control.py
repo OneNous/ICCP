@@ -1,11 +1,15 @@
 """
-CoilShield ICCP — per-channel control loop.
+CoilShield ICCP — per-channel sense + path FSM; optional unified anode PWM bank.
 
 Design principles:
   - Path FSM: OPEN / REGULATE / PROTECTING (+ FAULT), from measured I and Z = V/I.
-  - OPEN: no reliable path → 0% duty. REGULATE: approach current toward TARGET_MA
-    with per-mode PWM_STEP_* ramps (optional per-channel CHANNEL_PWM_STEP_* dicts) under Vcell
-    duty cap. PROTECTING: fine servo at TARGET_MA.
+  - OPEN: no reliable path → 0% duty. REGULATE: approach current toward target
+    with per-mode PWM_STEP_* ramps (optional per-channel CHANNEL_PWM_STEP_* dicts when
+    `SHARED_RETURN_PWM` is off) under Vcell duty cap. PROTECTING: fine servo.
+  - When `SHARED_RETURN_PWM` is on (default in settings): all MOSFET gates share the same
+    duty; ramps use **aggregate** I vs **sum of per-channel targets** and global
+    `PWM_STEP_*` only. Identical software duty does not phase-align separate RPi.GPIO
+    soft-PWM instances; use one GPIO fanout to gates if you need a single edge-aligned wave.
   - Internal path class (PATH_OPEN / PATH_WEAK / PATH_STRONG) drives transitions;
     PROTECTING requires PATH_STRONG plus near-target hysteresis.
   - OPEN hysteresis needs measurable I for finite Z; at I≈0 without drive, classify
@@ -16,6 +20,8 @@ Design principles:
   - FAULT is orthogonal (over/under-voltage, overcurrent, read errors).
   - Fault auto-recovery: channel retries after FAULT_RETRY_INTERVAL_S.
   - Incremental PWM only — no PID. Slow steps limit current spikes on sensitive coils.
+  - Optional high-side anode relays (`ANODE_RELAY_GPIO_PINS`): de-energize on
+    :meth:`Controller.all_outputs_off` for true +5V disconnect when wired.
 """
 
 from __future__ import annotations
@@ -76,13 +82,17 @@ def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
+def _shared_return_pwm() -> bool:
+    return bool(getattr(cfg, "SHARED_RETURN_PWM", False))
+
+
 def pwm_ramp_step(ch: int, *, regulating: bool, increasing: bool) -> float:
     """
     PWM duty delta (% per control tick) for this channel, mode, and direction.
 
     Per-channel dicts (CHANNEL_PWM_STEP_*_REGULATE / _PROTECTING) override the global
-    PWM_STEP_* scalars for that index only. getattr(..., cfg.PWM_STEP) keeps older
-    configs that only define PWM_STEP.
+    PWM_STEP_* scalars for that index only, unless `SHARED_RETURN_PWM` is True (bank
+    mode: globals only, dicts ignored).
     """
     base = float(cfg.PWM_STEP)
     if regulating:
@@ -105,7 +115,7 @@ def pwm_ramp_step(ch: int, *, regulating: bool, increasing: bool) -> float:
             if increasing
             else "CHANNEL_PWM_STEP_DOWN_PROTECTING"
         )
-    m = getattr(cfg, channel_key, None)
+    m = None if _shared_return_pwm() else getattr(cfg, channel_key, None)
     if isinstance(m, dict) and ch in m:
         return float(m[ch])
     return float(getattr(cfg, global_key, base))
@@ -253,12 +263,36 @@ class PWMBank:
             return
         self._pwm[ch].ChangeDutyCycle(int(round(duty)))
 
+    def set_duty_unified(self, duty: float) -> None:
+        """Set the same PWM duty (%) on every MOSFET gate. Sim-safe. Honors static mode."""
+        duty = float(duty)
+        if duty <= 0.0:
+            duty = 0.0
+        else:
+            duty = float(max(cfg.PWM_MIN_DUTY, min(cfg.PWM_MAX_DUTY, duty)))
+        for ch in range(cfg.NUM_CHANNELS):
+            self._duties[ch] = duty
+        if _SIM:
+            return
+        if self._static_mode:
+            if duty > 0.0:
+                raise RuntimeError(
+                    "PWMBank: cannot raise PWM duty while static_gate_off mode is active; "
+                    "call leave_static_gate_off() first."
+                )
+            for ch in range(cfg.NUM_CHANNELS):
+                pin = cfg.PWM_GPIO_PINS[ch]
+                GPIO.setup(pin, GPIO.OUT)
+                GPIO.output(pin, GPIO.LOW)
+            return
+        for ch in range(cfg.NUM_CHANNELS):
+            self._pwm[ch].ChangeDutyCycle(int(round(duty)))
+
     def duty(self, ch: int) -> float:
         return self._duties[ch]
 
     def all_off(self) -> None:
-        for ch in range(cfg.NUM_CHANNELS):
-            self.set_duty(ch, 0.0)
+        self.set_duty_unified(0.0)
 
     def set_pwm_frequency_hz(self, hz: int) -> None:
         """Change PWM carrier on all channels (RPi.GPIO 0.7+). No-op in sim or if unset."""
@@ -348,22 +382,55 @@ class Controller:
         self._boot_wall_time: float = time.time()
         self._all_protected_streak_mono: float | None = None
         self._first_all_protected_wall: float | None = None
+        self._anode_relay_gpio_ready: bool = False
 
     def set_thermal_pause(self, active: bool) -> None:
         """When True, `update()` keeps all PWM off but still evaluates read errors and FAULT recovery."""
         self._thermal_pause = bool(active)
 
     def all_outputs_off(self) -> None:
-        """Drive every anode channel to 0% PWM (commissioning, signals, safe shutdown)."""
+        """Drive every anode channel to 0% PWM; de-energize anode supply relays if configured."""
         self._pwm.all_off()
+        self._relays_deenergize()
+
+    def _relays_deenergize(self) -> None:
+        """Open high-side anode path (relay off) when :data:`ANODE_RELAY_GPIO_PINS` is set. No-op in sim."""
+        pins = getattr(cfg, "ANODE_RELAY_GPIO_PINS", None)
+        if not pins or _SIM:
+            return
+        energize_high = bool(getattr(cfg, "ANODE_RELAY_ENERGIZE_HIGH", True))
+        de_energize = GPIO.LOW if energize_high else GPIO.HIGH
+        for pin in pins:
+            if not self._anode_relay_gpio_ready:
+                GPIO.setup(pin, GPIO.OUT)
+            GPIO.output(pin, de_energize)
+        self._anode_relay_gpio_ready = True
+
+    def _relays_energize(self) -> None:
+        """Energize anode supply relays (future use when power-on sequencing is needed). No-op if unset."""
+        pins = getattr(cfg, "ANODE_RELAY_GPIO_PINS", None)
+        if not pins or _SIM:
+            return
+        energize_high = bool(getattr(cfg, "ANODE_RELAY_ENERGIZE_HIGH", True))
+        on_level = GPIO.HIGH if energize_high else GPIO.LOW
+        for pin in pins:
+            if not self._anode_relay_gpio_ready:
+                GPIO.setup(pin, GPIO.OUT)
+            GPIO.output(pin, on_level)
+        self._anode_relay_gpio_ready = True
 
     def output_duty_pct(self, ch: int) -> float:
-        """Current PWM duty (%) for channel ``ch``."""
+        """Current PWM duty (%) for channel ``ch`` (same as ch 0 in shared return bank mode)."""
+        if _shared_return_pwm():
+            return float(self._pwm.duty(0))
         return float(self._pwm.duty(ch))
 
     def set_output_duty_pct(self, ch: int, duty: float) -> None:
-        """Set PWM duty (%) for channel ``ch``."""
-        self._pwm.set_duty(ch, duty)
+        """Set PWM duty. In shared return mode all gates get the same duty (``ch`` ignored for drive)."""
+        if _shared_return_pwm():
+            self._pwm.set_duty_unified(duty)
+        else:
+            self._pwm.set_duty(ch, duty)
 
     def set_pwm_carrier_hz(self, hz: int) -> None:
         """Set PWM carrier frequency on all channels (hardware only)."""
@@ -384,7 +451,8 @@ class Controller:
             st = self._states[ch].status
             if st in (ChannelState.REGULATE, ChannelState.PROTECTING):
                 return True
-            if self._pwm.duty(ch) >= 0.06:
+            d = self._pwm.duty(0) if _shared_return_pwm() else self._pwm.duty(ch)
+            if d >= 0.06:
                 return True
             r = readings.get(ch, {})
             if r.get("ok") and float(r.get("current", 0) or 0) > wet_ma:
@@ -396,14 +464,83 @@ class Controller:
         r = readings.get(ch, {})
         if r.get("ok"):
             return False
+        d = self._pwm.duty(0) if _shared_return_pwm() else self._pwm.duty(ch)
         return ina219_read_failure_expected_idle(
             ok=False,
             error=r.get("error"),
-            duty_pct=self._pwm.duty(ch),
+            duty_pct=d,
             fsm_state=self._states[ch].status,
             current_ma=float(r.get("current", 0) or 0),
             bus_v=float(r.get("bus_v", 0) or 0),
         )
+
+    def _pwm_zero_for_channel(self, ch: int) -> None:
+        """Zero PWM: unified bank in shared return mode, else single channel only."""
+        if _shared_return_pwm():
+            self._pwm.set_duty_unified(0.0)
+        else:
+            self._pwm.set_duty(ch, 0.0)
+
+    def _apply_unified_bank_pwm(
+        self,
+        rows: list[dict],
+        *,
+        protect_ceiling: float,
+        staging_ceiling: float,
+        probe_floor: float,
+    ) -> None:
+        """Set one duty from aggregate I vs sum of per-channel targets (all gates identical)."""
+        if not rows:
+            self._pwm.set_duty_unified(0.0)
+            return
+        t_tot = sum(self._channel_target(c) for c in range(cfg.NUM_CHANNELS))
+        i_tot = float(sum(r["current_ma"] for r in rows))
+        min_bus = min(float(r["bus_v"]) for r in rows)
+        min_duty_cap = duty_pct_cap_for_vcell(min_bus, cfg)
+        probe_d = min(probe_floor, min_duty_cap)
+        hi_ramp = min(staging_ceiling, min_duty_cap)
+        hi_protect = min(protect_ceiling, min_duty_cap)
+        stats = {r["status"] for r in rows}
+        if not stats.intersection(
+            {ChannelState.REGULATE, ChannelState.PROTECTING}
+        ):
+            self._pwm.set_duty_unified(0.0)
+            return
+        any_prot = any(r["status"] == ChannelState.PROTECTING for r in rows)
+        cur = float(self._pwm.duty(0))
+        if any_prot:
+            if i_tot < t_tot:
+                new = cur + pwm_ramp_step(
+                    0, regulating=False, increasing=True
+                )
+            elif i_tot > t_tot * 1.05:
+                new = cur - pwm_ramp_step(
+                    0, regulating=False, increasing=False
+                )
+            else:
+                new = cur
+            self._pwm.set_duty_unified(clamp(new, 0.0, hi_protect))
+            return
+        # REGULATE: aggregate idle hold (|I| negligible system-wide)
+        idle_off = float(getattr(cfg, "REGULATE_IDLE_OFF_BELOW_MA", 0.05))
+        if idle_off > 0.0 and abs(i_tot) < idle_off:
+            self._pwm.set_duty_unified(0.0)
+            return
+        lo, hi = probe_d, hi_ramp
+        if cur > hi:
+            step = pwm_ramp_step(0, regulating=True, increasing=False)
+            new = max(hi, cur - step)
+        elif cur < lo:
+            new = lo
+        elif i_tot < t_tot:
+            step = pwm_ramp_step(0, regulating=True, increasing=True)
+            new = min(cur + step, hi)
+        elif i_tot > t_tot * 1.05:
+            step = pwm_ramp_step(0, regulating=True, increasing=False)
+            new = max(lo, cur - step)
+        else:
+            new = cur
+        self._pwm.set_duty_unified(new)
 
     def update(
         self,
@@ -422,12 +559,12 @@ class Controller:
             for ch, state in enumerate(self._states):
                 r = readings.get(ch, {})
                 if state.status == ChannelState.FAULT:
-                    self._pwm.set_duty(ch, 0.0)
+                    self._pwm_zero_for_channel(ch)
                     if state.latch_message:
                         self._faults.append(state.latch_message)
                     self._maybe_auto_clear_fault(ch, state, r)
                 elif not r.get("ok"):
-                    self._pwm.set_duty(ch, 0.0)
+                    self._pwm_zero_for_channel(ch)
                     if not self._ina219_idle_benign_ch(ch, readings):
                         extra = ""
                         if "bus_v" in r or "shunt_mv" in r:
@@ -441,7 +578,7 @@ class Controller:
                     if state.status != ChannelState.FAULT:
                         state.status = ChannelState.OPEN
                 else:
-                    self._pwm.set_duty(ch, 0.0)
+                    self._pwm_zero_for_channel(ch)
             self._fault_latched = any(
                 s.status == ChannelState.FAULT for s in self._states
             )
@@ -486,7 +623,7 @@ class Controller:
             for ch, state in enumerate(self._states):
                 r = readings.get(ch, {})
                 if state.status == ChannelState.FAULT:
-                    self._pwm.set_duty(ch, 0.0)
+                    self._pwm_zero_for_channel(ch)
                     if state.latch_message:
                         self._faults.append(state.latch_message)
                     self._maybe_auto_clear_fault(ch, state, r)
@@ -514,11 +651,14 @@ class Controller:
             )
             return self._faults, self._fault_latched
 
+        use_bank = _shared_return_pwm()
+        bank_rows: list[dict] = [] if use_bank else []
+
         for ch, state in enumerate(self._states):
             r = readings.get(ch, {})
 
             if state.status == ChannelState.FAULT:
-                self._pwm.set_duty(ch, 0.0)
+                self._pwm_zero_for_channel(ch)
                 if state.latch_message:
                     self._faults.append(state.latch_message)
                 self._maybe_auto_clear_fault(ch, state, r)
@@ -526,7 +666,7 @@ class Controller:
 
             if not r.get("ok"):
                 state.overcurrent_streak = 0
-                self._pwm.set_duty(ch, 0.0)
+                self._pwm_zero_for_channel(ch)
                 if not self._ina219_idle_benign_ch(ch, readings):
                     extra = ""
                     if "bus_v" in r or "shunt_mv" in r:
@@ -635,10 +775,21 @@ class Controller:
                         state.protecting_enter_streak = 0
 
             status = state.status
-            current_duty = self._pwm.duty(ch)
             hi_ramp = min(staging_ceiling, duty_cap)
             hi_protect = min(protect_ceiling, duty_cap)
 
+            if use_bank:
+                bank_rows.append(
+                    {
+                        "ch": ch,
+                        "status": status,
+                        "current_ma": current_ma,
+                        "bus_v": bus_v,
+                    }
+                )
+                continue
+
+            current_duty = self._pwm.duty(ch)
             if status == ChannelState.OPEN:
                 self._pwm.set_duty(ch, 0.0)
             elif status == ChannelState.REGULATE:
@@ -674,6 +825,17 @@ class Controller:
                 else:
                     new_duty = current_duty
                 self._pwm.set_duty(ch, clamp(new_duty, 0.0, hi_protect))
+
+        if use_bank:
+            if any(s.status == ChannelState.FAULT for s in self._states):
+                self._pwm.set_duty_unified(0.0)
+            else:
+                self._apply_unified_bank_pwm(
+                    bank_rows,
+                    protect_ceiling=protect_ceiling,
+                    staging_ceiling=staging_ceiling,
+                    probe_floor=probe_floor,
+                )
 
         self._fault_latched = any(s.status == ChannelState.FAULT for s in self._states)
         return self._faults, self._fault_latched
@@ -814,7 +976,10 @@ class Controller:
         return float(getattr(cfg, "CHANNEL_MAX_MA", {}).get(ch, cfg.MAX_MA))
 
     def _latch_fault(self, ch: int, msg: str) -> None:
-        self._pwm.set_duty(ch, 0.0)
+        if _shared_return_pwm():
+            self._pwm.set_duty_unified(0.0)
+        else:
+            self._pwm.set_duty(ch, 0.0)
         self._states[ch].status = ChannelState.FAULT
         self._states[ch].latch_message = msg
         self._states[ch].fault_time = time.monotonic()
@@ -958,7 +1123,7 @@ class Controller:
             # Measurable current decides Probing → Polarizing / Off transitions.
             r_ok = bool(r.get("ok"))
             i_ma = float(r.get("current", 0.0) or 0.0) if r_ok else 0.0
-            duty = self._pwm.duty(ch)
+            duty = self._pwm.duty(0) if _shared_return_pwm() else self._pwm.duty(ch)
             probe_ma = float(getattr(cfg, "CHANNEL_DRY_MA", 0.1))
             driving = duty >= 0.06 and r_ok
 
@@ -1050,8 +1215,15 @@ class Controller:
                     continue
                 # Potential-control duty ramp down (§5.3): reduce duty a bit each tick
                 # while overprotected. Keep it gentle — PROTECTING step is already small.
-                new_duty = max(0.0, duty - pwm_ramp_step(ch, regulating=False, increasing=False))
-                self._pwm.set_duty(ch, new_duty)
+                new_duty = max(
+                    0.0,
+                    duty
+                    - pwm_ramp_step(0, regulating=False, increasing=False),
+                )
+                if _shared_return_pwm():
+                    self._pwm.set_duty_unified(new_duty)
+                else:
+                    self._pwm.set_duty(ch, new_duty)
                 # OVERPROTECTION fault when shift > over_max + HYST_OVER_FAULT for T_OVER_FAULT.
                 if shift_mv > over_max + hy_over_fault:
                     state.shift_over_max_since = state.shift_over_max_since or now

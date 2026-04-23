@@ -2,7 +2,7 @@
 
 ## 0. Pi powered, firmware not running — “software off” does not exist yet
 
-GPIO lines used for the MOSFET gates are **not configured** until a Python process runs `RPi.GPIO` (or another driver). On an **N-channel** low-side switch, a **floating gate** can sit undefined or high enough that the FET **conducts**, so you can measure **full bus voltage (~4.8–5 V)** on the anode path with the script stopped and only the Pi powered. That is **normal** for a gate network without a defined power-up default — and it **will** make commissioning Phase 1 fail (high shunt mA, “not at rest”) until either:
+GPIO lines used for the MOSFET gates are **not configured** until a Python process runs `RPi.GPIO` (or another driver). Officially, after **power-on reset** the SoC leaves header pins as **inputs** with **default pulls** until software reconfigures them — see [raspberry-pi-gpio.md](raspberry-pi-gpio.md) and the long-form [knowledge-base/components/raspberry-pi-gpio-header.md](knowledge-base/components/raspberry-pi-gpio-header.md) (from Raspberry Pi [gpio-on-raspberry-pi.adoc](https://github.com/raspberrypi/documentation/blob/master/documentation/asciidoc/computers/raspberry-pi/gpio-on-raspberry-pi.adoc)). On an **N-channel** low-side switch, a **floating gate** can sit undefined or high enough that the FET **conducts**, so you can measure **full bus voltage (~4.8–5 V)** on the anode path with the script stopped and only the Pi powered. That is **normal** for a gate network without a defined power-up default — and it **will** make commissioning Phase 1 fail (high shunt mA, “not at rest”) until either:
 
 1. **Hardware (required for safety):** **Gate-to-source** pull-downs (**tens of kΩ** from **gate to MOSFET source**, not a few Ω from “some” node to GND). A **100 Ω** path from a rail to ground does **not** turn off an N-FET and does **not** remove **VIN** on the INA219 breakout — that pin is your **stack / bus feed**; if the FET is on, you will still read ~**4.8 V** there until the gate is held **low vs source** and the channel is off.
 2. **Software (hold until iccp runs):** Run **`scripts/anode_gates_hold_low.py`** before the controller:
@@ -28,10 +28,14 @@ If shunt current **drops to near zero** after stopping the service, the earlier 
 
 Use your normal **E-stop / lab limits**. Reference design is **N-channel** MOSFETs with gates on BCM pins from `config.settings.PWM_GPIO_PINS`.
 
+**Example logic-level power MOSFET (optional BOM reference):** Vishay **IRLZ44** — key limits, **3.3 V vs 4–5 V** RDS(on) caveat, and gate-charge / PWM notes are summarized in [anode-mosfet-irlz44.md](anode-mosfet-irlz44.md) with a link to the official PDF.
+
 - **Gate–source (Vgs):** With controller **stopped** and after **`cleanup()`** (or power-off with gates held low by your hardware), Vgs should be **≈ 0 V** for an enhancement-mode device that is off.
 - **Compare** the same measurement while the app reports **0% duty** (soft-PWM) vs after enabling **Phase 1 static gate** (stop + static LOW) if you still suspect the gate.
 
 ## 3. INA219 and wiring
+
+TI **INA219** pin roles (shunt differential vs bus measurement from **IN−** to GND), PGA / bus range, and accuracy limits are summarized in [ina219-datasheet-notes.md](ina219-datasheet-notes.md) with a link to the official PDF.
 
 - Confirm **bus** and **shunt** polarities match the breakout datasheet for your wiring.
 - Rule out a **second current path** (bench supply, another driver) through the same shunt or cell loop.

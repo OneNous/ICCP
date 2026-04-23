@@ -277,6 +277,8 @@ On any of the following, **all gates LOW, every channel → `Off`, `all_protecte
 
 Justification: the ADS1115 has the PGA flexibility (±2.048 V FSR at `ADS1115_FSR_V`) and sample-rate controls (`REF_ADS1115_DR`, `REF_ADS_MEDIAN_SAMPLES`, `COMMISSIONING_ADS1115_DR`) the procedure in Section 3 relies on. The INA219 path is not instrumented for slope/stability gates and cannot meet §3's native-capture preconditions.
 
+**TI datasheet digest (registers, noise, ALERT/RDY, I²C):** [ads1115-datasheet-notes.md](knowledge-base/components/ads1115-datasheet-notes.md).
+
 ### 7.2 Placement (informational)
 
 This doc does not re-derive reference-electrode placement; it cites [docs/reference-electrode-placement.md](reference-electrode-placement.md) as the reference. The requirement here is only that a single shared reference can still resolve `shift_mv[c]` per channel, which is true when placement is geometrically valid.

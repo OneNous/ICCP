@@ -20,6 +20,7 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 - **`--sim`**: simulated sensors (passed through to `main.main()`).
 - **`--log-dir PATH`**: same telemetry directory as the dashboard; use an absolute path.
 - On a Pi, **`ICCP_SYSTEMD_SYNC`** (default on) triggers **`sudo systemctl daemon-reload`** only — **no** `restart`, so you do not bounce the service before foreground start.
+- Anode **PWM** behavior is configured in `config/settings.py` (default **`SHARED_RETURN_PWM` = True** gives one shared duty for all MOSFET gates; see [hardware-shared-anode-bank.md](hardware-shared-anode-bank.md)).
 
 ---
 
@@ -47,7 +48,7 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 
 **Common flags** (see **`iccp probe --help`**): **`--init`**, **`--ads1115`**, **`--ads1115-only`**, **`--continuous`**, **`--skip-pwm`**, etc.
 
-**Notes:** On Pi, systemd runs **`stop`** on the **`iccp`** unit before probe so I2C/PWM are free. **STEP 1** is a flat “idle” I²C address sweep. If a **TCA9548A** is configured in `config.settings` (`I2C_MUX_ADDRESS` and related `I2C_MUX_CHANNEL_*` fields), only the mux (often **0x70**) may show on that sweep; **STEP 1b** then selects each configured downstream port and pings the expected INA219 and ADS1115—same model as the controller. A raw `i2cdetect` without per-port select does not see devices behind the mux.
+**Notes:** On Pi, systemd runs **`stop`** on the **`iccp`** unit before probe so I2C/PWM are free. **STEP 1** is a flat “idle” I²C address sweep. If a **TCA9548A** is configured in `config.settings` (`I2C_MUX_ADDRESS` and related `I2C_MUX_CHANNEL_*` fields), only the mux (often **0x70**) may show on that sweep; **STEP 1b** then selects each configured downstream port and pings the expected INA219 and ADS1115—same model as the controller. A raw `i2cdetect` without per-port select does not see devices behind the mux. Datasheet notes: [tca9548a-datasheet-notes.md](knowledge-base/components/tca9548a-datasheet-notes.md) (mux) · [ina219-datasheet-notes.md](ina219-datasheet-notes.md) (INA219) · [ads1115-datasheet-notes.md](knowledge-base/components/ads1115-datasheet-notes.md) (ADS1115).
 
 ---
 

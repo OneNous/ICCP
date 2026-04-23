@@ -2,7 +2,7 @@
 
 This document compares **classical impressed-current cathodic protection (ICCP)** as used on ships and buried pipelines with **what this repository implements** (CoilShield HVAC coil hardware + Raspberry Pi firmware). It is for engineering context, not a product compliance claim.
 
-**Hardware note:** CoilShield uses a **Raspberry Pi**, **five [INA219](https://www.ti.com/product/INA219)** boards on one I2C bus — **four** for anode channel current/bus (`sensors.py`) and **one** dedicated to the **reference electrode** (`reference.py`, `REF_INA219_ADDRESS`) — plus **PWM-driven MOSFETs** per anode channel. Anode **soft-PWM defaults to 100 Hz** (`PWM_FREQUENCY_HZ` in `config/settings.py`): that favors **quieter coupling** into reference/ADS and I2C vs **~1 kHz**; **≥20 kHz** is an alternative when you want switching **above** audio/ADC bands—see the comment block on that setting for ripple vs EMI tradeoffs.
+**Hardware note:** CoilShield uses a **Raspberry Pi**, **five [INA219](https://www.ti.com/product/INA219)** boards on one I2C bus — **four** for anode channel current/bus (`sensors.py`) and **one** dedicated to the **reference electrode** (`reference.py`, `REF_INA219_ADDRESS`) — plus **PWM-driven MOSFETs** per anode channel. Long-form datasheet material: [knowledge-base/README.md](knowledge-base/README.md). Anode **soft-PWM defaults to 100 Hz** (`PWM_FREQUENCY_HZ` in `config/settings.py`): that favors **quieter coupling** into reference/ADS and I2C vs **~1 kHz**; **≥20 kHz** is an alternative when you want switching **above** audio/ADC bands—see the comment block on that setting for ripple vs EMI tradeoffs.
 
 For a line-by-line mapping of common ICCP claims to code paths, see [iccp-vs-coilshield.md](iccp-vs-coilshield.md).
 
@@ -45,8 +45,8 @@ Authoritative industry anchors (paid standards; listings on AMPP):
 4. **Offshore pipeline CP** — ISO **15589-2** (catalogue):  
    [https://www.iso.org](https://www.iso.org) — search for the current edition of 15589-2.
 
-5. **INA219** (device used for anode and reference channels):  
-   [https://www.ti.com/product/INA219](https://www.ti.com/product/INA219) · [datasheet](https://www.ti.com/lit/ds/symlink/ina219.pdf)
+5. **INA219** (device used for anode and reference channels):
+   [https://www.ti.com/product/INA219](https://www.ti.com/product/INA219) · [datasheet](https://www.ti.com/lit/ds/symlink/ina219.pdf) · CoilShield notes: [ina219-datasheet-notes.md](ina219-datasheet-notes.md)
 
 ---
 

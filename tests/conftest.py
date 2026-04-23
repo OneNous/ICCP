@@ -11,3 +11,8 @@ if "COILSHIELD_SIM" not in os.environ:
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+# Tests assume legacy per-anode duty unless they patch `config.settings` for bank mode.
+import config.settings as _cfg  # noqa: E402
+
+_cfg.SHARED_RETURN_PWM = False
