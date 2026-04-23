@@ -156,8 +156,6 @@ def _format_z_ohm_effective(bus_v: float, current_ma: float) -> str:
         return f"{z / 1e6:.2f} MΩ"
     if z >= 1e3:
         return f"{z / 1e3:.2f} kΩ"
-    if z > 1e3:
-        return f"{z:.0f} Ω"
     return f"{z:.1f} Ω"
 
 

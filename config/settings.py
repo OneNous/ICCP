@@ -119,9 +119,12 @@ I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
 # 0.001–0.002 s can help if mux→INA/ADS still EIOs after per-channel INA init retries.
 I2C_MUX_POST_SELECT_DELAY_S: float = 0.0005
 # TCA9548A ``write_byte`` control writes can transiently EIO (errno 5/121) on shared Pi
-# I²C like INA219/ADS — same backoff pattern as INA219 init (see :func:`i2c_bench.mux_select_on_bus`).
-I2C_MUX_SELECT_MAX_ATTEMPTS: int = 12
-I2C_MUX_SELECT_RETRY_DELAY_S: float = 0.1
+# I²C like INA219/ADS. Keep attempts LOW (2) for the hot read path — each retry adds
+# delay to every control-loop tick. The SMBus-reopen fallback in sensors.read_all_real
+# handles persistent failures. Init paths (import, commissioning) tolerate more retries
+# because they run once; set INA219_INIT_MAX_ATTEMPTS / REF_ADS1115_INIT_MAX_ATTEMPTS separately.
+I2C_MUX_SELECT_MAX_ATTEMPTS: int = 2
+I2C_MUX_SELECT_RETRY_DELAY_S: float = 0.003
 # If mux select still raises EIO after all retries, ``sensors.read_all_real`` can close
 # and reopen the SMBus handle once per channel (Pi kernels sometimes need this after
 # a stuck transaction). Set False only for unit tests or unusual bus drivers.
@@ -241,7 +244,7 @@ OVERCURRENT_LATCH_TICKS = 1
 #             switching often couples into measurement runs; was a common bench default.
 #   ≥20 kHz — inaudible; energy pushed above much ADC settling bandwidth (layout
 #             still dominates); soft-PWM duty resolution and gate losses — verify on scope.
-PWM_FREQUENCY_HZ = 1000
+PWM_FREQUENCY_HZ = 100
 # Base step (% duty per control tick). Used as default when the per-mode keys below are omitted
 # (code uses getattr(..., PWM_STEP)).
 PWM_STEP = 1
@@ -269,7 +272,7 @@ LED_STATUS_GPIO = 25
 # Shared electrochemical return / electrolyte: one MOSFET duty (software bank) for all
 # anode gate GPIOs. When True, CHANNEL_PWM_STEP_* per-channel dicts are ignored; ramps use
 # the global PWM_STEP_* scalars. See docs/hardware-shared-anode-bank.md.
-SHARED_RETURN_PWM: bool = True
+SHARED_RETURN_PWM: bool = False
 
 # High-side anode 5V disconnect (per channel), optional. When set, de-energize on
 # all_outputs_off / process shutdown. Wiring TBD: energize = anodes powered to INA219 chain.
