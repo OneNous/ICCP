@@ -279,24 +279,18 @@ def _ads1115_volts_per_lsb(fsr_v: float) -> float:
     return float(fsr_v) / 32768.0
 
 
-def ads1115_read_single_ended(
+def _ads1115_read_single_ended_once(
     bus: Any,
     addr: int,
     channel: int,
-    fsr_v: float = 4.096,
+    fsr_v: float,
     *,
-    dr: int = 5,
-    conversion_delay_s: float | None = None,
-    poll_interval_s: float = 0.002,
-    poll_max: int | None = None,
+    dr: int,
+    conversion_delay_s: float | None,
+    poll_interval_s: float,
+    poll_max: int | None,
 ) -> float:
-    """Return voltage in volts (single-ended vs GND).
-
-    Starts a single-shot conversion then polls TI ADS1115 Config register bit 15
-    (OS) until the device reports not busy (Table 8-3), or falls back to a delay
-    derived from the selected data rate (TI Table 6-5, ~1/DR) when
-    ``conversion_delay_s`` is omitted.
-    """
+    """Single attempt at single-shot read (no retry)."""
     cfg = _ads1115_config_word(channel, fsr_v, dr=dr)
     dr_bits = (cfg >> 5) & 7
     t_conv = _ads1115_dr_conversion_s(dr_bits)
@@ -321,6 +315,63 @@ def ads1115_read_single_ended(
     if val & 0x8000:
         val -= 65536
     return val * _ads1115_volts_per_lsb(fsr_v)
+
+
+def ads1115_read_single_ended(
+    bus: Any,
+    addr: int,
+    channel: int,
+    fsr_v: float = 4.096,
+    *,
+    dr: int = 5,
+    conversion_delay_s: float | None = None,
+    poll_interval_s: float = 0.002,
+    poll_max: int | None = None,
+) -> float:
+    """Return voltage in volts (single-ended vs GND).
+
+    Starts a single-shot conversion then polls TI ADS1115 Config register bit 15
+    (OS) until the device reports not busy (Table 8-3), or falls back to a delay
+    derived from the selected data rate (TI Table 6-5, ~1/DR) when
+    ``conversion_delay_s`` is omitted.
+
+    Retries the full sequence on Linux transient I²C (``I2C_TRANSIENT_ERRNOS``) —
+    same class of errors as mux/INA on a shared Pi adapter.
+    """
+    max_a = 4
+    delay0 = 0.05
+    transient: tuple[int, ...] = (5, 121, 110)
+    try:
+        import config.settings as _cfg
+
+        max_a = max(1, int(getattr(_cfg, "ADS1115_SMBUS_READ_MAX_ATTEMPTS", 4)))
+        transient = tuple(
+            int(x) for x in getattr(_cfg, "I2C_TRANSIENT_ERRNOS", (5, 121, 110))
+        )
+    except Exception:
+        pass
+    last: OSError | None = None
+    for attempt in range(1, max_a + 1):
+        try:
+            return _ads1115_read_single_ended_once(
+                bus,
+                addr,
+                channel,
+                fsr_v,
+                dr=dr,
+                conversion_delay_s=conversion_delay_s,
+                poll_interval_s=poll_interval_s,
+                poll_max=poll_max,
+            )
+        except OSError as e:
+            last = e
+            en = getattr(e, "errno", None)
+            if en is None or int(en) not in transient or attempt >= max_a:
+                raise
+            w = min(0.3, delay0 * attempt)
+            time.sleep(w)
+    assert last is not None  # pragma: no cover
+    raise last
 
 
 def ads1115_start_single_shot(

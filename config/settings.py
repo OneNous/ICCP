@@ -137,6 +137,9 @@ I2C_MUX_SELECT_RETRY_DELAY_S: float = 0.003
 # and reopen the SMBus handle once per channel (Pi kernels sometimes need this after
 # a stuck transaction). Set False only for unit tests or unusual bus drivers.
 I2C_MUX_SMBUS_REOPEN_ON_SELECT_EIO: bool = True
+# ADS1115 i2c_bench.ads1115_read_single_ended (probe STEP 3, reference reads): full
+# sequence retry on ``I2C_TRANSIENT_ERRNOS`` (each attempt re-starts the conversion).
+ADS1115_SMBUS_READ_MAX_ATTEMPTS: int = 4
 # Bus-level I²C failure policy (see docs/iccp-requirements.md §4.3, Decision Q8).
 # When True, a **bus-level** INA219 read failure (OSError / errno 5 or equivalent — the
 # whole I²C bus is unhealthy) forces every non-FAULT channel to 0% PWM. Per-channel

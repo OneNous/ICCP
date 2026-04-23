@@ -694,6 +694,11 @@ def run_ads1115_reads(busnum: int, ads_address: int | None = None) -> None:
     except OSError as e:
         print(f"  [!] ADS1115 read failed: {e}")
         _i2c_diagnostic(e, busnum)
+        if behind_mux:
+            print(
+                f"  • Mux: confirm `I2C_MUX_CHANNEL_ADS1115` ({mux_ch!r}) matches the ADS1115 "
+                f"downstream branch; 0x48 is invisible until that port is selected."
+            )
     finally:
         sm.close()
 
