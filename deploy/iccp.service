@@ -17,23 +17,17 @@
 # Strongly recommended: absolute telemetry dir so dashboard + controller always agree:
 #   Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
 # Or pass on ExecStart: .../iccp start --log-dir /home/onenous/coilshield/logs
-#
-# Gate pins: ExecStartPre drives anode MOSFET BCM lines OUTPUT LOW before iccp starts
-# (and again on every service restart). Edit both paths if your install dir differs.
 
 [Unit]
 Description=CoilShield ICCP controller
 After=network-online.target
 Wants=network-online.target
-# If you use a separate early unit instead of ExecStartPre, add e.g.:
-#   After=network-online.target iccp-anode-gpio-init.service
 
 [Service]
 Type=simple
 User=onenous
 Group=onenous
 WorkingDirectory=/home/onenous/coilshield
-ExecStartPre=/home/onenous/coilshield/.venv/bin/python3 /home/onenous/coilshield/scripts/anode_gates_hold_low.py
 ExecStart=/home/onenous/coilshield/.venv/bin/iccp start
 Restart=on-failure
 RestartSec=10

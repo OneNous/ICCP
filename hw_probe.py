@@ -105,21 +105,36 @@ def _safe_gpio_cleanup() -> None:
         pass
 
 
-def _mux_select_anode_for_probe(sm: object, ch_index: int) -> None:
-    """TCA9548A: match sensors.py — per-channel port or one legacy port before INA219 I/O."""
+def _mux_select_anode_for_probe(sm: object, ch_index: int) -> bool:
+    """TCA9548A: match sensors.py — per-channel port or one legacy port before INA219 I/O.
+
+    Returns False if the mux control write failed (e.g. ``OSError`` errno 5) after retry.
+    """
     if cfg is None:
-        return
+        return True
     mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
     if mux_addr is None:
-        return
+        return True
     from i2c_bench import mux_select_on_bus
 
     per = getattr(cfg, "I2C_MUX_CHANNELS_INA219", None)
     leg = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
     if per is not None and ch_index < len(per):
-        mux_select_on_bus(sm, int(mux_addr), int(per[ch_index]))
+        port = int(per[ch_index])
     elif leg is not None:
-        mux_select_on_bus(sm, int(mux_addr), int(leg))
+        port = int(leg)
+    else:
+        return True
+    for attempt in range(2):
+        try:
+            mux_select_on_bus(sm, int(mux_addr), port)
+            return True
+        except OSError as e:
+            if getattr(e, "errno", None) == 5 and attempt == 0:
+                time.sleep(0.003)
+                continue
+            return False
+    return False
 
 
 def _format_z_ohm_effective(bus_v: float, current_ma: float) -> str:
@@ -451,15 +466,25 @@ def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
                 "(pi-ina219 RANGE_16V / PGA÷1 / 128×ADC) on each channel …"
             )
             for ch, addr in enumerate(INA219_ADDRESSES):
-                _mux_select_anode_for_probe(sm, ch)
+                if not _mux_select_anode_for_probe(sm, ch):
+                    print(
+                        f"  [!] mux before init 0x{addr:02X}: failed — "
+                        "use one I2C user (e.g. stop `iccp`); skipping CONFIG for this ch"
+                    )
+                    continue
                 try:
                     ina219_write_config(sm, addr, INA219_DEFAULT_CONFIG_WORD)
                     time.sleep(0.015)
                 except OSError as e:
                     print(f"  [!] init 0x{addr:02X}: {e}")
         for ch, addr in enumerate(INA219_ADDRESSES):
-            _mux_select_anode_for_probe(sm, ch)
-            readings[addr] = ina219_read(sm, addr, shunt_ohms)
+            if not _mux_select_anode_for_probe(sm, ch):
+                readings[addr] = {
+                    "ok": False,
+                    "error": "TCA9548A mux select failed (EIO) — one process on I2C? try: systemctl stop iccp",
+                }
+            else:
+                readings[addr] = ina219_read(sm, addr, shunt_ohms)
     finally:
         sm.close()
 
@@ -522,7 +547,11 @@ def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: b
             "(pi-ina219 parity) on each channel …"
         )
         for ch, addr in enumerate(INA219_ADDRESSES):
-            _mux_select_anode_for_probe(sm, ch)
+            if not _mux_select_anode_for_probe(sm, ch):
+                print(
+                    f"  [!] mux before init 0x{addr:02X}: failed (EIO?) — stop other I2C users"
+                )
+                continue
             try:
                 ina219_write_config(sm, addr, INA219_DEFAULT_CONFIG_WORD)
                 time.sleep(0.015)
@@ -541,7 +570,12 @@ def run_continuous(bus: int, shunt_ohms: float, skip_ads: bool, *, force_init: b
             print("  " + "─" * 52)
             for ch, addr in enumerate(INA219_ADDRESSES):
                 label = anode_label(ch)
-                _mux_select_anode_for_probe(sm, ch)
+                if not _mux_select_anode_for_probe(sm, ch):
+                    print(
+                        f"  {label:<14} {'—':>8} {'—':>10} {'—':>10} {'—':>10}  "
+                        f"mux EIO (stop `iccp`?)"
+                    )
+                    continue
                 r = ina219_read(sm, addr, shunt_ohms)
                 if r.get("ok"):
                     print(
@@ -702,7 +736,11 @@ def run_pwm_test(
         )
         nch = min(len(PWM_PINS_BCM), len(INA219_ADDRESSES))
         for ch in range(nch):
-            _mux_select_anode_for_probe(sm, ch)
+            if not _mux_select_anode_for_probe(sm, ch):
+                print(
+                    f"  [!] mux before init 0x{INA219_ADDRESSES[ch]:02X}: EIO (skipped CONFIG)"
+                )
+                continue
             try:
                 ina219_write_config(
                     sm, int(INA219_ADDRESSES[ch]), INA219_DEFAULT_CONFIG_WORD
@@ -736,6 +774,7 @@ def run_pwm_test(
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
 
+        mux_eio_warned = False
         for ch_idx, pin in enumerate(PWM_PINS_BCM):
             ina_addr: int | None = None
             if ch_idx < len(INA219_ADDRESSES):
@@ -757,26 +796,36 @@ def run_pwm_test(
                 anode_v = SUPPLY_V * duty / 100.0
                 ina_str = ""
                 if ina_ok and sm is not None and ina_addr is not None:
-                    _mux_select_anode_for_probe(sm, ch_idx)
-                    time.sleep(0.02)
-                    samples_ma: list[float] = []
-                    samples_bv: list[float] = []
-                    for _ in range(3):
-                        _mux_select_anode_for_probe(sm, ch_idx)
-                        r = ina219_read(sm, ina_addr, shunt_ohms)
-                        if r.get("ok"):
-                            samples_ma.append(float(r["current_ma"]))
-                            samples_bv.append(float(r["bus_v"]))
-                        time.sleep(0.04)
-                    if samples_ma:
-                        ma = sum(samples_ma) / len(samples_ma)
-                        bv = sum(samples_bv) / len(samples_bv)
-                        z_s = _format_z_ohm_effective(bv, ma)
-                        ina_str = (
-                            f"   shunt mA = {ma:8.3f}   Vbus = {bv:5.2f} V   Z ≈ {z_s}"
-                        )
+                    if not _mux_select_anode_for_probe(sm, ch_idx):
+                        if not mux_eio_warned:
+                            print(
+                                "  [!] TCA9548A mux write failed (errno 5 EIO). Use one "
+                                "I2C client: e.g.  sudo systemctl stop iccp  then re-run this "
+                                "step, or use  --skip-pwm  /  --skip-ina. (See dmesg for i2c-1.)\n"
+                            )
+                            mux_eio_warned = True
+                        ina_str = "   INA219: (mux EIO; PWM continues — use DMM for I/V)"
                     else:
-                        ina_str = "   INA219: (no successful read)"
+                        time.sleep(0.02)
+                        samples_ma: list[float] = []
+                        samples_bv: list[float] = []
+                        for _ in range(3):
+                            if not _mux_select_anode_for_probe(sm, ch_idx):
+                                break
+                            r = ina219_read(sm, ina_addr, shunt_ohms)
+                            if r.get("ok"):
+                                samples_ma.append(float(r["current_ma"]))
+                                samples_bv.append(float(r["bus_v"]))
+                            time.sleep(0.04)
+                        if samples_ma:
+                            ma = sum(samples_ma) / len(samples_ma)
+                            bv = sum(samples_bv) / len(samples_bv)
+                            z_s = _format_z_ohm_effective(bv, ma)
+                            ina_str = (
+                                f"   shunt mA = {ma:8.3f}   Vbus = {bv:5.2f} V   Z ≈ {z_s}"
+                            )
+                        else:
+                            ina_str = "   INA219: (no successful read)"
                 elif read_ina219 and ina_addr is None:
                     ina_str = "   INA: (no address for this index)"
 

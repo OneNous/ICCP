@@ -45,4 +45,4 @@ Large **Qg** and **Ciss** mean edges are slower when driven through a **~100 Ω*
 
 - [raspberry-pi-gpio.md](raspberry-pi-gpio.md) — official GPIO levels, power-on input state, **BCM2711 VOH** vs gate drive.
 - [mosfet-off-verification.md](mosfet-off-verification.md) — floating gate, pull-downs, soft-PWM 0% vs static LOW, commissioning.
-- [README.md](../README.md) — `PWM_FREQUENCY_HZ`, gate resistor, `ExecStartPre` gate hold script.
+- [README.md](../README.md) — `PWM_FREQUENCY_HZ`, gate resistor, power-up gate drive / pull-downs.
