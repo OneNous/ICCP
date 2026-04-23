@@ -195,6 +195,43 @@ def test_recovery_touch_latest_merges_alert(tmp_path, monkeypatch: pytest.Monkey
     assert "ts" in latest and len(str(latest["ts"])) >= 10
 
 
+def test_recovery_clears_stale_channel_numerics(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a good record(), recovery must not leave old mA/reading_ok as if current."""
+    monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "SQLITE_PURGE_EVERY_N_INSERTS", 999_999_999)
+    from logger import DataLogger
+
+    readings = {
+        i: {"ok": True, "current": 2.0, "bus_v": 5.0} for i in range(cfg.NUM_CHANNELS)
+    }
+    duties = {i: 10.0 for i in range(cfg.NUM_CHANNELS)}
+    st = {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)}
+    log = DataLogger()
+    log.record(readings, True, [], duties, False, st, channel_targets={0: 1.0, 1: 0.5, 2: 0.5, 3: 0.5})
+    good = json.loads((tmp_path / cfg.LATEST_JSON_NAME).read_text(encoding="utf-8"))
+    good_ts = good["ts"]
+    good_tsu = good["ts_unix"]
+    assert good["total_ma"] > 0.1
+    log.recovery_touch_latest("write failed in tick")
+    log.close()
+    latest = json.loads((tmp_path / cfg.LATEST_JSON_NAME).read_text(encoding="utf-8"))
+    assert latest.get("telemetry_incomplete") is True
+    assert latest.get("last_valid_channel_snapshot_ts") == good_ts
+    assert float(latest.get("last_valid_channel_snapshot_ts_unix", 0.0)) == float(good_tsu)
+    assert latest.get("total_ma") == 0.0
+    for i in range(cfg.NUM_CHANNELS):
+        ch = latest["channels"][str(i)]
+        assert ch.get("ma") == 0.0
+        assert ch.get("reading_ok") is False
+    # Second recovery: last_valid should still be the good record, not a recovery-time ts
+    log2 = DataLogger()
+    log2.recovery_touch_latest("failed again")
+    log2.close()
+    again = json.loads((tmp_path / cfg.LATEST_JSON_NAME).read_text(encoding="utf-8"))
+    assert again.get("last_valid_channel_snapshot_ts") == good_ts
+    assert any("failed again" in str(x) for x in (again.get("system_alerts") or []))
+
+
 def test_cooling_cycle_row_on_band_exit(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

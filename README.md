@@ -3,7 +3,7 @@
 Impressed-current cathodic protection monitor/controller for HVAC-style coils.  
 **Defaults:** see `TARGET_MA` (default **0.5 mA** aluminum-conservative; raise for bench), `CHANNEL_WET_THRESHOLD_MA`, and anode limits in `config/settings.py` (commissioning writes `commissioned_target_ma`).
 
-**How this maps to “standard ICCP”:** the inner loop regulates **shunt current** toward `TARGET_MA`; the **reference** path defaults to **ADS1115** (legacy: **INA219**) for **polarization shift** vs a commissioned baseline and **nudges** `TARGET_MA`—still not the same as holding structure potential to an industry criterion (e.g. −0.85 V CSE). See [docs/iccp-comparison.md](docs/iccp-comparison.md) for diagrams, **external standards links**, and [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md) for a line-by-line mapping to the code.
+**How this maps to “standard ICCP”:** the inner loop regulates **shunt current** toward `TARGET_MA`; the **reference** path defaults to **ADS1115** (legacy: **INA219**) for **polarization shift** vs a commissioned baseline and **nudges** `TARGET_MA`—still not the same as holding structure potential to an industry criterion (e.g. −0.85 V CSE). See [docs/iccp-comparison.md](docs/iccp-comparison.md) for diagrams, **external standards links**, and [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md) for a line-by-line mapping to the code. **Field design \(R_a\)** (textbook/soil) vs **logged `impedance_ohm`:** [docs/field-ra-and-telemetry.md](docs/field-ra-and-telemetry.md).
 
 ## One CLI, one way
 
@@ -75,7 +75,7 @@ The firmware reads the reference node through a **fifth [INA219](https://www.ti.
 dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=20,i2c_gpio_scl=12
 ```
 
-Pick **`bus=3`** (or another free index) so it does not collide with existing adapters. After reboot, `sudo i2cdetect -y 3` should show the reference INA219. On a **gpio-only** bus with no anode boards, **`REF_INA219_ADDRESS = 0x40`** is allowed; on a **shared** bus with anodes at `0x40`–`0x45`, use a free strap such as **`0x46`** or **`0x47`**.
+Pick **`bus=3`** (or another free index) so it does not collide with existing adapters. After reboot, `sudo i2cdetect -y 3` should show the reference INA219. On a **gpio-only** bus with no anode boards, the default ref strap is flexible; on a **shared** bus with anodes at `0x40`–`0x45`, `REF_INA219_ADDRESS` in `config/settings.py` must be a **free** 7-bit address (default **`0x42`** when using legacy `REF_ADC_BACKEND=ina219`; re-strap if that collides).
 
 **Do not** use random web examples that put SDA on **BCM 23** — on this firmware **BCM 23 is PWM** for channel 4.
 

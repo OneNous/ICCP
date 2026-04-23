@@ -45,6 +45,7 @@ flowchart LR
 | **Environment adaptation** | **Partial:** wet/dry and dwell time change how long regulation runs; **no** automatic response to salinity/coating via electrochemical feedback (only fixed thresholds/targets in settings). |
 | **Multi-zone** | **Yes:** `NUM_CHANNELS` independent anode channels (default **4**), each with its own duty and FSM state in [`control.py`](../control.py), plus one **non-anode** reference ADC (ADS1115 default, or INA219 if configured). |
 | **“Coverage validation” via probes** | **No** potential mapping; you have **probe pulses** on dry channels to detect wetting (`PROBE_*` in settings), not corrosion-relevant potential surveys. |
+| **Industry anode (electrolyte) resistance** | Textbooks and standards use **anode-to-earth** resistance (from **resistivity**, shape, and placement) in **amp-level** field design. That is **not** the same as logged **`chN_impedance_ohm` ≈ bus V / I** in this repo (electrical path for diagnostics). Start with [field-ra-and-telemetry.md](field-ra-and-telemetry.md); deeper links and reading list: [knowledge-base/anode-resistance-cp-context.md](knowledge-base/anode-resistance-cp-context.md). |
 
 ## Where a standard write-up matches line-for-line
 

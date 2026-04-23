@@ -167,6 +167,29 @@ def _atomic_write_same_dir(path: Path, content: str) -> None:
         raise
 
 
+def _latest_json_placeholder_channels() -> dict[str, dict[str, object]]:
+    """
+    Safe per-channel row when full record() did not run: zeros + reading_ok false so
+    timestamps in latest.json are not taken to mean the channel mA/Z values are current.
+    """
+    out: dict[str, dict[str, object]] = {}
+    for i in range(cfg.NUM_CHANNELS):
+        out[str(i)] = {
+            "ma": 0.0,
+            "duty": 0.0,
+            "bus_v": 0.0,
+            "state": "OPEN",
+            "status": "N/A",
+            "target_ma": 0.0,
+            "impedance_ohm": 0.0,
+            "cell_voltage_v": 0.0,
+            "power_w": 0.0,
+            "reading_ok": False,
+            "sensor_error": "No fresh sample: full telemetry write did not run",
+        }
+    return out
+
+
 def _readings_column_names(conn: sqlite3.Connection) -> set[str]:
     cur = conn.execute("PRAGMA table_info(readings)")
     return {row[1] for row in cur.fetchall()}
@@ -479,8 +502,10 @@ class DataLogger:
         """
         Best-effort merge into latest.json when a full record() cannot run.
 
-        Keeps dashboards from showing multi-hour stale ages when the control tick
-        crashes after the last successful record().
+        Refreshes timestamps and alerts so feed age is not stuck for hours, but
+        does **not** keep prior per-channel mA / Z / power (that would look current
+        while being stale). Instead we zero placeholders and set
+        ``telemetry_incomplete`` with the last good snapshot time when available.
         """
         suffix = ""
         if exc is not None:
@@ -496,9 +521,38 @@ class DataLogger:
         if line not in alerts:
             alerts.append(line)
         cur["system_alerts"] = alerts[-25:]
+        prev_ts = cur.get("ts")
+        prev_tsu = cur.get("ts_unix")
+        was_incomplete = bool(cur.get("telemetry_incomplete"))
+        if (
+            not was_incomplete
+            and prev_ts
+            and isinstance(prev_ts, str)
+            and isinstance(prev_tsu, (int, float))
+        ):
+            # Previous file was a full record(); that timestamp is the last trusted snapshot.
+            cur["last_valid_channel_snapshot_ts"] = prev_ts
+            cur["last_valid_channel_snapshot_ts_unix"] = float(prev_tsu)
+        # If we were already in recovery, keep any existing last_valid_* from that file
+        # (do not point last_valid at another recovery's ts).
+        elif not cur.get("last_valid_channel_snapshot_ts"):
+            cur.pop("last_valid_channel_snapshot_ts", None)
+            cur.pop("last_valid_channel_snapshot_ts_unix", None)
         cur["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
         cur["ts_unix"] = time.time()
         cur["tick_writer_error"] = line[:500]
+        cur["telemetry_incomplete"] = True
+        cur["channels"] = _latest_json_placeholder_channels()
+        cur["total_ma"] = 0.0
+        cur["total_power_w"] = 0.0
+        cur["supply_v_avg"] = 0.0
+        cur["wet"] = False
+        cur["wet_channels"] = 0
+        cur["all_protected"] = False
+        cur["any_active"] = False
+        cur["cross"] = {"i_cv": None, "z_cv": None}
+        cur.pop("sim_time", None)
+        cur.pop("diag", None)
         try:
             _atomic_write_same_dir(self._latest_path, json.dumps(cur))
         except OSError:

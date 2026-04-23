@@ -193,6 +193,27 @@ def _sensor_readings(sim_state: Any | None) -> dict[int, dict]:
     return sensors.read_all_real()
 
 
+def _delivered_ma_report(readings: dict[int, dict]) -> str:
+    """One-line INA shunt currents (actual mA) for commissioning logs after settle."""
+    parts: list[str] = []
+    total = 0.0
+    any_ok = False
+    for ch in range(cfg.NUM_CHANNELS):
+        r = readings.get(ch, {})
+        tag = f"A{ch + 1}"
+        if r.get("ok"):
+            cur = float(r.get("current", 0.0) or 0.0)
+            parts.append(f"{tag}={cur:.3f} mA")
+            total += cur
+            any_ok = True
+        else:
+            err = (r.get("sensor_error") or r.get("error") or "no read").strip()
+            short = err[:40] + ("…" if len(err) > 40 else "")
+            parts.append(f"{tag}=N/A ({short})")
+    sum_s = f"Σ={total:.3f} mA" if any_ok else "Σ=N/A"
+    return f"INA delivered: {', '.join(parts)}; {sum_s}"
+
+
 def _snapshot_bus_v(readings: dict[int, dict]) -> dict[int, float]:
     out: dict[int, float] = {}
     for ch in range(cfg.NUM_CHANNELS):
@@ -789,6 +810,9 @@ def run(
             f"regulating {RAMP_SETTLE_S:.0f}s ..."
         )
         _pump_control(controller, sim_state, RAMP_SETTLE_S)
+        if verbose:
+            r_settle = _sensor_readings(sim_state)
+            log(f"  {_delivered_ma_report(r_settle)}")
 
         log(f"  instant-off ({oc_desc}) …")
         raw, shift, _depol = _instant_off_ref_mv_and_restore(
@@ -836,6 +860,9 @@ def run(
     )
     log(f"  final regulate / settle {phase3_s:.0f}s before last instant-off …")
     _pump_control(controller, sim_state, phase3_s)
+    if verbose:
+        r_lock = _sensor_readings(sim_state)
+        log(f"  {_delivered_ma_report(r_lock)}")
     _final_raw, final_shift, _f_depol = _instant_off_ref_mv_and_restore(
         controller, reference, sim_state, log=log if verbose else None
     )

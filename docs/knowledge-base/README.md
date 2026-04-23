@@ -1,7 +1,7 @@
 ---
 title: CoilShield hardware knowledge base
 description: Datasheet- and vendor-doc-derived reference material for key ICs, the Raspberry Pi GPIO header, and CoilShield field wiring.
-topics: [hardware, INA219, ADS1115, IRLZ44, MOSFET, I2C, shunt, gate-drive, Raspberry-Pi, GPIO]
+topics: [hardware, INA219, ADS1115, IRLZ44, MOSFET, I2C, shunt, gate-drive, Raspberry-Pi, GPIO, CP-theory, anode-resistance]
 ---
 
 # Hardware knowledge base
@@ -15,6 +15,11 @@ This directory holds **long-form** reference pages for parts and **platform GPIO
 | [components/ti-ina219-current-monitor.md](components/ti-ina219-current-monitor.md) | Texas Instruments **INA219** | [SBOS448 PDF](https://www.ti.com/lit/ds/symlink/ina219.pdf) |
 | [components/ads1115-datasheet-notes.md](components/ads1115-datasheet-notes.md) | Texas Instruments **ADS1115** (reference ADC) | [SBAS444 PDF](https://www.ti.com/lit/ds/symlink/ads1115.pdf) |
 | [components/tca9548a-datasheet-notes.md](components/tca9548a-datasheet-notes.md) | Texas Instruments **TCA9548A** (I²C mux) | [SCPS207 PDF](https://www.ti.com/lit/ds/symlink/tca9548a.pdf) |
+
+**CP theory / semantics (not vendor parts):**
+
+- [../field-ra-and-telemetry.md](../field-ra-and-telemetry.md) — **operator one-pager**: field design \(R_a\) (e.g. Dwight/Sunde **as textbook context**) vs logged **`impedance_ohm`**; no in-repo calculator, no \(R_a\) from settings
+- [anode-resistance-cp-context.md](anode-resistance-cp-context.md) — long-form: field **anode-to-electrolyte** resistance vs firmware `impedance_ohm` (V/I); [ScienceDirect Topics](https://www.sciencedirect.com/topics/engineering/anode-resistance) link inventory and book/chapter pointers
 
 **Shorter project notes** (cross-links, Pi-specific caveats) remain at repo root under `docs/`:
 

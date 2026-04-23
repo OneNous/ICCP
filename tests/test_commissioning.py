@@ -81,6 +81,22 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     assert data.get("final_shift_mv") == 110.0
 
 
+def test_delivered_ma_report_formats_ina_channels() -> None:
+    readings = {
+        0: {"ok": True, "current": 0.4, "bus_v": 5.0},
+        1: {"ok": True, "current": 0.1, "bus_v": 5.0},
+        2: {"ok": False, "sensor_error": "NACK", "current": 0.0, "bus_v": 0.0},
+    }
+    # Pad to NUM_CHANNELS if needed
+    for ch in range(3, cfg.NUM_CHANNELS):
+        readings[ch] = {"ok": True, "current": 0.0, "bus_v": 5.0}
+    s = commissioning._delivered_ma_report(readings)
+    assert "A1=0.400 mA" in s
+    assert "A2=0.100 mA" in s
+    assert "N/A" in s and "NACK" in s
+    assert "Σ=0.500 mA" in s or "Σ=" in s
+
+
 def test_ina_confirm_off_details_current_fail() -> None:
     readings = {
         i: {"ok": True, "current": 0.0, "bus_v": 5.0} for i in range(cfg.NUM_CHANNELS)

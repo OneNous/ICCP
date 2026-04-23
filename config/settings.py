@@ -43,12 +43,12 @@ REF_I2C_BUS = 1
 
 # INA list length must match NUM_CHANNELS (firmware Anode 1..N = idx 0..N-1).
 #
-# **Field: Anode 1 / 0x40 INA shorted (mux damaged) — run three INAs only.** UI “Anode 1..3”
-# are the three working cells (former physical anodes 2–4: 0x41, 0x44, 0x45). After replacing
-# the INA at 0x40, restore four channels: [0x40, 0x41, 0x44, 0x45], NUM_CHANNELS=4,
-# PWM_GPIO_PINS=(17, 27, 22, 23). See docs/ina219-i2c-bringup.md (fewer than four INA219s).
-INA219_ADDRESSES = [0x41, 0x44, 0x45]
-NUM_CHANNELS = 3
+# **Default: four anode INA219s** at 0x40, 0x41, 0x44, 0x45 with `PWM_GPIO_PINS` below.
+# **Fallback (dead INA / three cells only):** use three addresses and `NUM_CHANNELS = 3`, e.g.
+# `[0x41, 0x44, 0x45]` and `(27, 22, 23)` for the remaining gates — see
+# docs/ina219-i2c-bringup.md (fewer than four INA219s).
+INA219_ADDRESSES = [0x40, 0x41, 0x44, 0x45]
+NUM_CHANNELS = 4
 
 # ADS1115 reference ADC (header I2C; optional TCA9548A via I2C_MUX_*).
 # I²C 7-bit overlap: ADS1115 ADDR pin selects 0x48-0x4B; INA219 A0/A1 can strap 0x48-0x4F.
@@ -152,11 +152,11 @@ INA219_BUS_LEVEL_ERRNOS: tuple[int, ...] = (5, 121, 110)
 # bank drops to 0% PWM. Default 2 avoids a single-INA219 wiring nack tripping the system.
 INA219_FAILSAFE_MIN_BUS_CHANNELS: int = 2
 
-# Dedicated INA219 for reference electrode.
-# On the SAME bus as anodes: address must not collide with INA219_ADDRESSES (e.g. 0x42,
-# 0x46, 0x47 per breakout straps).
-# On a DEDICATE gpio-only bus with only this module: 0x40 is fine (no anode conflict).
-REF_INA219_ADDRESS = 0x40
+# Dedicated INA219 for reference electrode (only if REF_ADC_BACKEND = "ina219").
+# On the SAME bus as anodes: must not use any INA219_ADDRESSES. Default 0x42 (strap on module);
+# re-strap if that collides with another device.
+# On a dedicated gpio-only bus with only the ref INA: any free strap is fine.
+REF_INA219_ADDRESS = 0x42
 REF_INA219_SHUNT_OHMS = 0.1
 # Optional: median of this many bus/shunt reads per reference sample (1 = single read).
 # Try 9 or 16 on long leads or gpio I2C if readings are noisy.
@@ -277,8 +277,8 @@ PWM_MAX_DUTY = 80
 
 # --- GPIO (BCM) ---
 # Aligned with INA219_ADDRESSES: one gate GPIO per row (idx 0 = “Anode 1” in UI = first address).
-# With 3 channels: (27, 22, 23) = former anodes 2–4; BCM 17 left unused until ch0 INA is replaced.
-PWM_GPIO_PINS = (27, 22, 23)
+# Default four anodes: (17, 27, 22, 23). If running three INAs only, use three pins (e.g. 27, 22, 23).
+PWM_GPIO_PINS = (17, 27, 22, 23)
 LED_STATUS_GPIO = 25
 
 # Shared electrochemical return / electrolyte: one MOSFET duty (software bank) for all
