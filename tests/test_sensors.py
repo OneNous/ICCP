@@ -12,6 +12,7 @@ def test_sim_readings_count_and_finite():
     st = sensors.SimSensorState()
     r = sensors.read_all_sim(st)
     assert len(r) == cfg.NUM_CHANNELS
+    assert sensors.ina219_sensors_ready() is True
 
 
 def test_sim_per_channel_offsets_split_bus_and_ma(monkeypatch):

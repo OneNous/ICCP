@@ -159,6 +159,19 @@ if not SIM_MODE:
     except Exception as _hw_err:
         print(f"[sensors] Hardware init failed: {_hw_err}")
         _sensors = []
+        print(
+            "[sensors] No anode INA219 objects — shunt reads will report 'no hardware' until "
+            "I²C / TCA9548A / per-port INA wiring is fixed; then restart this process. "
+            "The reference (ADS1115) can still work. See docs/ina219-i2c-bringup.md"
+        )
+
+
+def ina219_sensors_ready() -> bool:
+    """True when INA import init matched ``INA219_ADDRESSES`` (not ``SIM_MODE``). If False, ``read_all_real`` uses ``no hardware``."""
+    if SIM_MODE:
+        return True
+    addrs = getattr(cfg, "INA219_ADDRESSES", None) or []
+    return len(_sensors) == len(addrs) and len(_sensors) > 0
 
 
 def _mux_select_ina219_bus() -> None:

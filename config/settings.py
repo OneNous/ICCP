@@ -95,13 +95,16 @@ REF_ADC_BACKEND = "ads1115"
 # Field default Ag/AgCl sense; legacy bench Cu was ``copper_bench`` — informational for logs/docs.
 REF_ELECTRODE_KIND = "ag_agcl"
 
-# TCA9548A @ 0x70 (ADDR straps): ch0..3 → INA219 0x40/0x41/0x44/0x45; ch4 → ADS1115 @ 0x48.
-# Control byte = 1 << N. Bench / no-mux rigs: set I2C_MUX_ADDRESS = None and all mux channels None.
+# TCA9548A @ 0x70 (typical A2/A1/A0 straps). Map must match the PCB:
+#   • INA219 anodes: ch0..3 → devices at INA219_ADDRESSES (0x40,0x41,0x44,0x45 by default).
+#   • Reference ADS1115: ch4 → ADS1115 @ ADS1115_ADDRESS (0x48 default).
+# Control byte = 1 << port. See docs/ina219-i2c-bringup.md for bring-up.
+# Bench / no-mux: I2C_MUX_ADDRESS = None and all mux channel fields None.
 I2C_MUX_ADDRESS: int | None = 0x70
 I2C_MUX_CHANNEL_ADS1115: int | None = 4
 # Single downstream port shared by every anode INA219 (ignored if I2C_MUX_CHANNELS_INA219 set).
 I2C_MUX_CHANNEL_INA219: int | None = None
-# Per anode index 0..NUM_CHANNELS-1: TCA9548A port before that INA219 (bytes 0x01,0x02,0x04,0x08).
+# Per anode index 0..NUM_CHANNELS-1: TCA9548A port before that INA219 (bit mask 0x01,0x02,0x04,0x08).
 I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
 # After selecting a mux downstream port, optional settle time before talking to INA219/ADS.
 # Non-zero reduces ``[Errno 5] Input/output error`` when switching TCA9548A → ADS1115 / INA219.

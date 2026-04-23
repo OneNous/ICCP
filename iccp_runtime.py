@@ -74,6 +74,12 @@ def run_iccp_forever(args: Namespace) -> int:
     )
     print(f"[main] Reference path: {ref_hw_message()}")
 
+    if not sim and not sensors.ina219_sensors_ready():
+        print(
+            "[main] WARNING: anode INA219 hardware not initialized — no shunt/bus current for "
+            "the control loop until I²C is fixed; see docs/ina219-i2c-bringup.md"
+        )
+
     if sim:
         print_sim_schedule(sensors)
 
