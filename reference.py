@@ -63,6 +63,8 @@ _COMM_REF_ADS_SCALE: float | None = None
 # up through ReferenceElectrode.ref_valid() so control can raise REFERENCE_INVALID
 # (see docs/iccp-requirements.md §6.1). Module-level because the hw helpers are module-level.
 _REF_LAST_READ_FAILED: bool = False
+# After import failed to open ADS, first read() runs _init_ref_ads1115() once (extra chance).
+_REF_ADS_LAZY_REINIT_RAN: bool = False
 
 
 def _reload_comm_ref_ads_scale() -> None:
@@ -220,52 +222,71 @@ def _init_ref_ina219() -> None:
 
 
 def _init_ref_ads1115() -> None:
+    """Open SMBus, mux to ADS1115, test read; multiple attempts on EIO (busy I²C at import)."""
     global _ref_smbus, _REF_INIT_ERROR
-    sm = None
-    try:
-        import smbus2
-
-        from i2c_bench import ads1115_read_single_ended, mux_select_on_bus
-
-        busnum = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))
-        addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
-        sm = smbus2.SMBus(busnum)
-        mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
-        mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
-        mux_select_on_bus(sm, mux_addr, mux_ch)
-        ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
-        fsr = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
-        ads1115_read_single_ended(sm, addr, ch, fsr)
-        # TI ADS1115: Lo_thresh MSB=0, Hi_thresh MSB=1 + COMP_QUE≠11 in config → ALERT/RDY pulses conversion-ready.
+    max_a = max(1, int(getattr(cfg, "REF_ADS1115_INIT_MAX_ATTEMPTS", 12)))
+    delay0 = max(0.0, float(getattr(cfg, "REF_ADS1115_INIT_RETRY_DELAY_S", 0.12)))
+    last_err: BaseException | None = None
+    for attempt in range(1, max_a + 1):
+        sm: Any = None
         try:
-            sm.write_i2c_block_data(addr, 0x02, [0x7F, 0xFF])  # Lo_thresh
-            sm.write_i2c_block_data(addr, 0x03, [0x80, 0x00])  # Hi_thresh
-            print(
-                "[reference] ADS1115 ALERT/RDY threshold registers OK "
-                "(Lo/Hi for TI conversion-ready ALERT pulsing; COMP_QUE≠11 in config word)"
-            )
-        except Exception as _alrt_err:
-            print(
-                f"[reference] ADS1115 ALERT/RDY threshold init skipped: {_alrt_err} "
-                "(OC capture will fall back to polled conversion timing)"
-            )
-        _ref_smbus = sm
-        sm = None
-        kind = getattr(cfg, "REF_ELECTRODE_KIND", "unknown")
-        print(
-            f"[reference] ADS1115 OK ch AIN{ch} @ {hex(addr)} i2c-{busnum} "
-            f"(±{fsr} V, electrode={kind!r})"
-        )
-    except Exception as _hw_err:
-        _REF_INIT_ERROR = str(_hw_err)
-        print(f"[reference] ADS1115 init failed: {_hw_err}")
-        _ref_smbus = None
-    finally:
-        if sm is not None:
+            import smbus2
+
+            from i2c_bench import ads1115_read_single_ended, mux_select_on_bus
+
+            busnum = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))
+            addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
+            sm = smbus2.SMBus(busnum)
+            mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
+            mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
+            mux_select_on_bus(sm, mux_addr, mux_ch)
+            ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
+            fsr = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
+            ads1115_read_single_ended(sm, addr, ch, fsr)
             try:
-                sm.close()
-            except Exception:
-                pass
+                sm.write_i2c_block_data(addr, 0x02, [0x7F, 0xFF])  # Lo_thresh
+                sm.write_i2c_block_data(addr, 0x03, [0x80, 0x00])  # Hi_thresh
+                print(
+                    "[reference] ADS1115 ALERT/RDY threshold registers OK "
+                    "(Lo/Hi for TI conversion-ready ALERT pulsing; COMP_QUE≠11 in config word)"
+                )
+            except Exception as _alrt_err:
+                print(
+                    f"[reference] ADS1115 ALERT/RDY threshold init skipped: {_alrt_err} "
+                    "(OC capture will fall back to polled conversion timing)"
+                )
+            _ref_smbus = sm
+            sm = None
+            _REF_INIT_ERROR = None
+            kind = getattr(cfg, "REF_ELECTRODE_KIND", "unknown")
+            tag = f" (attempt {attempt} of {max_a})" if attempt > 1 else ""
+            print(
+                f"[reference] ADS1115 OK ch AIN{ch} @ {hex(addr)} i2c-{busnum} "
+                f"(±{fsr} V, electrode={kind!r}){tag}"
+            )
+            return
+        except Exception as e:
+            last_err = e
+            _REF_INIT_ERROR = str(e)
+            if sm is not None:
+                try:
+                    sm.close()
+                except Exception:
+                    pass
+            if attempt < max_a:
+                w = min(2.0, delay0 * attempt)
+                en = getattr(e, "errno", None)
+                es = f" errno {en}" if en is not None else ""
+                print(
+                    f"[reference] ADS1115 init attempt {attempt}/{max_a} failed:{es} {e!s} — "
+                    f"retrying in {w:.2f}s"
+                )
+                time.sleep(w)
+    _ref_smbus = None
+    _REF_INIT_ERROR = str(last_err) if last_err else "init failed"
+    print(
+        f"[reference] ADS1115 init failed after {max_a} attempt(s). Last: {_REF_INIT_ERROR}"
+    )
 
 
 if not SIM_MODE and _REF_ENABLED:
@@ -321,7 +342,7 @@ def ref_ux_hint(*, baseline_set: bool, hw_ok: bool, skip_commission: bool) -> st
 
 
 def _read_raw_mv_hw() -> float:
-    global _REF_LAST_READ_FAILED
+    global _REF_LAST_READ_FAILED, _REF_ADS_LAZY_REINIT_RAN
     from i2c_bench import (
         ads1115_read_single_ended,
         i2c_bus_lock,
@@ -372,6 +393,13 @@ def _read_raw_mv_hw() -> float:
                 print(f"[reference] DIAG INA219 ref snapshot skipped: {snap_e}")
             return 0.0
 
+    if _ref_smbus is None:
+        if not _REF_ADS_LAZY_REINIT_RAN:
+            _REF_ADS_LAZY_REINIT_RAN = True
+            print(
+                "[reference] ADS1115 bus not open at read — re-running init (one lazy retry)…"
+            )
+            _init_ref_ads1115()
     if _ref_smbus is None:
         raise RuntimeError("[reference] ADS1115 unavailable — check I2C wiring and address")
     busnum = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))

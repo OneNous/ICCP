@@ -72,6 +72,14 @@ ADS1115_OS_POLL_INTERVAL_S = 0.0003
 REF_ADS_MEDIAN_SAMPLES = 5
 # Data rate bits 0..7 for routine reference reads (5 = 250 SPS). Commissioning curve uses COMMISSIONING_ADS1115_DR.
 REF_ADS1115_DR = 5
+# At import and on first read if needed: open ADS1115 and retry (helps errno 5 EIO / busy I²C bus).
+REF_ADS1115_INIT_MAX_ATTEMPTS: int = 12
+REF_ADS1115_INIT_RETRY_DELAY_S: float = 0.12
+# Anode INA219 init at import: per-channel retries (mux + pi-ina219 configure) on errno 5/121.
+INA219_INIT_MAX_ATTEMPTS: int = 8
+INA219_INIT_RETRY_DELAY_S: float = 0.1
+# Optional first-open settle before any INA import I/O (0 = off). Try 0.02 if first touch often EIOs.
+I2C_INA_IMPORT_FIRST_DELAY_S: float = 0.0
 # Multiply ADC volts (after ×1000) for divider scaling vs. electrode node.
 # Calibrate with a DMM at the ADS1115 AIN node (same ground): at fixed PWM state,
 #   REF_ADS_SCALE ≈ V_dmm / (ref_raw_mv / 1000).
@@ -108,6 +116,7 @@ I2C_MUX_CHANNEL_INA219: int | None = None
 I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = (0, 1, 2, 3)
 # After selecting a mux downstream port, optional settle time before talking to INA219/ADS.
 # Non-zero reduces ``[Errno 5] Input/output error`` when switching TCA9548A → ADS1115 / INA219.
+# 0.001–0.002 s can help if mux→INA/ADS still EIOs after per-channel INA init retries.
 I2C_MUX_POST_SELECT_DELAY_S: float = 0.0005
 # Bus-level I²C failure policy (see docs/iccp-requirements.md §4.3, Decision Q8).
 # When True, a **bus-level** INA219 read failure (OSError / errno 5 or equivalent — the

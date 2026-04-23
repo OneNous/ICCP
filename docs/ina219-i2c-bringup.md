@@ -37,6 +37,23 @@ This checklist matches the default mux layout in [`config/settings.py`](../confi
    **`[sensors] INA219 initialized on 4 channels`** (with your address list), and **no** `Hardware init failed` / empty `_sensors` follow-up.
 4. TUI / dashboard: anode rows should show real **BusV** / **mA**, not `no hardware` / `--` when the cell is powered and gated.
 
+### `iccp probe` green but `iccp start` / `iccp commission` still sees no hardware
+
+**Same `config` as probe (for a given `iccp` install):** The `iccp` CLI always `chdir`s to the package root and prepends it to `sys.path` before subcommands load, so `iccp probe` and `iccp commission` read the **same** [`config/settings.py`](../config/settings.py) (`I2C_MUX_ADDRESS`, `I2C_MUX_CHANNELS_INA219`, `I2C_MUX_CHANNEL_ADS1115`, `INA219_ADDRESSES`, etc.) — not a different mux map in another file. Real mismatches are usually a **different `iccp` on `PATH`** (another venv, `sudo` picking system Python instead of `sudo $(which iccp) ...`), a **non-editable** install in `site-packages` vs a checkout you are editing, or a **different** Python loading `config` (two checkouts on one Pi).
+
+**Why probe can work while the controller/commissioning does not:** `iccp probe` uses **smbus2** for raw I²C (mux select, INA/ADS pokes) via [`hw_probe.py`](../hw_probe.py). `iccp start` and `iccp commission` **import** [`sensors.py`](../sensors.py), which runs **`pi-ina219`** `INA219.configure()` at import time. If that throws, you get **`[sensors] Hardware init failed: ...`**, an empty in-memory sensor list, and anode paths report **`no hardware`** even when probe’s STEP 1/1b was green. That is a **sensors** import / library init path — not a second, hidden config file with different mux values.
+
+**Narrow the failure (address vs mux vs config source vs import):**
+
+1. **Wrong 7-bit address** — compare probe STEP 1b to `INA219_ADDRESSES` and the **A0/A1** straps on each breakout.
+2. **Wrong mux channel** — compare `I2C_MUX_CHANNELS_INA219` / `I2C_MUX_CHANNEL_ADS1115` to the board and probe’s per-port ping.
+3. **Wrong config source** — from the **same shell** you use for the failing command (ideally the same `python3` as the `iccp` entry point’s interpreter):
+   - `which iccp` and `readlink -f "$(which iccp 2>/dev/null)"` (or `python3 -c "import iccp_cli; print(iccp_cli.__file__)"`).
+   - `python3 -c "import config.settings as c; print('PROJECT_ROOT', c.PROJECT_ROOT); print('MUX', c.I2C_MUX_ADDRESS, c.I2C_MUX_CHANNELS_INA219, c.I2C_MUX_CHANNEL_ADS1115); print('INA', c.INA219_ADDRESSES)"`  
+4. **Import init vs I²C poke** — look for **`[sensors] INA219 initialized on N channels ...`** vs **`[sensors] Hardware init failed: ...`** (and the follow-up about no anode INA objects) at `sensors` import time. Those lines are definitive for the controller/commissioning process, not the probe.
+
+**For support, paste the full `iccp commission` transcript:** from `[iccp] systemctl stop ...` through `[iccp commission] Reference path: ...`, all **`[sensors] ...`** lines, **`[commission ...]`** lines, and the final `Done` / `Native capture failed` / `ERROR: ...` block.
+
 ## 5) If one channel is bad
 
 - Temporarily set `INA219_ADDRESSES` / `NUM_CHANNELS` in config to a **single** good channel to validate the rest of the stack, then re-enable as you repair each port.

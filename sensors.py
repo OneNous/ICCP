@@ -88,17 +88,28 @@ def ina219_read_failure_expected_idle(
 # ---------------------------------------------------------------------------
 
 
+def _ina219_import_init_retryable(exc: BaseException) -> bool:
+    """True for Linux I/O errors on I²C that often clear after short delay and retry."""
+    if isinstance(exc, OSError):
+        en = getattr(exc, "errno", None)
+        return en in (5, 121)
+    return False
+
+
 def _init_ina219_sensor_list_for_import() -> list[Any]:
     """
     Build INA219 client objects for ``cfg.INA219_ADDRESSES`` (TCA9548A mux if configured).
 
-    Raises on first channel init failure. Exposed for tests (mux / I2C error paths).
+    Raises on first channel init failure after per-channel retries. Exposed for tests.
     """
     from ina219 import INA219
 
     from i2c_bench import mux_select_on_bus
 
     SHUNT_OHMS = 0.1  # R100 shunt resistor on each board
+    max_a = max(1, int(getattr(cfg, "INA219_INIT_MAX_ATTEMPTS", 8)))
+    delay0 = max(0.0, float(getattr(cfg, "INA219_INIT_RETRY_DELAY_S", 0.1)))
+    first_delay = max(0.0, float(getattr(cfg, "I2C_INA_IMPORT_FIRST_DELAY_S", 0.0)))
     # CONFIG matches i2c_bench.INA219_DEFAULT_CONFIG_WORD (0x07FF) when
     # GAIN_AUTO resolves to GAIN_1_40MV — see pi-ina219 INA219._configure.
     mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
@@ -111,35 +122,57 @@ def _init_ina219_sensor_list_for_import() -> list[Any]:
         import smbus2
 
         mux_bus = smbus2.SMBus(int(cfg.I2C_BUS))
+    if first_delay > 0:
+        time.sleep(first_delay)
     try:
         for idx, addr in enumerate(cfg.INA219_ADDRESSES):
-            try:
-                # Set port_desc before mux_select so handler never hits NameError
-                if mux_bus is not None and mux_addr is not None:
-                    if per_mux is not None and idx < len(per_mux):
-                        port_desc = f"TCA9548A ch{per_mux[idx]}"
-                        mux_select_on_bus(mux_bus, int(mux_addr), int(per_mux[idx]))
-                    elif leg_mux is not None:
-                        port_desc = f"TCA9548A ch{leg_mux}"
-                        mux_select_on_bus(mux_bus, int(mux_addr), int(leg_mux))
-                    else:
-                        port_desc = "mux configured but no INA219 port selected"
+            if mux_bus is not None and mux_addr is not None:
+                if per_mux is not None and idx < len(per_mux):
+                    port_desc = f"TCA9548A ch{per_mux[idx]}"
+                elif leg_mux is not None:
+                    port_desc = f"TCA9548A ch{leg_mux}"
                 else:
-                    port_desc = "no mux"
-                sensor = INA219(SHUNT_OHMS, address=addr, busnum=cfg.I2C_BUS)
-                sensor.configure(
-                    voltage_range=INA219.RANGE_16V,
-                    gain=INA219.GAIN_AUTO,
-                    bus_adc=INA219.ADC_128SAMP,
-                    shunt_adc=INA219.ADC_128SAMP,
-                )
-                out.append(sensor)
-            except Exception as e:
-                print(
-                    f"[sensors] {anode_hw_label(idx)} INA219 @ {hex(addr)} init failed "
-                    f"({port_desc}, i2c-{cfg.I2C_BUS}): {e}"
-                )
-                raise
+                    port_desc = "mux configured but no INA219 port selected"
+            else:
+                port_desc = "no mux"
+            for init_attempt in range(1, max_a + 1):
+                try:
+                    if mux_bus is not None and mux_addr is not None:
+                        if per_mux is not None and idx < len(per_mux):
+                            mux_select_on_bus(mux_bus, int(mux_addr), int(per_mux[idx]))
+                        elif leg_mux is not None:
+                            mux_select_on_bus(mux_bus, int(mux_addr), int(leg_mux))
+                    sensor = INA219(SHUNT_OHMS, address=addr, busnum=cfg.I2C_BUS)
+                    sensor.configure(
+                        voltage_range=INA219.RANGE_16V,
+                        gain=INA219.GAIN_AUTO,
+                        bus_adc=INA219.ADC_128SAMP,
+                        shunt_adc=INA219.ADC_128SAMP,
+                    )
+                    out.append(sensor)
+                    if init_attempt > 1:
+                        print(
+                            f"[sensors] {anode_hw_label(idx)} INA219 @ {hex(addr)} OK after "
+                            f"attempt {init_attempt}/{max_a} ({port_desc}, i2c-{cfg.I2C_BUS})"
+                        )
+                    break
+                except Exception as e:
+                    if (
+                        _ina219_import_init_retryable(e)
+                        and init_attempt < max_a
+                    ):
+                        w = min(1.0, delay0 * init_attempt)
+                        print(
+                            f"[sensors] {anode_hw_label(idx)} INA219 @ {hex(addr)} init attempt "
+                            f"{init_attempt}/{max_a} ({port_desc}): {e!s} — retrying in {w:.2f}s"
+                        )
+                        time.sleep(w)
+                    else:
+                        print(
+                            f"[sensors] {anode_hw_label(idx)} INA219 @ {hex(addr)} init failed "
+                            f"({port_desc}, i2c-{cfg.I2C_BUS}): {e}"
+                        )
+                        raise
     finally:
         if mux_bus is not None:
             mux_bus.close()
