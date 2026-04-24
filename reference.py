@@ -824,6 +824,26 @@ class ReferenceElectrode:
             print(f"[reference] load_native: cannot read commissioning.json: {e}", file=sys.stderr)
             return False
 
+    def native_baseline_file_payload(self) -> dict[str, Any]:
+        """All native Ecorr keys for a full :func:`_update_comm_file` replace (after Phase 1+)."""
+        if self.native_mv is None:
+            raise ValueError("native baseline not set")
+        if self.native_measured_at is None or str(self.native_measured_at).strip() == "":
+            raise ValueError("native_measured_at not set (call save_native first)")
+        ts = str(self.native_measured_at)
+        payload: dict[str, Any] = {
+            "native_mv": float(self.native_mv),
+            "native_measured_at": ts,
+        }
+        if self.native_measured_unix is not None:
+            payload["native_measured_unix"] = round(float(self.native_measured_unix), 3)
+        recap = float(getattr(cfg, "NATIVE_RECAPTURE_S", 24 * 3600.0))
+        if self.native_measured_unix is not None and recap > 0:
+            payload["native_recapture_due_unix"] = round(self.native_measured_unix + recap, 3)
+        if self.native_temp_f is not None:
+            payload["native_temp_f"] = round(float(self.native_temp_f), 2)
+        return payload
+
     def save_native(
         self, mv: float, *, native_temp_f: float | None = None
     ) -> None:
@@ -843,7 +863,8 @@ class ReferenceElectrode:
         if self.native_measured_unix is not None and recap > 0:
             payload["native_recapture_due_unix"] = round(self.native_measured_unix + recap, 3)
         if native_temp_f is not None:
-            payload["native_temp_f"] = round(float(native_temp_f), 2)
+            self.native_temp_f = round(float(native_temp_f), 2)
+            payload["native_temp_f"] = self.native_temp_f
         _update_comm_file(payload)
 
     def read(
@@ -1149,7 +1170,24 @@ class ReferenceElectrode:
         return self._last_raw_mv
 
 
-def _update_comm_file(data: dict) -> None:
+def _update_comm_file(data: dict, *, replace: bool = False) -> None:
+    """
+    Update commissioning.json. Default **merge** (read + ``dict.update``) so partial
+    writes (e.g. :meth:`ReferenceElectrode.save_native`) do not drop unrelated keys.
+    If ``replace`` is True, **write** ``data`` as the full file (no merge) — use when
+    saving a complete snapshot after a successful full ``commissioning.run``.
+    """
+    if replace:
+        if not isinstance(data, dict):
+            print(
+                "[reference] _update_comm_file(replace) expected dict; not writing",
+                file=sys.stderr,
+            )
+            return
+        _atomic_write_json_same_dir(_COMM_FILE, data)
+        _reload_comm_ref_ads_scale()
+        return
+
     existing: dict = {}
     if _COMM_FILE.exists():
         try:

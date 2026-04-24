@@ -168,7 +168,7 @@ Install Flask on the Pi if needed: `python3 -m pip install flask --break-system-
 - **Cumulative charge:** `daily_totals.chN_ma_s` is mA·s while PROTECTING; **coulombs** = `ma_s / 1000`.
 - **Wet sessions:** `wet_sessions` table — duration, total mA·s, avg mA, avg impedance, peak mA per episode; export JSON from `GET /api/sessions?hours=720&limit=5000` or download the whole DB.
 
-Telemetry includes **`logs/latest.json`** fields every tick: **`ref_raw_mv`**, **`ref_shift_mv`** (JSON `null` until baseline exists), **`ref_status`** (shift band or `N/A`), **`ref_hw_ok`**, **`ref_hw_message`**, **`ref_hint`**, **`ref_baseline_set`**, plus **temperature (°F)**. The web dashboard header mirrors raw / shift / band, hardware line, and banner. **Console:** `--verbose` prints the full table with a two-line ref block; **without `--verbose`**, a **`[ref] …`** summary prints on each **`LOG_INTERVAL_S`** tick (same cadence as the outer loop), and fault lines append a short ref summary.
+Telemetry includes **`logs/latest.json`** fields every tick: **`ref_raw_mv`**, **`ref_shift_mv`** (JSON `null` until baseline exists), **`ref_status`** (shift band or `N/A`), **`ref_hw_ok`**, **`ref_hw_message`**, **`ref_hint`**, **`ref_baseline_set`**, plus **temperature (°F)**. The web dashboard header mirrors raw / shift / band, hardware line, and banner. **Console:** **`--verbose`** prints a one-line **`[tick]`** summary on each control tick and the **full** channel table every **`LOG_INTERVAL_S`** (not every tick; avoids console spam). **Without `--verbose`**, a **`[ref] …`** line prints on each **`LOG_INTERVAL_S`** tick, and fault lines add a short ref summary.
 
 ## Fault latch
 

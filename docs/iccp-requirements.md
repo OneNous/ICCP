@@ -182,7 +182,7 @@ stateDiagram-v2
 > - States are `OPEN / REGULATE / PROTECTING / FAULT`. Driven by shunt current and impedance classification (`PATH_OPEN / PATH_WEAK / PATH_STRONG` — lines 93–136).
 > - `PROTECTING` is entered when `path == PATH_STRONG` **and** `|current - target| < PROTECTING_ENTER_DELTA_MA` (= 0.2 mA) for `PROTECTING_ENTER_HOLD_TICKS` (= 3 ticks = 1.5 s) — lines 524–548.
 > - **`PROTECTING` is asserted from shunt thresholds, not from potential shift.** A channel can be `PROTECTING` while `shift_mv` is zero or `None` (no baseline).
-> - The outer loop ([control.py](../control.py) `update_potential_target`, lines 675–694) nudges `TARGET_MA` by `±TARGET_MA_STEP` when shift is below `0.8 × TARGET_SHIFT_MV` or above `MAX_SHIFT_MV`. This *affects* the current setpoint but does **not** gate state transitions on shift.
+> - The outer loop ([control.py](../control.py) `update_potential_target`) nudges `TARGET_MA` by `±TARGET_MA_STEP` when shift is below `0.8 × TARGET_SHIFT_MV` or above `MAX_SHIFT_MV`, and — when `OUTER_LOOP_TRIM_TO_SHIFT_CENTER` is True (default in `config/settings.py`) — also trims toward `TARGET_SHIFT_MV` while shift stays in that OK window (see `OUTER_LOOP_SHIFT_TRIM_TOL_MV`). This *affects* the current setpoint but does **not** gate state transitions on shift.
 > - `any_wet()` returns `any(status == PROTECTING)` (line 729). `wet_channels` in `latest.json` is that count; the dashboard / UI treat this as "the system is protecting."
 > - **No `CANNOT_POLARIZE` timeout.** A channel can sit in `REGULATE` forever at high duty with zero shift; there is no failure path for "we are energizing but not polarizing."
 > - **No `Overprotected` state.** Over-shift nudges `TARGET_MA` down but does not change FSM state or raise a fault; dashboard will not flag it beyond a band label.
@@ -219,7 +219,7 @@ When `shift_mv > MAX_SHIFT_MV` on channel `c`, channel `c`'s inner loop runs **u
 
 > [See [control.py](../control.py) lines 529–609 and [config/settings.py](../config/settings.py) `TARGET_MA_STEP`, `MAX_SHIFT_MV`.]
 >
-> - The inner loop regulates shunt current to `TARGET_MA`. `TARGET_MA` is nudged ±`TARGET_MA_STEP` (default 0.02 mA) by `update_potential_target` when shift is outside `[0.8·TARGET_SHIFT_MV, MAX_SHIFT_MV]`.
+> - The inner loop regulates shunt current to `TARGET_MA`. `TARGET_MA` is nudged ±`TARGET_MA_STEP` (default 0.02 mA) by `update_potential_target` when shift is outside `[0.8·TARGET_SHIFT_MV, MAX_SHIFT_MV]`, and (by default) trimmed toward `TARGET_SHIFT_MV` when shift is inside that window but off-center.
 > - No `polarization_deficit_mv`, no per-channel gain. The system is a current-regulator with a slow *bias* on its setpoint from the outer loop.
 > - Overprotection today: reduce `TARGET_MA` globally by one `TARGET_MA_STEP` per outer-loop tick, no state change, no per-channel scoping.
 

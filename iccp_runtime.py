@@ -37,7 +37,12 @@ def run_iccp_forever(args: Namespace) -> int:
 
     Path(cfg.LOG_DIR).mkdir(parents=True, exist_ok=True)
 
-    from console_ui import print_ref_compact, print_sim_schedule, print_status_table
+    from console_ui import (
+        print_ref_compact,
+        print_sim_schedule,
+        print_status_table,
+        print_verbose_tick_line,
+    )
 
     sim = sensors.SIM_MODE
     use_hw_gpio = not sim
@@ -186,6 +191,13 @@ def run_iccp_forever(args: Namespace) -> int:
                 pass
 
     _bootstrap_latest()
+
+    if args.verbose:
+        print(
+            f"[main] Verbose: one line every {float(cfg.SAMPLE_INTERVAL_S):g}s; "
+            f"full channel table every {int(cfg.LOG_INTERVAL_S)}s (LOG_INTERVAL_S). "
+            "dI=I_target−I_mA · Vc≈Bus×PWM%."
+        )
 
     try:
         while True:
@@ -475,28 +487,44 @@ def run_iccp_forever(args: Namespace) -> int:
                         f"[sim {sim_state.sim_hhmm()}] {cycle_str:<24} "
                         f"anodes: {wet_map}  (W=wet  .=dry)"
                     )
-                print_status_table(
-                    readings,
-                    faults,
-                    duties,
-                    fault_latched,
-                    ch_status,
-                    any_wet,
-                    ref_raw_mv,
-                    ref_shift,
-                    ref_band,
-                    ref_hw_message(),
-                    temp_f,
-                    sim_line,
-                    z_median={
-                        i: ctrl.median_impedance_ohm(i)
-                        for i in range(cfg.NUM_CHANNELS)
-                    },
-                    live_ch=live_snap,
-                    ctrl=ctrl,
-                    tick_dt_s=v_dt,
-                    path_tags=ctrl.channel_path_tags(),
-                )
+                if ref_log_tick:
+                    print_status_table(
+                        readings,
+                        faults,
+                        duties,
+                        fault_latched,
+                        ch_status,
+                        any_wet,
+                        ref_raw_mv,
+                        ref_shift,
+                        ref_band,
+                        ref_hw_message(),
+                        temp_f,
+                        sim_line,
+                        z_median={
+                            i: ctrl.median_impedance_ohm(i)
+                            for i in range(cfg.NUM_CHANNELS)
+                        },
+                        live_ch=live_snap,
+                        ctrl=ctrl,
+                        tick_dt_s=v_dt,
+                        path_tags=ctrl.channel_path_tags(),
+                        include_pwm_path_caption=False,
+                    )
+                elif temp_in_band:
+                    print_verbose_tick_line(
+                        readings,
+                        faults,
+                        fault_latched,
+                        ch_status,
+                        any_wet,
+                        ref_raw_mv,
+                        ref_shift,
+                        ref_band,
+                        temp_f,
+                        v_dt,
+                        sim_line=sim_line,
+                    )
 
             elif faults or fault_latched:
                 shift_str = (

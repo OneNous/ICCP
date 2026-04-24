@@ -1223,14 +1223,29 @@ def _phase2_3_ramp_lock(
             "system_final_shift_mv": final_shift,
             "final_shift_mv": final_shift,
         }
-    _update_comm_file(
-        {
-            "commissioned_target_ma": current_target_ma,
-            "commissioned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "final_shift_mv": final_shift,
-            "channels": channels_hints,
-        }
-    )
+    comm_payload = {
+        "commissioned_target_ma": current_target_ma,
+        "commissioned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "final_shift_mv": final_shift,
+        "channels": channels_hints,
+    }
+    # Full file replace: no merge with stale keys from an older commissioning.json.
+    # Preserve ref_ads_scale if it was set in the file (calibration / manual).
+    ref_ads_scale: float | None = None
+    if _COMM_FILE.exists():
+        try:
+            _old = json.loads(_COMM_FILE.read_text(encoding="utf-8"))
+            if (
+                isinstance(_old, dict)
+                and _old.get("ref_ads_scale") is not None
+            ):
+                ref_ads_scale = float(_old["ref_ads_scale"])
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    full: dict = {**reference.native_baseline_file_payload(), **comm_payload}
+    if ref_ads_scale is not None:
+        full["ref_ads_scale"] = ref_ads_scale
+    _update_comm_file(full, replace=True)
     log("Done.")
 
 

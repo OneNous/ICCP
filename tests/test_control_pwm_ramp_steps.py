@@ -70,6 +70,9 @@ def test_regulate_clamp_above_hi_uses_pwm_step_down_regulate(
     monkeypatch.setattr(cfg, "PWM_STEP_UP_PROTECTING", 99.0)
     monkeypatch.setattr(cfg, "PWM_STEP_DOWN_PROTECTING", 99.0)
     monkeypatch.setattr(cfg, "TARGET_MA", 0.5)
+    # Keep Vcell cap below PWM_MAX so hi is a mid-range value (4.8 V cap + 80% max
+    # makes hi==80 and expected step-down 85 is unachievable — duty clamps at 80).
+    monkeypatch.setattr(cfg, "VCELL_HARD_MAX_V", 3.0)
 
     ctrl = Controller()
     hi = min(float(cfg.PWM_MAX_DUTY), control.duty_pct_cap_for_vcell(5.0, cfg))

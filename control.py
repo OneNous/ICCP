@@ -941,6 +941,10 @@ class Controller:
         Positive shift means the reference reading fell under CP vs native.
         Call once per LOG_INTERVAL_S tick, not every SAMPLE_INTERVAL_S.
         No-ops when any channel is Overprotected (shift FSM reduces duty; avoid fighting it).
+
+        When ``OUTER_LOOP_TRIM_TO_SHIFT_CENTER`` is True, also nudges while shift is in the
+        OK band (between ``0.8×TARGET_SHIFT_MV`` and ``MAX_SHIFT_MV``) toward ``TARGET_SHIFT_MV``
+        (see ``OUTER_LOOP_SHIFT_TRIM_TOL_MV``), so TARGET_MA is not frozen for long stretches.
         """
         if shift_mv is None:
             return
@@ -949,6 +953,8 @@ class Controller:
 
         lo = float(cfg.TARGET_SHIFT_MV) * 0.8
         hi = float(cfg.MAX_SHIFT_MV)
+        center = float(cfg.TARGET_SHIFT_MV)
+        trim_tol = float(getattr(cfg, "OUTER_LOOP_SHIFT_TRIM_TOL_MV", 3.0))
         step = float(cfg.TARGET_MA_STEP)
         max_target = float(cfg.MAX_MA) * 0.8
 
@@ -956,6 +962,12 @@ class Controller:
             cfg.TARGET_MA = round(min(cfg.TARGET_MA + step, max_target), 3)
         elif shift_mv > hi:
             cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, 0.05), 3)
+        elif bool(getattr(cfg, "OUTER_LOOP_TRIM_TO_SHIFT_CENTER", True)):
+            # In-band: steer current setpoint so polarization tends toward ``TARGET_SHIFT_MV``.
+            if shift_mv < center - trim_tol:
+                cfg.TARGET_MA = round(min(cfg.TARGET_MA + step, max_target), 3)
+            elif shift_mv > center + trim_tol:
+                cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, 0.05), 3)
 
     def duties(self) -> dict[int, float]:
         return {i: self._pwm.duty(i) for i in range(cfg.NUM_CHANNELS)}

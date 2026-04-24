@@ -92,6 +92,8 @@ def print_status_table(
     ctrl: object | None = None,
     tick_dt_s: float | None = None,
     path_tags: dict[int, str] | None = None,
+    *,
+    include_pwm_path_caption: bool = True,
 ) -> None:
     try:
         if sim_line:
@@ -197,18 +199,19 @@ def print_status_table(
         print("─" * w)
         tpw = live_ch.get("total_power_w") if isinstance(live_ch, dict) else None
         tpw_s = f"{float(tpw):.4f}" if isinstance(tpw, (int, float)) else "—"
-        pwm_mx = float(getattr(_cfg, "PWM_MAX_DUTY", 80.0))
-        probe = float(getattr(_cfg, "DUTY_PROBE", 3.0))
-        vhard = float(getattr(_cfg, "VCELL_HARD_MAX_V", 0.0) or 0.0)
-        print(
-            f"  PWM: REGULATE ramps from {probe:.0f}% up; max duty "
-            f"min({pwm_mx:.0f}%, 100×{vhard:.1f}V/Bus); Vc≈Bus×PWM/100"
-        )
-        print(
-            "  Path=conduction (weak|strong|open); dI=I_target−I_mA "
-            "(PROTECTING needs strong path + near-target hold). "
-            "Prot=1 only in PROTECTING."
-        )
+        if include_pwm_path_caption:
+            pwm_mx = float(getattr(_cfg, "PWM_MAX_DUTY", 80.0))
+            probe = float(getattr(_cfg, "DUTY_PROBE", 3.0))
+            vhard = float(getattr(_cfg, "VCELL_HARD_MAX_V", 0.0) or 0.0)
+            print(
+                f"  PWM: REGULATE ramps from {probe:.0f}% up; max duty "
+                f"min({pwm_mx:.0f}%, 100×{vhard:.1f}V/Bus); Vc≈Bus×PWM/100"
+            )
+            print(
+                "  Path=conduction (weak|strong|open); dI=I_target−I_mA "
+                "(PROTECTING needs strong path + near-target hold). "
+                "Prot=1 only in PROTECTING."
+            )
         print(
             f"  AnyWet={int(any_wet)}  Latch={int(latched)}  "
             f"ΣP={tpw_s} W  "
@@ -216,6 +219,50 @@ def print_status_table(
         )
     except BrokenPipeError:
         raise SystemExit(0) from None
+
+
+def print_verbose_tick_line(
+    readings: dict,
+    faults: list,
+    latched: bool,
+    ch_status: dict[int, str],
+    any_wet: bool,
+    ref_raw_mv: float,
+    ref_shift: float | None,
+    ref_band: str,
+    temp_f: float | None,
+    tick_dt_s: float | None,
+    sim_line: str = "",
+) -> None:
+    """One line per control tick in verbose mode (between full :func:`print_status_table` dumps)."""
+    if sim_line:
+        print(sim_line)
+    import config.settings as _cfg
+
+    n = int(_cfg.NUM_CHANNELS)
+    ina = commission_ina_compact(readings, num_channels=n)
+    shift_s = (
+        f"{ref_shift:+.0f} mV"
+        if ref_shift is not None
+        else "—"
+    )
+    band_s = ref_band if ref_shift is not None else "—"
+    t_s = f"{temp_f:.0f}°F" if temp_f is not None else "—"
+    f_s = "; ".join(faults) if faults else "—"
+    dt = (
+        f" Δt={float(tick_dt_s):.2f}s"
+        if tick_dt_s is not None and tick_dt_s >= 0
+        else ""
+    )
+    st_s = " ".join(
+        f"{anode_label(i)}={ch_status.get(i, '?')[:4]}"
+        for i in range(n)
+    )
+    print(
+        f"[tick]{dt}  {st_s}  |  {ina}  |  "
+        f"ref {ref_raw_mv:.0f} mV sh {shift_s} {band_s}  |  T {t_s}  |  "
+        f"Wet={int(any_wet)}  Latch={int(latched)}  F: {f_s}"
+    )
 
 
 def print_ref_compact(

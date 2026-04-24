@@ -389,6 +389,12 @@ REF_ENABLED = True
 TARGET_SHIFT_MV = 100
 MAX_SHIFT_MV = 200
 TARGET_MA_STEP = 0.02
+# Outer loop (``update_potential_target``): legacy behavior only nudged TARGET_MA when shift
+# was **outside** [0.8×TARGET_SHIFT_MV, MAX_SHIFT_MV] — a wide dead band where shift could
+# read "OK" in the UI while TARGET_MA and duty never moved. When True, still nudge **toward**
+# TARGET_SHIFT_MV while shift stays in that window (no nudge if |shift−center| < tol).
+OUTER_LOOP_TRIM_TO_SHIFT_CENTER = True
+OUTER_LOOP_SHIFT_TRIM_TOL_MV = 3.0
 # Optional Ag/AgCl linear trim vs pan temperature (°F only): raw mV += (temp_f − anchor)×coef.
 # Anchor is ``native_temp_f`` from commissioning.json when present; else ``REF_TEMP_COMP_BASE_F``.
 # Literature often quotes mV/°C — convert once: mV_per_F = mV_per_C × (5/9). Default 0 = off.
