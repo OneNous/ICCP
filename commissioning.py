@@ -54,12 +54,12 @@ _COMMISSION_ANODE_WAIT_STATUS_S: float = 5.0
 _COMMISSION_PUMP_PROGRESS_S: float = 20.0
 
 
-def _print_commission_anode_wait_line(
+def _commission_anode_wait_line(
     controller: Any,
     reference: ReferenceElectrode,
     sim_state: Any | None,
-) -> None:
-    """INA + PWM% + ref raw — read-only (does not run the ICCP control tick)."""
+) -> tuple[tuple[Any, ...], str]:
+    """Build dedup key and one status line — read-only (does not run the control tick)."""
     import sensors
 
     if sensors.SIM_MODE and sim_state is not None:
@@ -78,10 +78,33 @@ def _print_commission_anode_wait_line(
     duty_s = " ".join(f"A{ch + 1}={duties[ch]:.0f}%" for ch in chs)
     ts = time.strftime("%H:%M:%S")
     t_s = f"{temp_f:.1f}°F" if temp_f is not None else "—"
-    print(
+    line = (
         f"[commission] {ts}  (anode wait, read-only)  {ina}  |  {duty_s}  |  "
         f"ref(raw)={ref_mv:.1f} mV  |  T={t_s}"
     )
+    key_parts: list[Any] = [round(ref_mv, 1)]
+    for ch in chs:
+        r = readings.get(ch, {})
+        if r.get("ok"):
+            key_parts.append(round(float(r.get("current", 0.0) or 0.0), 3))
+        else:
+            err = (r.get("sensor_error") or r.get("error") or "unknown")[:20]
+            key_parts.append(f"!{err}")
+    key_parts.extend(round(duties[ch], 1) for ch in chs)
+    key_parts.append(
+        None if temp_f is None else round(float(temp_f), 1)
+    )
+    return tuple(key_parts), line
+
+
+def _print_commission_anode_wait_line(
+    controller: Any,
+    reference: ReferenceElectrode,
+    sim_state: Any | None,
+) -> None:
+    """INA + PWM% + ref raw — read-only (does not run the ICCP control tick)."""
+    _, line = _commission_anode_wait_line(controller, reference, sim_state)
+    print(line)
 
 
 def _readline_wait_enter_for_anode_prompt(
@@ -203,20 +226,26 @@ def _anode_placement_pause(
             "will show time remaining until the median is taken."
         )
         print(
-            f"[main] While waiting: read-only INA/ref line every "
-            f"{int(_COMMISSION_ANODE_WAIT_STATUS_S)} s (outputs stay off; no control tick)."
+            f"[main] While waiting: read-only INA/ref at most every "
+            f"{int(_COMMISSION_ANODE_WAIT_STATUS_S)} s when readings change (outputs off; "
+            "no control tick; repeated identical lines are skipped)."
         )
     on_timeout: Callable[[], None] | None = None
     if controller is not None and reference is not None:
         _last_status_mono = 0.0
+        _last_wait_key: tuple[Any, ...] | None = None
 
         def _on_timeout() -> None:
-            nonlocal _last_status_mono
+            nonlocal _last_status_mono, _last_wait_key
             now = time.monotonic()
             if now - _last_status_mono < float(_COMMISSION_ANODE_WAIT_STATUS_S):
                 return
             _last_status_mono = now
-            _print_commission_anode_wait_line(controller, reference, sim_state)
+            key, line = _commission_anode_wait_line(controller, reference, sim_state)
+            if key == _last_wait_key:
+                return
+            _last_wait_key = key
+            print(line)
 
         on_timeout = _on_timeout
     _readline_wait_enter_for_anode_prompt(on_select_timeout=on_timeout)
@@ -525,6 +554,18 @@ def _channels_shunt_below(
     return (len(issues) == 0, issues)
 
 
+def _phase1_off_check_scope_phrase() -> str:
+    """
+    Log wording: full install vs. commission anode subset (off-check still scans all hardware).
+    """
+    nch = int(getattr(cfg, "NUM_CHANNELS", 4))
+    active = cfg.active_channel_indices_list()
+    if len(active) == nch:
+        return f"all {nch} anodes"
+    sub = ", ".join(f"A{ch + 1}" for ch in active)
+    return f"all {nch} hardware anodes (commission subset: {sub})"
+
+
 def _wait_phase1_shunts_off(
     sim_state: Any | None,
     i_max_ma: float,
@@ -618,15 +659,15 @@ def _verify_phase1_drive_off(
         else:
             commission_log_main(msg)
     else:
-        nch = int(getattr(cfg, "NUM_CHANNELS", 4))
+        scope = _phase1_off_check_scope_phrase()
         if post_long_settle:
             ok_msg = (
-                f"Phase 1 off-check after settle: all {nch} channels PWM 0% and |I| < {i_gate:g} mA "
+                f"Phase 1 off-check after settle: {scope} PWM 0% and |I| < {i_gate:g} mA "
                 "(gates closed, no CP drive through shunts)."
             )
         else:
             ok_msg = (
-                f"Phase 1 off-check: all {nch} channels PWM 0% and |I| < {i_gate:g} mA "
+                f"Phase 1 off-check: {scope} PWM 0% and |I| < {i_gate:g} mA "
                 "(gates closed, no CP drive through shunts)."
             )
         # log() already prefixes [main] when verbose — do not print twice.
