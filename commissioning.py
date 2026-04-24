@@ -25,6 +25,31 @@ if TYPE_CHECKING:
 
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
 
+
+def _readline_wait_enter_for_anode_prompt() -> None:
+    """
+    Block until the operator sends a line (Enter).
+
+    Prefer ``/dev/tty`` on POSIX — same idea as :func:`getpass.getpass`: ``input()`` on
+    ``sys.stdin`` can block forever if stdin is not the TTY the user is typing on (e.g. some
+    ``sudo``/ssh/wrapper cases). The controlling terminal still receives the keys.
+    """
+    enc = getattr(sys.stdin, "encoding", None) or "utf-8"
+    try:
+        with open(
+            "/dev/tty",
+            "r",
+            encoding=enc,
+            errors="replace",
+        ) as tty:
+            tty.readline()
+    except OSError:
+        try:
+            input()
+        except EOFError:
+            pass
+
+
 def _anode_placement_should_interact(
     anode_placement_prompts: bool | None,
 ) -> bool:
@@ -71,11 +96,8 @@ def _anode_placement_pause(
     else:  # pragma: no cover
         banner = f"\n{ts} (internal: unknown anode step {step!r})\nPress Enter… "
 
-    try:
-        print(banner, end="", flush=True)
-        input()
-    except EOFError:
-        pass
+    print(banner, end="", flush=True)
+    _readline_wait_enter_for_anode_prompt()
 
 
 def _native_capture_fail_hint(cap_reason: str) -> str:
