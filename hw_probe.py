@@ -10,7 +10,8 @@ Steps:
   2 — INA219 raw reads (4 channels)
   3 — ADS1115 single-ended AIN0..AIN3 (default address from config/settings.py)
   4 — DS18B20 (1-Wire) if present
-  5 — PWM GPIO walk (optional)
+  5 — PWM GPIO walk (optional) — **gate** is Pi **~3.3 V** logic; **switched anode / INA bus** is
+      **Vbus** (often **~4.8–5.0 V** loaded). Trust **INA219 bus_v** on the board, not 3.3 V.
 
 Launch (after ``pip install -e .`` from repo root):  iccp probe [flags]
 
@@ -78,8 +79,10 @@ else:
     ADS1115_FSR_V = 2.048
 
 SHUNT_OHMS = 0.1
-SUPPLY_V = 5.0
-GPIO_HIGH_V = 3.3
+# N-model for probe *copy* and crude duty×V: switched anode/5V rail (measure real V with DMM/INA bus_v).
+# Often ~4.85–5.0 V on USB; not the same as the Pi gate drive below.
+NOMINAL_ANODE_RAIL_V = 5.0
+GPIO_HIGH_V = 3.3  # BCM logic high; gate drive is 0..3.3 V, not the 5 V anode supply
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -882,9 +885,9 @@ def run_pwm_test(
     print(f"""
   Testing pins BCM {pin_desc} one at a time at {PWM_FREQ_HZ} Hz.
 
-  At each duty level:
-    Gate (GPIO)  → meter ≈ duty% × {GPIO_HIGH_V:.1f} V average
-    Anode        → meter ≈ duty% × {SUPPLY_V:.1f} V if MOSFET switches
+  At each duty level (time-average; scope is better for edges):
+    Gate (Pi GPIO)  →  ~ duty% × {GPIO_HIGH_V:.1f} V  (Raspberry Pi output is 3.3 V logic, not 5 V)
+    Anode / 5V rail  →  can swing toward Vbus (often ~4.8–5.0 V under load, e.g. 4.85 V); INA219 bus_v is authoritative — not 3.3 V
 {ina_note}""")
 
     try:
@@ -911,7 +914,7 @@ def run_pwm_test(
                 # Let soft-PWM and cell settle (several periods at 100 Hz default).
                 time.sleep(0.22)
                 gate_v = GPIO_HIGH_V * duty / 100.0
-                anode_v = SUPPLY_V * duty / 100.0
+                anode_v = NOMINAL_ANODE_RAIL_V * duty / 100.0
                 ina_str = ""
                 if ina_ok and sm is not None and ina_addr is not None:
                     if not _mux_select_anode_for_probe(sm, ch_idx):
@@ -948,7 +951,7 @@ def run_pwm_test(
                     ina_str = "   INA: (no address for this index)"
 
                 print(
-                    f"  Duty {duty:3d}%  →  gate ≈ {gate_v:.2f} V   anode avg ≈ {anode_v:.2f} V"
+                    f"  Duty {duty:3d}%  →  gate ≈ {gate_v:.2f} V   anode rail avg ≈ {anode_v:.2f} V (model)"
                     f"{ina_str}"
                 )
                 pause("           Measure now, then press Enter ...")
@@ -998,7 +1001,7 @@ def print_summary(ch_filter: frozenset[int] | None = None) -> None:
   {ina_line}
   ADS1115: AIN0..3 read without error (reference on AIN0 typically)
   DS18B20: optional — 28-* in sysfs when 1-Wire enabled
-  PWM: gate follows duty × 3.3 V; anode follows if MOSFET correct; INA219 mA/Ω on line
+  PWM: gate is Pi GPIO (time-avg ~ duty×3.3V); anode/5V rail can approach Vbus (~4.85–5.0V typical) — use INA219 bus_v; INA219 mA/Ω on line
 """)
 
 
@@ -1104,7 +1107,7 @@ def main() -> int:
     print("└─────────────────────────────────────────────────────────┘")
     print(
         f"\n  INA219 bus: {args.bus}   ADS bus: {ads_bus}   "
-        f"Shunt: {args.shunt} Ω   Supply assumed: {SUPPLY_V} V"
+        f"Shunt: {args.shunt} Ω   Anode-rail model: {NOMINAL_ANODE_RAIL_V} V (use INA bus_v for real V)"
     )
     if ch_filter is not None:
         al = ", ".join(f"A{c + 1}" for c in sorted(ch_filter))

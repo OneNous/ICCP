@@ -4,6 +4,8 @@
 
 This note captures **datasheet facts** useful for CoilShield’s **Raspberry Pi GPIO–driven** anode MOSFETs. It is **not** a BOM mandate: any suitable **N-channel enhancement** low-side switch with adequate **VDS**, **RDS(on)** at your real **VGS**, and layout-appropriate **Qg** is fine. Firmware behavior is described generically in [mosfet-off-verification.md](mosfet-off-verification.md) and the README (PWM, pull-downs, static gate LOW).
 
+**Gate (Pi, ~3.3 V) vs anode / INA bus (Vbus, ~4.8–5.0 V):** GPIO only **turns the FET**; it does **not** set the **switched 5 V rail** read as **INA219 `bus_v`**. That split is documented in [raspberry-pi-gpio.md](../../raspberry-pi-gpio.md) and **probe STEP 5** in `hw_probe.py`.
+
 ## Canonical datasheet
 
 - **PDF:** [Vishay Siliconix IRLZ44 (document 91328)](https://www.vishay.com/docs/91328/irlz44.pdf)  

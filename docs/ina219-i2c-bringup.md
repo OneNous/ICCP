@@ -41,7 +41,7 @@
 3. Start: **`iccp start`** (or your normal foreground command) and confirm the log line:  
    **`[sensors] INA219 initialized on 4 channels`** (with your address list; use **3** if running a three-INA profile), and **no** `Hardware init failed` / empty `_sensors` follow-up.
 
-**After restoring four anodes in software** (`NUM_CHANNELS=4`, full `INA219_ADDRESSES`, four `PWM_GPIO_PINS` in `config/settings.py`): run `sudo i2cdetect -y 1` (or your `I2C_BUS`) to confirm **40 41 44 45** (and **48** for ADS), then `iccp probe` and `iccp start` as above until the log shows **`INA219 initialized on 4 channels`**.
+**After restoring four anodes in software** (`NUM_CHANNELS=4`, full `INA219_ADDRESSES`, four `PWM_GPIO_PINS` in `config/settings.py`): run `sudo i2cdetect -y 1` (or your `I2C_BUS`) to confirm **40 41 44 45** (and **48** for ADS), then `iccp probe` and `iccp start` as above until the log shows **`INA219 initialized on 4 channels`**. In probe **STEP 5**, the summary distinguishes **~3.3 V gate** (Pi) from the **5 V** switched rail — trust **`bus_v`** on the INA for the latter.
 4. TUI / dashboard: anode rows should show real **BusV** / **mA**, not `no hardware` / `--` when the cell is powered and gated.
 
 ### `iccp probe` green but `iccp start` / `iccp commission` still sees no hardware
