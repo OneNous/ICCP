@@ -16,7 +16,8 @@ Design principles:
     PROTECTING requires PATH_STRONG plus near-target hysteresis.
   - OPEN hysteresis needs measurable I for finite Z; at I≈0 without drive, classify
     weak path so REGULATE probe can run (avoids false OPEN when submerged).
-  - Hysteresis counters reset every STATE_RECHECK_INTERVAL_S.
+  - Hysteresis counters: when ``STATE_RECHECK_RESET_PROTECT_STREAKS`` is True, protecting
+    enter/exit streaks reset every ``STATE_RECHECK_INTERVAL_S`` (default: streaks are not reset).
   - Low-Z guard (Z < MIN_EFFECTIVE_OHMS): hold non-OPEN path class; from OPEN return
     weak path so probe duty can clarify.
   - FAULT is orthogonal (over/under-voltage, overcurrent, read errors).
@@ -528,12 +529,20 @@ class Controller:
                 new = cur
             self._pwm.set_duty_unified(clamp(new, 0.0, hi_protect))
             return
-        # REGULATE: aggregate idle hold (|I| negligible system-wide)
+        lo, hi = probe_d, hi_ramp
+        # REGULATE: aggregate idle hold: |I| below noise floor but total current already
+        # at/above the summed setpoint (e.g. t_tot in the 0.04 mA range with REGULATE_IDLE
+        # 0.05 mA). Uncommon at nominal per-channel targets (t_tot >> idle band) but valid.
+        # If i_tot < t_tot, keep ramping (do not force 0%% — unblocks probe floor / avoids the
+        # per-channel 0%% deadlock with small targets).
         idle_off = float(getattr(cfg, "REGULATE_IDLE_OFF_BELOW_MA", 0.05))
-        if idle_off > 0.0 and abs(i_tot) < idle_off:
+        if (
+            idle_off > 0.0
+            and abs(i_tot) < idle_off
+            and i_tot >= t_tot
+        ):
             self._pwm.set_duty_unified(0.0)
             return
-        lo, hi = probe_d, hi_ramp
         if cur > hi:
             step = pwm_ramp_step(0, regulating=True, increasing=False)
             new = max(hi, cur - step)
@@ -552,10 +561,6 @@ class Controller:
     def update(
         self,
         readings: dict[int, dict],
-        *,
-        shift_mv: float | None = None,
-        ref_valid: bool = True,
-        ref_valid_reason: str = "",
     ) -> tuple[list[str], bool]:
         self._faults = []
         self._check_clear_fault()
@@ -809,17 +814,24 @@ class Controller:
             if status == ChannelState.OPEN:
                 self._pwm.set_duty(ch, 0.0)
             elif status == ChannelState.REGULATE:
+                lo, hi = probe_duty, hi_ramp
+                if current_duty < lo:
+                    # Reach DUTY_PROBE first; a prior idle check here could keep 0% with I=0.
+                    self._pwm.set_duty(ch, lo)
+                    continue
                 idle_off = float(getattr(cfg, "REGULATE_IDLE_OFF_BELOW_MA", 0.05))
-                if idle_off > 0.0 and abs(current_ma) < idle_off:
-                    # No measurable conduction — default off; do not ramp duty chasing TARGET_MA.
+                if (
+                    idle_off > 0.0
+                    and abs(current_ma) < idle_off
+                    and current_ma >= target_ma
+                ):
+                    # |I| is noise and we are at/above setpoint — hold off (open-path guard).
+                    # If current_ma < target_ma, do not block ramp that establishes conduction.
                     self._pwm.set_duty(ch, 0.0)
                     continue
-                lo, hi = probe_duty, hi_ramp
                 if current_duty > hi:
                     step = pwm_ramp_step(ch, regulating=True, increasing=False)
                     new_duty = max(hi, current_duty - step)
-                elif current_duty < lo:
-                    new_duty = lo
                 elif current_ma < target_ma:
                     step = pwm_ramp_step(ch, regulating=True, increasing=True)
                     new_duty = min(current_duty + step, hi)
@@ -917,6 +929,10 @@ class Controller:
         state.overcurrent_streak = 0
         state.fault_retry_count += 1
 
+    def any_overprotected(self) -> bool:
+        """True if any channel is in ``Overprotected`` (shift FSM is already backing off duty)."""
+        return any(s.state_v2 == STATE_V2_OVERPROTECTED for s in self._states)
+
     def update_potential_target(self, shift_mv: float | None) -> None:
         """
         Outer loop: nudge TARGET_MA to keep polarization in the safe window.
@@ -924,8 +940,11 @@ class Controller:
         uses ``OUTER_LOOP_INSTANT_OFF``; legacy callers may pass live on-potential shift.
         Positive shift means the reference reading fell under CP vs native.
         Call once per LOG_INTERVAL_S tick, not every SAMPLE_INTERVAL_S.
+        No-ops when any channel is Overprotected (shift FSM reduces duty; avoid fighting it).
         """
         if shift_mv is None:
+            return
+        if self.any_overprotected():
             return
 
         lo = float(cfg.TARGET_SHIFT_MV) * 0.8
@@ -1206,6 +1225,7 @@ class Controller:
                         state.polarize_retry_next_unix = None
                         state.polarizing_since = None
                         state.shift_above_target_since = None
+                        state.probing_since = now
                         _set_state(state, STATE_V2_PROBING)
                 continue
 
@@ -1238,7 +1258,7 @@ class Controller:
                 new_duty = max(
                     0.0,
                     duty
-                    - pwm_ramp_step(0, regulating=False, increasing=False),
+                    - pwm_ramp_step(ch, regulating=False, increasing=False),
                 )
                 if _shared_return_pwm():
                     self._pwm.set_duty_unified(new_duty)
@@ -1278,13 +1298,37 @@ class Controller:
         s = self._states[ch]
         return max(0.0, time.monotonic() - s.state_v2_enter_monotonic)
 
+    def t_in_polarizing_s(self, ch: int) -> float:
+        """Seconds in the current `Polarizing` run (since ``polarizing_since``), or 0.0 if not polarizing."""
+        s = self._states[ch]
+        if s.state_v2 != STATE_V2_POLARIZING or s.polarizing_since is None:
+            return 0.0
+        return max(0.0, time.monotonic() - float(s.polarizing_since))
+
     def all_protected(self) -> bool:
-        """True when every channel is `Protected` for T_SYSTEM_STABLE continuously (§2.2)."""
+        """True when every *participating* active channel is `Protected` for T_SYSTEM_STABLE (§2.2).
+
+        Active channels still ``Off`` (no path / dry) are excluded. An active channel in
+        ``Fault`` blocks the assertion until cleared.
+        """
         tss = float(getattr(cfg, "T_SYSTEM_STABLE", 60.0))
         now = time.monotonic()
         if not self._states:
             return False
-        if not all(s.state_v2 == STATE_V2_PROTECTED for s in self._states):
+        participating: list[ChannelState] = []
+        for ch, s in enumerate(self._states):
+            if not cfg.is_channel_active(ch):
+                continue
+            if s.state_v2 == STATE_V2_FAULT:
+                self._all_protected_streak_mono = None
+                return False
+            if s.state_v2 == STATE_V2_OFF:
+                continue
+            participating.append(s)
+        if not participating:
+            self._all_protected_streak_mono = None
+            return False
+        if not all(s.state_v2 == STATE_V2_PROTECTED for s in participating):
             self._all_protected_streak_mono = None
             return False
         if self._all_protected_streak_mono is None:

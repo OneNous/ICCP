@@ -22,6 +22,8 @@ import pytest
 import config.settings as cfg
 from control import (
     STATE_V2_FAULT,
+    STATE_V2_OFF,
+    STATE_V2_OVERPROTECTED,
     STATE_V2_POLARIZING,
     STATE_V2_PROBING,
     STATE_V2_PROTECTED,
@@ -186,3 +188,54 @@ def test_protected_slip_back_to_polarizing(monkeypatch: pytest.MonkeyPatch) -> N
     advance(cfg.T_SLIP + 0.05)
     ctrl.advance_shift_fsm(_all_ok(), shift_mv=60.0, ref_valid=True)
     assert ctrl.channel_state_v2()[ch] == STATE_V2_POLARIZING
+
+
+def test_all_protected_ignores_off_dry_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§2.2: enabled channels still `Off` do not block system-level all_protected."""
+    monkeypatch.setattr(cfg, "T_SYSTEM_STABLE", 0.0, raising=False)
+    ctrl = Controller()
+    for ch in range(cfg.NUM_CHANNELS):
+        if ch == 0:
+            ctrl._states[ch].state_v2 = STATE_V2_OFF
+        else:
+            ctrl._states[ch].state_v2 = STATE_V2_PROTECTED
+    assert ctrl.all_protected() is True
+
+
+def test_overprotected_ramp_uses_per_channel_pwm_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "SHARED_RETURN_PWM", False, raising=False)
+    monkeypatch.setattr(cfg, "MAX_SHIFT_MV", 200.0, raising=False)
+    monkeypatch.setattr(cfg, "HYST_OVER_FAULT_MV", 50.0, raising=False)
+    monkeypatch.setattr(cfg, "T_OVER_FAULT", 3600.0, raising=False)
+    monkeypatch.setattr(cfg, "PWM_STEP", 0.1, raising=False)
+    monkeypatch.setattr(cfg, "PWM_STEP_DOWN_PROTECTING", 0.1, raising=False)
+    monkeypatch.setattr(cfg, "CHANNEL_PWM_STEP_DOWN_PROTECTING", {1: 4.0}, raising=False)
+
+    ctrl = Controller()
+    ch = 1
+    ctrl._states[ch].state_v2 = STATE_V2_OVERPROTECTED
+    ctrl._pwm.set_duty(ch, 50.0)
+    # shift below over_max+HYST so we do not latch OVERPROTECTION fault
+    ctrl.advance_shift_fsm(_all_ok(), shift_mv=249.0, ref_valid=True)
+    assert ctrl._pwm.duty(ch) == pytest.approx(46.0)
+
+
+def test_t_in_polarizing_s_not_polarizing_is_zero() -> None:
+    ctrl = Controller()
+    assert ctrl.t_in_polarizing_s(0) == 0.0
+    ctrl._states[0].state_v2 = STATE_V2_POLARIZING
+    ctrl._states[0].polarizing_since = None
+    assert ctrl.t_in_polarizing_s(0) == 0.0
+
+
+def test_t_in_polarizing_s_elapsed(monkeypatch: pytest.MonkeyPatch) -> None:
+    advance = _make_clock(monkeypatch)
+    import control as control_mod
+
+    ctrl = Controller()
+    t0 = control_mod.time.monotonic()
+    ctrl._states[0].state_v2 = STATE_V2_POLARIZING
+    ctrl._states[0].polarizing_since = t0
+    assert ctrl.t_in_polarizing_s(0) == pytest.approx(0.0)
+    advance(1.25)
+    assert ctrl.t_in_polarizing_s(0) == pytest.approx(1.25)

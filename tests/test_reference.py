@@ -117,3 +117,14 @@ def test_ref_temp_adjust_mv(monkeypatch: pytest.MonkeyPatch) -> None:
     ref.native_temp_f = 70.0
     assert ref.ref_temp_adjust_mv(200.0, None) == 200.0
     assert ref.ref_temp_adjust_mv(200.0, 72.0) == 199.0
+
+
+def test_ref_temp_uses_base_f_without_native_temp_in_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When native_temp_f is missing, anchor is REF_TEMP_COMP_BASE_F (see config.settings)."""
+    monkeypatch.setattr(cfg, "REF_TEMP_COMP_MV_PER_F", 1.0)
+    monkeypatch.setattr(cfg, "REF_TEMP_COMP_BASE_F", 77.0)
+    ref = ReferenceElectrode()
+    ref.native_temp_f = None
+    assert ref.ref_temp_adjust_mv(100.0, 78.0) == pytest.approx(101.0)

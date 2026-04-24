@@ -7,7 +7,7 @@ import json
 import pytest
 
 import config.settings as cfg
-from control import Controller
+from control import ChannelState, Controller
 from sensors import ina219_read_failure_expected_idle
 
 
@@ -33,6 +33,14 @@ def test_ina219_read_failure_expected_idle_errno5() -> None:
         error="OSError: [Errno 5] Input/output error",
         duty_pct=0.0,
         fsm_state="REGULATE",
+        current_ma=0.0,
+        bus_v=0.0,
+    )
+    assert not ina219_read_failure_expected_idle(
+        ok=False,
+        error="OSError: [Errno 5] Input/output error",
+        duty_pct=0.0,
+        fsm_state=ChannelState.REGULATE,
         current_ma=0.0,
         bus_v=0.0,
     )

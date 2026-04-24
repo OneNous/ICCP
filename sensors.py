@@ -75,8 +75,10 @@ def ina219_read_failure_expected_idle(
         return False
     if float(duty_pct) > float(duty_idle_max):
         return False
+    from control import ChannelState  # deferred: top-level import would cycle (control imports sensors first)
+
     st = str(fsm_state)
-    if st in ("REGULATE", "PROTECTING", "FAULT"):
+    if st in (ChannelState.REGULATE, ChannelState.PROTECTING, ChannelState.FAULT):
         return False
     if abs(float(current_ma)) > 1e-4 or abs(float(bus_v)) > 0.08:
         return False
@@ -176,12 +178,17 @@ def _init_ina219_sensor_list_for_import() -> list[Any]:
                         raise
     finally:
         if mux_bus is not None:
-            mux_bus.close()
+            try:
+                mux_bus.close()
+            except OSError:
+                pass
 
     return out
 
 
 _sensors: list[Any] = []
+# Monotonic time of last lazy re-init attempt (None = never) — see _maybe_reinit_ina219_sensors.
+_ina219_reinit_last_attempt: float | None = None
 
 if not SIM_MODE:
     try:
@@ -195,8 +202,9 @@ if not SIM_MODE:
         _sensors = []
         print(
             "[sensors] No anode INA219 objects — shunt reads will report 'no hardware' until "
-            "I²C / TCA9548A / per-port INA wiring is fixed; then restart this process. "
-            "The reference (ADS1115) can still work. See docs/ina219-i2c-bringup.md"
+            "I²C / TCA9548A / per-port INA wiring is fixed, or the runtime will retry INA init "
+            f"periodically (see INA219_REINIT_MIN_INTERVAL_S in config). The reference (ADS1115) "
+            "can still work. See docs/ina219-i2c-bringup.md"
         )
 
 
@@ -206,6 +214,30 @@ def ina219_sensors_ready() -> bool:
         return True
     addrs = getattr(cfg, "INA219_ADDRESSES", None) or []
     return len(_sensors) == len(addrs) and len(_sensors) > 0
+
+
+def _maybe_reinit_ina219_sensors() -> None:
+    """If import-time init left ``_sensors`` empty, retry init on a throttle (field I²C glitch)."""
+    global _sensors, _ina219_reinit_last_attempt
+    if SIM_MODE or _sensors:
+        return
+    addrs = getattr(cfg, "INA219_ADDRESSES", None) or []
+    if not addrs:
+        return
+    interval = max(0.0, float(getattr(cfg, "INA219_REINIT_MIN_INTERVAL_S", 60.0)))
+    now = time.monotonic()
+    if _ina219_reinit_last_attempt is not None and (now - _ina219_reinit_last_attempt) < interval:
+        return
+    _ina219_reinit_last_attempt = now
+    try:
+        _sensors = _init_ina219_sensor_list_for_import()
+        print(
+            f"[sensors] INA219 re-initialized on {len(_sensors)} channels at addresses "
+            f"{[hex(a) for a in cfg.INA219_ADDRESSES]}"
+        )
+    except Exception as e:
+        print(f"[sensors] INA219 re-init failed: {e}")
+        _sensors = []
 
 
 def _mux_select_ina219_bus() -> None:
@@ -276,6 +308,9 @@ def read_all_real() -> dict[int, ChannelReading]:
 
     from i2c_bench import i2c_bus_lock, mux_select_on_bus
 
+    if not SIM_MODE:
+        _maybe_reinit_ina219_sensors()
+
     mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None)
     per_mux = getattr(cfg, "I2C_MUX_CHANNELS_INA219", None)
     leg_mux = getattr(cfg, "I2C_MUX_CHANNEL_INA219", None)
@@ -333,13 +368,18 @@ def read_all_real() -> dict[int, ChannelReading]:
                             pass
                         import smbus2
 
-                        mux_bus = smbus2.SMBus(busnum)
+                        try:
+                            mux_bus = smbus2.SMBus(busnum)
+                        except OSError:
+                            mux_bus = None
+                            raise
                         _remux_ina219_channel(iccp_ch, mux_bus)
 
                     bus_v = 0.0
                     current_ma = 0.0
                     shunt_mv = 0.0
                     power_mw = 0.0
+                    # One attempt = one full quad-read; retried as a set (avoids half-updated tuple).
                     for attempt in range(2):
                         try:
                             bus_v = sensor.voltage()  # V
@@ -404,7 +444,10 @@ def read_all_real() -> dict[int, ChannelReading]:
 
         finally:
             if mux_bus is not None:
-                mux_bus.close()
+                try:
+                    mux_bus.close()
+                except OSError:
+                    pass
 
     # Fill missing channels
     for ch in range(cfg.NUM_CHANNELS):
@@ -438,12 +481,13 @@ COOLING_CYCLES: tuple[tuple[int, int], ...] = (
     (84600, 86400),   # 23:30–24:00
 )
 
-# (wet_delay_s, dry_delay_s) per channel after cycle start/end
+# (wet_delay_s, dry_delay_s) per channel after cycle start/end — bottom corners first (gravity),
+# then top, then center (A-frame coil: peak wets last).
 ANODE_WET_PARAMS: tuple[tuple[int, int], ...] = (
-    (120,  480),   # idx 0 / Anode 1: bottom left  — wets 2min after, dries 8min after
-    (180,  720),   # idx 1 / Anode 2: bottom right — wets 3min after, dries 12min after
-    (60,  2400),   # idx 2 / Anode 3: top left     — wets 1min after, dries 40min after
-    (300, 1200),   # idx 3 / Anode 4: center       — wets 5min after, dries 20min after
+    (60,   480),   # idx 0 / Anode 1: bottom left
+    (90,   720),   # idx 1 / Anode 2: bottom right
+    (300, 2400),   # idx 2 / Anode 3: top left
+    (480, 1200),   # idx 3 / Anode 4: center peak
 )
 
 SIM_REAL_S_PER_SIM_HOUR: float = float(os.environ.get("SIM_TIME_SCALE", "10"))
@@ -531,6 +575,7 @@ def read_all_sim(state: SimSensorState) -> dict[int, ChannelReading]:
             current = abs(random.gauss(0, ceiling * 0.5 * dscale))
             current = min(current, ceiling)
             current += _sim_ch_nudge("SIM_CH_MA_BIAS_DRY", ch)
+            # Negative SIM_CH_MA_BIAS_DRY entries are clamped (no negative "dry" mA in sim).
             current = max(current, 0.0)
 
         if cfg.SIM_INJECT_FAULT_CH is not None and ch == cfg.SIM_INJECT_FAULT_CH:

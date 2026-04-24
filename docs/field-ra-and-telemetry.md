@@ -10,6 +10,8 @@ topics: [cathodic-protection, anode, R_a, impedance, operators, documentation]
 
 This page exists for **clarity** and a **durable anchor** when operators or reviewers ask how “anode resistance” in cathodic-protection textbooks relates to the numbers in **`latest.json`**. It does **not** add calculators, heuristics, or hidden estimates.
 
+**Shift / per-channel FSM:** Polarization *shift* is a **single** scalar from the shared reference (see [iccp-requirements.md](iccp-requirements.md) §3.1). `state_v2` in telemetry is per channel for supervision, not a separate ref potential for each anode.
+
 ## Two different quantities
 
 | | **Field / design \(R_a\)** | **Logged `chN_impedance_ohm` (this firmware)** |

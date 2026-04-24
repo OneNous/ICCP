@@ -89,10 +89,22 @@ def _parse_args() -> argparse.Namespace:
         "Same as env COILSHIELD_ACTIVE_CHANNELS. Subset mode needs SHARED_RETURN_PWM = False.",
     )
     g.add_argument(
+        "--channel",
+        metavar="N",
+        default=None,
+        help="single 0-based index; same as --channels with one value.",
+    )
+    g.add_argument(
         "--anodes",
         metavar="LIST",
         default=None,
         help="1-based anode numbers as shown in the UI (e.g. 1,3 for indices 0,2).",
+    )
+    g.add_argument(
+        "--anode",
+        metavar="N",
+        default=None,
+        help="single 1-based anode number; same as --anodes with one value (e.g. 1 = only idx 0).",
     )
     return p.parse_args()
 

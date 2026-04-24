@@ -86,6 +86,8 @@ INA219_INIT_MAX_ATTEMPTS: int = 8
 INA219_INIT_RETRY_DELAY_S: float = 0.1
 # Optional first-open settle before any INA import I/O (0 = off). Try 0.02 if first touch often EIOs.
 I2C_INA_IMPORT_FIRST_DELAY_S: float = 0.0
+# If import-time INA init left ``_sensors`` empty, re-run full init at most this often (read_all_real).
+INA219_REINIT_MIN_INTERVAL_S: float = 60.0
 # Multiply ADC volts (after ×1000) for divider scaling vs. electrode node.
 # Calibrate with a DMM at the ADS1115 AIN node (same ground): at fixed PWM state,
 #   REF_ADS_SCALE ≈ V_dmm / (ref_raw_mv / 1000).
@@ -109,9 +111,11 @@ REF_ADC_BACKEND = "ads1115"
 # Field default Ag/AgCl sense; legacy bench Cu was ``copper_bench`` — informational for logs/docs.
 REF_ELECTRODE_KIND = "ag_agcl"
 
-# Optional TCA9548A (e.g. @ 0x70) when anodes and ADS sit on different downstream ports.
-# Default: **no mux** — all INA219 + ADS1115 on the same SDA/SCL (unique 7-bit addresses).
-# Muxed rig example: I2C_MUX_ADDRESS=0x70, I2C_MUX_CHANNELS_INA219=(0,1,2,3), I2C_MUX_CHANNEL_ADS1115=4
+# Optional TCA9548A when anodes and ADS are on different downstream ports (legacy / alternate PCBs).
+# **Default: no mux** — all INA219 + ADS1115 on the same Pi SDA/SCL; unique 7-bit addresses only.
+# To use a multiplexer, set ``I2C_MUX_ADDRESS`` and the ``I2C_MUX_CHANNEL_*`` fields in this file
+# (e.g. 0x70, INAs on 0..3, ADS on 4) or set env ``COILSHIELD_MUX_ADDRESS=0x70`` and configure
+# channel maps below. Env ``COILSHIELD_MUX_ADDRESS=none`` forces all mux fields off if needed.
 #   • INA219: ch0..3 at INA219_ADDRESSES; ref ADS on I2C_MUX_CHANNEL_ADS1115.
 # Control byte = 1 << port. See docs/ina219-i2c-bringup.md.
 I2C_MUX_ADDRESS: int | None = None
@@ -120,6 +124,16 @@ I2C_MUX_CHANNEL_ADS1115: int | None = None
 I2C_MUX_CHANNEL_INA219: int | None = None
 # Per anode index 0..NUM_CHANNELS-1: TCA9548A port before that INA219; None = no per-port select.
 I2C_MUX_CHANNELS_INA219: tuple[int, ...] | None = None
+
+# Optional env override: enable/disable mux without editing the assignments above.
+_mxa = (os.environ.get("COILSHIELD_MUX_ADDRESS") or "").strip()
+if _mxa:
+    if _mxa.lower() in ("none", "off", "no", "false", "0"):
+        I2C_MUX_ADDRESS = None
+        I2C_MUX_CHANNEL_ADS1115 = None
+        I2C_MUX_CHANNELS_INA219 = None
+    else:
+        I2C_MUX_ADDRESS = int(_mxa, 0)
 # After selecting a mux downstream port, optional settle time before talking to INA219/ADS.
 # Non-zero reduces ``[Errno 5] Input/output error`` when switching TCA9548A → ADS1115 / INA219.
 # 0.001–0.002 s can help if mux→INA/ADS still EIOs after per-channel INA init retries.
@@ -167,8 +181,13 @@ REF_INA219_SOURCE = "bus_v"
 
 # --- Current targets ---
 # Conservative default for aluminum fin chemistry; tune after commissioning if needed.
-TARGET_MA = 0.5
 MAX_MA = 5.0
+TARGET_MA = 0.5
+# Optional: COILSHIELD_TARGET_MA=0.75 — field adjustment without editing this file.
+_tmae = (os.environ.get("COILSHIELD_TARGET_MA") or "").strip()
+if _tmae:
+    _tmv = float(_tmae)
+    TARGET_MA = max(0.05, min(_tmv, float(MAX_MA) * 0.8))
 # Per-channel overrides (0-indexed). Omit a channel key to use the global value.
 # Example: CHANNEL_TARGET_MA = {1: 1.8}  → Anode 2 (idx 1) targets 1.8 mA
 #          CHANNEL_MAX_MA    = {1: 3.5}  → Anode 2 faults above 3.5 mA
@@ -192,7 +211,8 @@ CONDUCTIVE_HOLD_TICKS = 5
 DRY_HOLD_TICKS = 5  # consecutive ticks below CHANNEL_DRY_MA → OPEN
 # Reset dry_count / conductive_count on this wall-clock cadence so stages can move.
 STATE_RECHECK_INTERVAL_S = 10.0
-# Do not reset PROTECTING enter/exit streaks on periodic recheck (see control.py).
+# If True, reset PROTECTING enter/exit streaks every STATE_RECHECK_INTERVAL_S (see control.py).
+# Default False — prior doc text assumed always-on reset; set True to match that behavior.
 STATE_RECHECK_RESET_PROTECT_STREAKS = False
 
 # REGULATE → PROTECTING: require near-target I while path is STRONG for this many ticks.
@@ -210,9 +230,11 @@ Z_COMPUTE_I_A_MIN = 1e-6
 # Floor in REGULATE: ramp up with PWM_STEP; ceiling is Vcell-capped PWM_MAX
 # (no separate “staging %” caps — current/bus/overcurrent limits are the guards).
 DUTY_PROBE = 3.0
-# REGULATE: hold **0%% PWM** while sensed |I| is below this (mA). Prevents duty runaway on
-# open / ultra-high-Z paths (dashboard “~60%% duty, 0 mA” with script still logically idle).
-# Set to **0** to disable and restore legacy ramp-from-DUTY_PROBE behavior.
+# REGULATE: hold **0%% PWM** when sensed |I| is below this (mA) and **I ≥ per-channel
+# target** (at/beyond setpoint on sensor noise). Does not apply while I < target — otherwise
+# 0 mA with a small target would deadlock at 0%% and never apply DUTY_PROBE.
+# Prevents runaway on open / ultra-high-Z when already “satisfied” on I.
+# Set to **0** to disable the idle hold entirely.
 REGULATE_IDLE_OFF_BELOW_MA = 0.05
 # PROTECTING duty ceiling (%); keep in line with PWM_MAX_DUTY unless you intentionally cap lower.
 DUTY_PROTECT_MAX = 80.0
@@ -281,18 +303,22 @@ PWM_MAX_DUTY = 80
 PWM_GPIO_PINS = (17, 27, 22, 23)
 LED_STATUS_GPIO = 25
 
-# Shared electrochemical return / electrolyte: one MOSFET duty (software bank) for all
-# anode gate GPIOs. When True, CHANNEL_PWM_STEP_* per-channel dicts are ignored; ramps use
-# the global PWM_STEP_* scalars. See docs/hardware-shared-anode-bank.md. Default False =
-# per-channel software PWM; set True to unify duty across gates.
+# **Software** union of MOSFET gate duty across GPIOs (one numeric duty for all channels).
+# Distinct from whether the **electrolyte / cathode** return is physically shared — that
+# is a hardware geometry question. See docs/hardware-shared-anode-bank.md. When True,
+# CHANNEL_PWM_STEP_* per-channel dicts are ignored; ramps use the global PWM_STEP_* scalars.
+# Default False = per-channel software PWM; set True to drive every gate to the same duty.
 SHARED_RETURN_PWM: bool = False
 
 
 def validate_channel_layout() -> None:
     """
     INA219 address count, logical channel count, and MOSFET GPIO count must match.
-    :func:`control.Controller` calls this at construction so a mis-tuned settings.py
-    fails with ``ValueError`` before the control loop, instead of ``IndexError`` mid-tick.
+    For full startup validation, call :func:`validate_channel_config` (layout **and**
+    active-anode / shared-bank rules). Calling this function alone skips
+    :func:`validate_active_channel_selection` — use only if you know the active set is
+    already validated.
+    :func:`control.Controller` uses :func:`validate_channel_config` at construction.
     """
     n_addr = len(INA219_ADDRESSES)
     n_ch = int(NUM_CHANNELS)
@@ -330,6 +356,9 @@ THERMAL_PAUSE_WHEN_SENSOR_MISSING: bool = (
 OUTER_LOOP_INSTANT_OFF = True
 # Single cut + no repolarize soak keeps each LOG_INTERVAL tick short (commissioning uses
 # COMMISSIONING_OC_REPEAT_CUTS / COMMISSIONING_OC_REPOLARIZE_S for median measurements).
+# Approximate protection interruption: ~OUTER_LOOP_OC_REPEAT_CUTS instant-off cut(s) per
+# LOG_INTERVAL_S tick (e.g. 1 s per 60 s ≈1.7% of wall time) — acceptable for many cells;
+# tighten LOG_INTERVAL or disable instant-off for testing.
 OUTER_LOOP_OC_REPEAT_CUTS = 1
 OUTER_LOOP_OC_REPOLARIZE_S = 0.0
 
@@ -360,9 +389,12 @@ REF_ENABLED = True
 TARGET_SHIFT_MV = 100
 MAX_SHIFT_MV = 200
 TARGET_MA_STEP = 0.02
-# Optional Ag/AgCl linear trim vs pan temperature (°F only): raw mV += (temp_f − native_temp_f)×coef.
+# Optional Ag/AgCl linear trim vs pan temperature (°F only): raw mV += (temp_f − anchor)×coef.
+# Anchor is ``native_temp_f`` from commissioning.json when present; else ``REF_TEMP_COMP_BASE_F``.
 # Literature often quotes mV/°C — convert once: mV_per_F = mV_per_C × (5/9). Default 0 = off.
 REF_TEMP_COMP_MV_PER_F = 0.0
+# Default anchor when ``native_temp_f`` is missing (e.g. 25 °C = 77 °F electrochemical ref).
+REF_TEMP_COMP_BASE_F: float = 77.0
 COMMISSIONING_SETTLE_S = 60
 # Phase 2: regulate before each instant-off ref sample (s). Longer soak helps
 # surface polarization on high-Z bench water; real coil + condensate is faster.
@@ -376,6 +408,8 @@ COMMISSIONING_RAMP_STEP_MA = 0.15
 COMMISSIONING_RAMP_FINE_STEP_MA = 0.05
 COMMISSIONING_RAMP_FINE_NEAR_SHIFT_FRAC = 0.5
 # Phase 1 native baseline: sample count and spacing (e.g. 30 × 2 s ≈ 60 s).
+# **Not** the same as spec ``capture_native`` in reference.py, which samples for a **wall
+# time** ``T_RELAX`` at ``NATIVE_SAMPLE_INTERVAL_S`` (no fixed N). See NATIVE_* block below.
 COMMISSIONING_NATIVE_SAMPLE_COUNT = 30
 COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S = 2.0
 # Wall-clock regulate before final instant-off after target shift is confirmed.
@@ -384,6 +418,11 @@ COMMISSIONING_PHASE3_LOCK_SETTLE_S = 30.0
 # Phase 2: shift confirm hysteresis — within this fraction of TARGET_SHIFT_MV counts as “still
 # good”; below that band decays confirm_count instead of hard reset (noisy tap water).
 COMMISSIONING_SHIFT_CONFIRM_TOLERANCE = 0.9
+# 0 = off. Aborts ``commissioning.run`` if wall time from run start exceeds this (stuck I²C, etc.).
+COMMISSIONING_WALL_TIMEOUT_S: float = 0.0
+# After PWM cut, brief settle before the OC **burst** when ``COMMISSIONING_OC_CURVE_ENABLED`` (``COMMISSIONING_OC_INFLECTION_SKIP_RATES``
+# already strips the inductive ring from the burst samples; this only covers pre-burst transients).
+COMMISSIONING_OC_CURVE_PREBURST_S: float = 0.3
 # After Phase 1 settle: confirm all PWM at 0% and INA219 |I| below COMMISSIONING_OC_CONFIRM_I_MA
 # before native reads; during averaging, all_off() is re-applied each tick so probe duty
 # cannot inject current. Set False to skip (e.g. unusual bench wiring).
@@ -392,13 +431,15 @@ COMMISSIONING_PHASE1_OFF_VERIFY = True
 # Improves “true off” vs ChangeDutyCycle(0) alone; set False only if your hardware misbehaves.
 COMMISSIONING_PHASE1_STATIC_GATE_LOW = True
 # Pauses: confirm anodes **removed** before open-circuit native (Phase 1), then **installed**
-# before CP ramp (Phase 2). Off in `COILSHIELD_SIM=1`, non-TTY, or
+# before CP ramp (Phase 2). Gated in code: off in `COILSHIELD_SIM=1`, when stdin is not a TTY
+# (``commissioning._anode_placement_should_interact``), or
 # `iccp commission --no-anode-prompts` / env `ICCP_COMMISSION_NO_ANODE_PROMPTS=1`.
 COMMISSIONING_ANODE_PLACEMENT_PROMPTS: bool = True
 COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S = 3.0
 # Stricter ceiling (mA) for “at rest” before native averaging — abort if exceeded after long settle.
-# Keep in line with COMMISSIONING_OC_CONFIRM_I_MA so bench parasitic / INA offset does not abort Phase 1.
-COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA = 1.0
+# Align with I_REST_MA (spec rest gate) so Phase 1 and scheduled native capture use the same idea
+# of “at rest” (parasitic / galvanic paths may still need tuning on your rig).
+COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA = 0.3
 # OC decay curve + inflection (Phase 2/3 instant-off).
 COMMISSIONING_OC_CURVE_ENABLED = True
 # Post-cutoff potential spike: industry practice treats ~0.3 s of inductive/capacitive
@@ -448,9 +489,12 @@ NATIVE_RECAPTURE_S: float = 24 * 3600.0     # daily scheduled re-capture (§3.4)
 NATIVE_DRIFT_TRIGGER_MV: float = 50.0      # drift warning only (§3.4)
 NATIVE_BENCH_TOL_MV: float = 5.0            # DMM vs controller [interim]
 # FSM timing (§2, §4.4, §6). Per-channel / system timers in control.py.
-T_POL_STABLE: float = 300.0                 # s at shift ≥ target before Protected [interim]
+# T_POL_STABLE: bench-friendly default; increase for noisier field water (e.g. 300 s).
+T_POL_STABLE: float = 30.0                 # s at shift ≥ target before Protected [interim]
 T_SLIP: float = 60.0                        # s below hysteresis before leaving Protected
-T_POLARIZE_MAX: float = 1800.0              # s (30 min) in Polarizing → CANNOT_POLARIZE [interim]
+# Must exceed worst-case Phase 2 ramp wall time (steps × COMMISSIONING_RAMP_SETTLE_S) or
+# CANNOT_POLARIZE can fire before ramp reaches MAX_MA.
+T_POLARIZE_MAX: float = 3600.0             # s in Polarizing → CANNOT_POLARIZE [interim]
 T_PROBE_MAX: float = 30.0
 T_OVER_EXIT: float = 30.0
 T_OVER_FAULT: float = 60.0

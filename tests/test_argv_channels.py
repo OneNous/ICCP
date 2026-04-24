@@ -21,6 +21,23 @@ def test_apply_anodes_1based_sets_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert os.environ.get("COILSHIELD_ACTIVE_CHANNELS") == "0,2"
 
 
+def test_apply_anode_singular_1based(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COILSHIELD_ACTIVE_CHANNELS", raising=False)
+    assert apply_coilshield_active_channels_from_argv(["start", "--anode", "1"]) is None
+    assert os.environ.get("COILSHIELD_ACTIVE_CHANNELS") == "0"
+
+
+def test_apply_channel_singular_0based(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COILSHIELD_ACTIVE_CHANNELS", raising=False)
+    assert apply_coilshield_active_channels_from_argv(["x", "--channel", "0"]) is None
+    assert os.environ.get("COILSHIELD_ACTIVE_CHANNELS") == "0"
+
+
+def test_apply_channels_and_channel_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COILSHIELD_ACTIVE_CHANNELS", raising=False)
+    assert apply_coilshield_active_channels_from_argv(["--channels", "0,1", "--channel", "2"]) == 2
+
+
 def test_apply_both_flags_returns_2(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("COILSHIELD_ACTIVE_CHANNELS", raising=False)
     assert (

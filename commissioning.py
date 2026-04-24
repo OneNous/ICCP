@@ -112,6 +112,16 @@ RAMP_SETTLE_S: float = float(getattr(cfg, "COMMISSIONING_RAMP_SETTLE_S", 60.0))
 CONFIRM_TICKS: int = 5
 # Legacy single dwell (s) when COMMISSIONING_OC_CURVE_ENABLED is False.
 INSTANT_OFF_WINDOW_S: float = float(getattr(cfg, "COMMISSIONING_INSTANT_OFF_S", 2.0))
+# Shorter pre-burst dwell when the OC **curve** is enabled (``COMMISSIONING_OC_INFLECTION_SKIP_RATES`` handles
+# the inductive ring inside the burst).
+OC_CURVE_PREBURST_S: float = float(getattr(cfg, "COMMISSIONING_OC_CURVE_PREBURST_S", 0.3))
+
+
+def _check_comm_wall_deadline(deadline_mono: float | None) -> None:
+    if deadline_mono is not None and time.monotonic() >= float(deadline_mono):
+        raise RuntimeError(
+            "Commissioning aborted: exceeded COMMISSIONING_WALL_TIMEOUT_S (see config/settings.py)."
+        )
 
 
 def needs_commissioning() -> bool:
@@ -524,6 +534,7 @@ def _instant_off_ref_mv_and_restore(
     repeat_cuts: int | None = None,
     repolarize_s: float | None = None,
     temp_f: float | None = None,
+    wall_deadline_mono: float | None = None,
 ) -> tuple[float, float | None, float]:
     """
     OC sample: save duties → cut → (INA219 confirm) → ADS curve + inflection
@@ -578,9 +589,8 @@ def _instant_off_ref_mv_and_restore(
             if log is not None:
                 log(w)
         if curve_on:
-            # Match legacy path: dwell at 0% before ADS burst so first samples are not
-            # dominated by the immediate post-cut transient (non-curve branch uses this sleep).
-            time.sleep(INSTANT_OFF_WINDOW_S)
+            # Short pre-burst settle; the burst’s skip_rates strip the inductive ring from samples.
+            time.sleep(max(0.0, OC_CURVE_PREBURST_S))
             samples = reference.collect_oc_decay_samples()
             if log is not None and samples:
                 n = len(samples)
@@ -605,6 +615,7 @@ def _instant_off_ref_mv_and_restore(
     raw_inst: float
     depol_rate: float = 0.0
 
+    _check_comm_wall_deadline(wall_deadline_mono)
     with _commissioning_pwm_hz_context(controller):
         if sequential:
             raw_vals: list[float] = []
@@ -638,7 +649,13 @@ def _instant_off_ref_mv_and_restore(
                     )
                 _restore_saved_pwm()
                 if cut_i + 1 < ncuts and repol_s > 0.0:
-                    _pump_control(controller, sim_state, repol_s)
+                    _pump_control(
+                        controller,
+                        sim_state,
+                        repol_s,
+                        reference=reference,
+                        wall_deadline_mono=wall_deadline_mono,
+                    )
             if use_repeat:
                 raw_inst = float(statistics.median(raws))
                 depol_rate = float(statistics.median(rates))
@@ -691,14 +708,32 @@ def _pump_control(
     controller: Controller,
     sim_state: Any | None,
     duration_s: float,
+    *,
+    reference: ReferenceElectrode | None = None,
+    wall_deadline_mono: float | None = None,
 ) -> None:
     """Run the normal control loop for duration_s (settle / ramp)."""
     t_end = time.monotonic() + duration_s
     while time.monotonic() < t_end:
+        _check_comm_wall_deadline(wall_deadline_mono)
         readings = _sensor_readings(sim_state)
         controller.update(readings)
         if sim_state is not None:
             sim_state.duties = controller.duties()
+        if reference is not None:
+            tf = temp_mod.read_fahrenheit()
+            duties = controller.duties()
+            st = controller.channel_statuses()
+            _raw, ref_shift = reference.read_raw_and_shift(
+                duties=duties, statuses=st, temp_f=tf
+            )
+            ref_valid, ref_valid_reason = reference.ref_valid()
+            controller.advance_shift_fsm(
+                readings,
+                shift_mv=ref_shift,
+                ref_valid=ref_valid,
+                ref_valid_reason=ref_valid_reason,
+            )
         time.sleep(cfg.SAMPLE_INTERVAL_S)
 
 
@@ -710,6 +745,7 @@ def _phase1_spec_native_capture(
     """Phase 1 per docs/iccp-requirements.md §3.3: median native, rest gate, static LOW."""
     controller.all_outputs_off()
     i_rest = float(getattr(cfg, "I_REST_MA", 1.0))
+    use_static_ctx = bool(getattr(cfg, "COMMISSIONING_PHASE1_STATIC_GATE_LOW", True))
 
     def _rest_ok() -> bool:
         r = _sensor_readings(sim_state)
@@ -731,17 +767,26 @@ def _phase1_spec_native_capture(
         except Exception as e:  # pragma: no cover
             print(f"[commission] leave static_gate: {e}", file=sys.stderr)
 
-    with _commissioning_pwm_hz_context(controller):
-        controller.set_thermal_pause(True)
-        try:
-            return reference.capture_native(
-                temp_f=temp_mod.read_fahrenheit(),
-                rest_current_ok=_rest_ok,
-                static_gate_low=_static_low,
-                gate_restore=_restore,
-            )
-        finally:
-            controller.set_thermal_pause(False)
+    def _capture_once() -> tuple[float | None, str]:
+        with _commissioning_pwm_hz_context(controller):
+            controller.set_thermal_pause(True)
+            try:
+                return reference.capture_native(
+                    temp_f=temp_mod.read_fahrenheit(),
+                    rest_current_ok=_rest_ok,
+                    # When True: outer ``_phase1_static_gate_context`` holds static LOW; do not
+                    # pair duplicate enter/leave with reference.capture_native (its finally still
+                    # calls gate_restore when non-None).
+                    static_gate_low=None if use_static_ctx else _static_low,
+                    gate_restore=None if use_static_ctx else _restore,
+                )
+            finally:
+                controller.set_thermal_pause(False)
+
+    if use_static_ctx:
+        with _phase1_static_gate_context(controller):
+            return _capture_once()
+    return _capture_once()
 
 
 def run(
@@ -781,6 +826,39 @@ def run(
 
     _anode_placement_pause("after_phase1", anode_placement_prompts=anode_placement_prompts)
 
+    original_target_ma = float(cfg.TARGET_MA)
+    wto = float(getattr(cfg, "COMMISSIONING_WALL_TIMEOUT_S", 0.0) or 0.0)
+    comm_deadline: float | None = (time.monotonic() + wto) if wto > 0 else None
+    if comm_deadline is not None:
+        log(
+            f"  wall timeout: {wto:g} s from Phase 2 start (COMMISSIONING_WALL_TIMEOUT_S)"
+        )
+    # Phase 2 — ramp until target shift
+    try:
+        _phase2_3_ramp_lock(
+            reference,
+            controller,
+            sim_state,
+            log=log,
+            verbose=verbose,
+            comm_deadline=comm_deadline,
+        )
+    except Exception:
+        cfg.TARGET_MA = original_target_ma
+        raise
+    return float(cfg.TARGET_MA)
+
+
+def _phase2_3_ramp_lock(
+    reference: ReferenceElectrode,
+    controller: Controller,
+    sim_state: Any | None,
+    *,
+    log: Callable[[str], None],
+    verbose: bool,
+    comm_deadline: float | None,
+) -> None:
+    """Phase 2 ramp + Phase 3 lock; mutates ``cfg.TARGET_MA`` on success."""
     # Phase 2 — ramp until target shift
     log("Phase 2 — ramping current toward target polarization")
     current_target_ma = max(cfg.TARGET_MA * 0.1, 0.05)
@@ -804,19 +882,30 @@ def run(
         oc_desc = f"dwell {INSTANT_OFF_WINDOW_S:.1f}s + single read"
 
     while current_target_ma <= cfg.MAX_MA:
+        _check_comm_wall_deadline(comm_deadline)
         cfg.TARGET_MA = round(current_target_ma, 3)
         log(
             f"  TARGET_MA = {current_target_ma:.3f} mA, "
             f"regulating {RAMP_SETTLE_S:.0f}s ..."
         )
-        _pump_control(controller, sim_state, RAMP_SETTLE_S)
+        _pump_control(
+            controller,
+            sim_state,
+            RAMP_SETTLE_S,
+            reference=reference,
+            wall_deadline_mono=comm_deadline,
+        )
         if verbose:
             r_settle = _sensor_readings(sim_state)
             log(f"  {_delivered_ma_report(r_settle)}")
 
         log(f"  instant-off ({oc_desc}) …")
         raw, shift, _depol = _instant_off_ref_mv_and_restore(
-            controller, reference, sim_state, log=log if verbose else None
+            controller,
+            reference,
+            sim_state,
+            log=log if verbose else None,
+            wall_deadline_mono=comm_deadline,
         )
         shift_str = f"{shift:.1f}" if shift is not None else "N/A"
         log(
@@ -848,27 +937,39 @@ def run(
             )
             current_target_ma = round(current_target_ma + step, 3)
     else:
+        current_target_ma = float(cfg.MAX_MA)
+        cfg.TARGET_MA = round(current_target_ma, 3)
         log(
             "WARNING: reached MAX_MA without achieving target shift — "
             "check bonding, anode contact, and water conductivity."
         )
 
+    _check_comm_wall_deadline(comm_deadline)
     log(f"Phase 3 — locking in at {current_target_ma:.3f} mA/ch")
     phase3_s = max(
         float(RAMP_SETTLE_S),
         float(getattr(cfg, "COMMISSIONING_PHASE3_LOCK_SETTLE_S", 30.0)),
     )
     log(f"  final regulate / settle {phase3_s:.0f}s before last instant-off …")
-    _pump_control(controller, sim_state, phase3_s)
+    _pump_control(
+        controller,
+        sim_state,
+        phase3_s,
+        reference=reference,
+        wall_deadline_mono=comm_deadline,
+    )
     if verbose:
         r_lock = _sensor_readings(sim_state)
         log(f"  {_delivered_ma_report(r_lock)}")
     _final_raw, final_shift, _f_depol = _instant_off_ref_mv_and_restore(
-        controller, reference, sim_state, log=log if verbose else None
+        controller,
+        reference,
+        sim_state,
+        log=log if verbose else None,
+        wall_deadline_mono=comm_deadline,
     )
-    # Nested per-channel hints (docs/iccp-requirements.md §8.1 Phase 3). Written alongside
-    # legacy `commissioned_target_ma` / `final_shift_mv` for backward compatibility; the
-    # default setup today applies the same target to every channel, so mirror that here.
+    # Nested per-channel hints (docs/iccp-requirements.md §8.1 Phase 3). One reference
+    # electrode → one system shift; per-channel copy is for schema compatibility only.
     channels_hints: dict[str, dict[str, Any]] = {}
     for ch in range(cfg.NUM_CHANNELS):
         per_ch_target = float(
@@ -876,6 +977,7 @@ def run(
         )
         channels_hints[str(ch)] = {
             "commissioned_target_ma": round(per_ch_target, 3),
+            "system_final_shift_mv": final_shift,
             "final_shift_mv": final_shift,
         }
     _update_comm_file(
@@ -887,7 +989,6 @@ def run(
         }
     )
     log("Done.")
-    return current_target_ma
 
 
 def run_native_only(
@@ -911,6 +1012,8 @@ def run_native_only(
             print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
 
     log("Phase 1 (native-only) — measuring native corrosion potential")
+    with _phase1_static_gate_context(controller):
+        _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
     _anode_placement_pause("before_phase1", anode_placement_prompts=anode_placement_prompts)
     native_mv, reason = _phase1_spec_native_capture(reference, controller, sim_state)
 

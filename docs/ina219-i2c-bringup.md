@@ -1,8 +1,10 @@
 # INA219 / (optional) TCA9548A I²C bring-up (anode shunt path)
 
-**Repo default in [`config/settings.py`](../config/settings.py) is a no-mux layout:** all **INA219** and **ADS1115** on the same Pi **SDA/SCL** (bus **1** on the 40‑pin header), with **only** the **7‑bit addresses** distinguishing devices (`INA219_ADDRESSES` and `ADS1115_ADDRESS` must be unique; default INAs **0x40, 0x41, 0x44, 0x45**, ADS **0x48**). A **TCA9548A** is optional: set `I2C_MUX_ADDRESS` and the `I2C_MUX_CHANNEL_*` fields only if the PCB still uses a multiplexer.
+**Repo default** in [`config/settings.py`](../config/settings.py) is **no multiplexer** — all **INA219** and **ADS1115** on the same **SDA/SCL** (unique 7-bit addresses: default INAs **0x40, 0x41, 0x44, 0x45**, ADS **0x48**). A **TCA9548A** is optional: set `I2C_MUX_ADDRESS` and the `I2C_MUX_CHANNEL_*` fields, or `COILSHIELD_MUX_ADDRESS=0x70` plus matching channel config, only if your PCB still uses a mux.
 
-**Related:** [architecture-channel-i2c-reference.md](architecture-channel-i2c-reference.md) (channel index ↔ address ↔ mux, ref vs anode code paths, import order). Root cause in [`sensors.py`](../sensors.py) (empty `_sensors` after import-time init failure) — see also [`ina219-datasheet-notes.md`](ina219-datasheet-notes.md).
+**Related:** [architecture-channel-i2c-reference.md](architecture-channel-i2c-reference.md) (channel index ↔ address ↔ mux, ref vs anode code paths, import order). If import-time INA init fails, [`sensors.py`](../sensors.py) leaves `_sensors` empty until I²C is healthy; the runtime also **retries** full INA init on a throttle (`INA219_REINIT_MIN_INTERVAL_S` in `config/settings.py`) on each `read_all_real` tick — see also [`ina219-datasheet-notes.md`](ina219-datasheet-notes.md).
+
+**Read timeout / hang:** The Python `pi-ina219` path has no per-call wall-clock timeout. Stuck SCL, a wedged device, or a bad mux can block `read_all_real` until the kernel I²C layer returns (Linux exposes `i2c` adapter timeout via module params / `i2c_timeout` on some drivers — check `dmesg` and your kernel docs). Firmware already **reopens** `/dev/i2c-N` on some mux EIO paths (`I2C_MUX_SMBUS_REOPEN_ON_SELECT_EIO`); a full bus hang may still require process restart or power cycle.
 
 ## 1) Align `config/settings.py` with the board
 

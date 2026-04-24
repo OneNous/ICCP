@@ -550,6 +550,7 @@ class DataLogger:
         cur["wet_channels"] = 0
         cur["all_protected"] = False
         cur["any_active"] = False
+        cur["any_overprotected"] = False
         cur["cross"] = {"i_cv": None, "z_cv": None}
         cur.pop("sim_time", None)
         cur.pop("diag", None)
@@ -583,8 +584,10 @@ class DataLogger:
         state_v2: dict[int, str] | None = None,
         channel_fault_reasons: dict[int, str] | None = None,
         channel_t_in_state_s: dict[int, float] | None = None,
+        channel_t_in_polarizing_s: dict[int, float] | None = None,
         all_protected: bool | None = None,
         any_active: bool | None = None,
+        any_overprotected: bool | None = None,
         native_mv: float | None = None,
         native_age_s: float | None = None,
         next_native_recapture_s: float | None = None,
@@ -702,6 +705,7 @@ class DataLogger:
             state_v2_for_ch = (state_v2 or {}).get(i, "Off")
             fault_reason_for_ch = (channel_fault_reasons or {}).get(i, "")
             t_in_state_for_ch = (channel_t_in_state_s or {}).get(i)
+            t_in_pol_for_ch = (channel_t_in_polarizing_s or {}).get(i)
             shift_mv_for_ch = ref_shift_mv  # §3.1 shared reference / shared shift
             channels[i] = {
                 "state": state,
@@ -736,6 +740,11 @@ class DataLogger:
                 "t_in_state_s": (
                     round(float(t_in_state_for_ch), 2)
                     if t_in_state_for_ch is not None
+                    else None
+                ),
+                "t_in_polarizing_s": (
+                    round(float(t_in_pol_for_ch), 2)
+                    if t_in_pol_for_ch is not None
                     else None
                 ),
                 "fault": state_v2_for_ch == "Fault",
@@ -872,6 +881,9 @@ class DataLogger:
         # `wet` / `wet_channels`, which remain legacy and still derive from the path FSM.
         payload["all_protected"] = bool(all_protected) if all_protected is not None else False
         payload["any_active"] = bool(any_active) if any_active is not None else wet
+        payload["any_overprotected"] = (
+            bool(any_overprotected) if any_overprotected is not None else False
+        )
         payload["native_mv"] = native_mv
         payload["native_age_s"] = (
             round(float(native_age_s), 2) if native_age_s is not None else None

@@ -40,7 +40,7 @@ Only when all four hold does the per-channel state become `Protected` (see Secti
 
 ### 2.2 System-level criterion
 
-- All enabled channels are simultaneously `Protected` for `T_SYSTEM_STABLE` seconds (proposed default `60` s) before the system reports `all_protected = true` in `latest.json`.
+- All **participating** enabled channels (not still `Off` on a dry/un-driven path) are simultaneously `Protected` for `T_SYSTEM_STABLE` seconds (proposed default `60` s) before the system reports `all_protected = true` in `latest.json`. An enabled channel remaining `Off` does not block the assertion. An enabled channel in `Fault` blocks it until cleared.
 - The system is "protecting" when `all_protected = true`. `wet_channels > 0` is **not** the same thing and is demoted to an informational count (see Section 4).
 
 ### 2.3 Hard ceilings (always)
@@ -64,7 +64,7 @@ Only when all four hold does the per-channel state become `Protected` (see Secti
 
 `native_mv` is the measured reference potential at the pan/coil sense point (volts at the ADS1115 AIN node × scale, per [reference.py](../reference.py) `ReferenceElectrode.read()`) when **all anodes have been fully de-energized long enough for the cell to relax to its free-corrosion potential**.
 
-`native_mv` is a **single shared scalar**, not a per-channel array (decision Q1 in the Decisions log). The rig has exactly one reference electrode, and the shift math uses `instant-off` to remove channel-specific IR artifact before the sample is taken — there is no channel-specific "native" the sensor can distinguish. Every channel's `shift_mv` derives from the same `native_mv`.
+`native_mv` is a **single shared scalar**, not a per-channel array (decision Q1 in the Decisions log). The rig has exactly one reference electrode, and the shift math uses `instant-off` to remove channel-specific IR artifact before the sample is taken — there is no channel-specific "native" the sensor can distinguish. Every channel's `shift_mv` derives from the same `native_mv`. The `state_v2` FSM is still **per channel** in software (supervision, timers, and `latest.json`), but that is an **operational proxy**: local overpotential and wetting can differ by anode while shift is one shared measurement from the reference.
 
 ### 3.2 Preconditions for a valid native capture
 
@@ -151,7 +151,7 @@ stateDiagram-v2
 - **`Off`** — Gates LOW. No regulation. Entered on disable, after `clear_fault`, and at boot until commissioning is valid.
 - **`Probing`** — Gates at `DUTY_PROBE` floor, looking for conduction (non-trivial shunt current or finite impedance). Bounded by `T_PROBE_MAX` (proposed `30` s). If no conduction, the channel reports `NO_CONDUCTION` as a non-fault informational condition; re-probes periodically.
 - **`Polarizing`** — Conduction confirmed; duty is being ramped to drive shift upward. Uses `DUTY_PROBE..PWM_MAX_DUTY` window, Vcell-capped.
-- **`Protected`** — `shift_mv >= TARGET_SHIFT_MV` held for `T_POL_STABLE`. This is the only state in which the channel contributes to `all_protected = true`.
+- **`Protected`** — `shift_mv >= TARGET_SHIFT_MV` held for `T_POL_STABLE`. This is the only state in which a *participating* channel counts toward `all_protected = true` (see §2.2; `Off` channels are excluded).
 - **`Overprotected`** — `shift_mv > MAX_SHIFT_MV`. Inner loop ramps duty *down* under potential control (see Section 5). Not a fault.
 - **`Fault`** — Latched on `OVERCURRENT`, `CANNOT_POLARIZE`, `REFERENCE_INVALID`, `HARDWARE_I2C`, `OVERVOLTAGE`, `UNDERVOLTAGE`, or `OFF_VERIFY_FAILED`. Gates LOW. See Section 6 for the full taxonomy and auto-recovery rules.
 
@@ -159,7 +159,7 @@ stateDiagram-v2
 
 - **Per-channel independence.** One channel in `Fault` must not pull any other channel out of `Protected`. `INA219_FAILSAFE_ALL_OFF` (see [control.py](../control.py) lines ~412–448) is scoped to **bus-level I²C failures only** — `OSError` with `errno 5` or equivalent OS-level failures that indicate the I²C bus itself is unhealthy (decision Q8 in the Decisions log). A per-channel INA219 read failure that is *not* bus-level faults that channel alone and leaves siblings regulating. Bus-level failures still trigger the system-level `HARDWARE_I2C` fail-safe in §6.1.
 - **`any_wet` becomes `any_active`** — informational only; set when any channel is `Polarizing`, `Protected`, or `Overprotected`. Neither the UI nor any safety gate reads it as "the system is protecting."
-- **`all_protected`** is the only system-level protection assertion.
+- **`all_protected`** is the only system-level protection assertion (per §2.2: dry `Off` enabled channels do not block it).
 - **Hysteresis values are spec'd, not guessed.** Every transition out of `Protected` uses an explicit hysteresis constant listed in Section 8.
 
 ### 4.4 Timeouts
@@ -173,7 +173,7 @@ stateDiagram-v2
 | `T_POLARIZE_MAX` | 1800 s (30 min) **[interim]** | Max time in `Polarizing` at max duty; expired → `Fault(CANNOT_POLARIZE)`. |
 | `T_PROBE_MAX` | 30 s | Max time in `Probing` without conduction; expired → back to `Probing` next interval. |
 | `T_OVER_EXIT` | 30 s | Time below `(MAX_SHIFT_MV - hysteresis)` to leave `Overprotected`. |
-| `T_SYSTEM_STABLE` | 60 s | System must see all channels `Protected` for this long before `all_protected = true`. |
+| `T_SYSTEM_STABLE` | 60 s | System must see all *participating* enabled channels `Protected` for this long before `all_protected = true` (see §2.2). |
 
 ### 4.5 Today (current behavior)
 
@@ -362,6 +362,7 @@ For each `channels["0".."3"]`:
 | `bus_v` | float | Measured bus voltage, V. |
 | `target_i_ma` | float | Current setpoint the inner loop is chasing. |
 | `t_in_state_s` | float | Wall-clock seconds the channel has been in its current `state`. |
+| `t_in_polarizing_s` | float | Seconds in the current `Polarizing` run (0 if not polarizing). |
 | `fault` | string \| null | One of the codes in §6.1, or `null`. |
 | `fault_reason` | string \| null | One-line human-readable cause. |
 
@@ -369,8 +370,9 @@ For each `channels["0".."3"]`:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `all_protected` | bool | True iff every enabled channel is `Protected` for at least `T_SYSTEM_STABLE`. |
+| `all_protected` | bool | True iff every *participating* enabled channel is `Protected` for at least `T_SYSTEM_STABLE` (enabled `Off` channels excluded; see §2.2). |
 | `any_active` | bool | True iff any channel is `Polarizing / Protected / Overprotected`. Informational. |
+| `any_overprotected` | bool | True iff any channel is `Overprotected` (inner loop is reducing duty for over-shift). |
 | `t_to_system_protected_s` | float \| null | Seconds since last boot until `all_protected` first became True. `null` if not yet reached. |
 | `native_age_s` | float | Seconds since last successful native capture. |
 | `next_native_recapture_s` | float | Seconds until next scheduled re-capture. |

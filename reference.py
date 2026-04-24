@@ -9,7 +9,8 @@ Hardware backends (see config.settings):
   • **ina219**: legacy dedicated INA219 on `REF_I2C_BUS` / `REF_INA219_ADDRESS`.
 
 Optional pan-temperature trim (°F only): ``native_temp_f`` in `commissioning.json` with
-`REF_TEMP_COMP_MV_PER_F` adjusts raw mV vs commissioned temperature.
+`REF_TEMP_COMP_MV_PER_F` adjusts raw mV vs that anchor; if ``native_temp_f`` is missing,
+`REF_TEMP_COMP_BASE_F` (default 77 °F ≈ 25 °C) is the anchor.
 
 SIM_MODE: COILSHIELD_SIM=1 uses simulated readings (no hardware).
 """
@@ -986,11 +987,14 @@ class ReferenceElectrode:
         return remaining
 
     def ref_temp_adjust_mv(self, mv: float, temp_f: float | None) -> float:
-        """Optional linear mV trim vs pan °F (see REF_TEMP_COMP_MV_PER_F, native_temp_f in JSON)."""
+        """Optional linear mV trim vs pan °F (see REF_TEMP_COMP_*; native_temp_f in JSON)."""
         coef = float(getattr(cfg, "REF_TEMP_COMP_MV_PER_F", 0.0))
-        if coef == 0.0 or temp_f is None or self.native_temp_f is None:
+        if coef == 0.0 or temp_f is None:
             return mv
-        return mv + (float(temp_f) - float(self.native_temp_f)) * coef
+        anchor = self.native_temp_f
+        if anchor is None:
+            anchor = float(getattr(cfg, "REF_TEMP_COMP_BASE_F", 77.0))
+        return mv + (float(temp_f) - float(anchor)) * coef
 
     def shift_mv(
         self,

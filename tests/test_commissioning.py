@@ -62,6 +62,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
         duties=lambda: {i: 40.0 for i in range(cfg.NUM_CHANNELS)},
         channel_statuses=lambda: {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)},
         set_thermal_pause=lambda _active: None,
+        advance_shift_fsm=lambda *a, **k: None,
     )
 
     commissioning.run(

@@ -5,7 +5,6 @@
 - Multiple anodes can share the **same electrolyte** and a **common return** (cathode path). The channels are not independent: current paths and overpotential interact.
 - A **low-side MOSFET** on the return controls average drive via **PWM** (effective current ∝ duty). You are not regulating supply voltage; you are shaping **time-averaged** conduction. Bus voltage and cell impedance still cause channel-by-channel shunt current differences; **sensing** remains per-INA219.
 - **INA219** is measurement-only (shunt + bus/branch context). It is not a protection controller; software limits and faults still apply.
-- A **high-side 5V relay** (optional, see `ANODE_RELAY_GPIO_PINS` in [`config/settings.py`](../config/settings.py)) disconnects the anode feed for a **true** “anode not powered” off state, complementing the MOSFET on the return. Relays are de-energized on `Controller.all_outputs_off` when pins are configured.
 
 ## Software: per-anode vs bank mode (default: `SHARED_RETURN_PWM = False`)
 

@@ -401,8 +401,13 @@ def run_iccp_forever(args: Namespace) -> int:
                         i: ctrl.t_in_state_v2_s(i)
                         for i in range(cfg.NUM_CHANNELS)
                     },
+                    channel_t_in_polarizing_s={
+                        i: ctrl.t_in_polarizing_s(i)
+                        for i in range(cfg.NUM_CHANNELS)
+                    },
                     all_protected=ctrl.all_protected(),
                     any_active=ctrl.any_active(),
+                    any_overprotected=ctrl.any_overprotected(),
                     native_mv=ref.native_mv,
                     native_age_s=ref.native_age_s(),
                     next_native_recapture_s=ref.next_native_recapture_s(),
