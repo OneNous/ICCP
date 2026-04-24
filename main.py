@@ -80,11 +80,29 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="telemetry directory (absolute path); same as COILSHIELD_LOG_DIR — must match dashboard",
     )
+    g = p.add_mutually_exclusive_group()
+    g.add_argument(
+        "--channels",
+        metavar="LIST",
+        default=None,
+        help="0-based anode indices to run, comma-separated (e.g. 0,2). "
+        "Same as env COILSHIELD_ACTIVE_CHANNELS. Subset mode needs SHARED_RETURN_PWM = False.",
+    )
+    g.add_argument(
+        "--anodes",
+        metavar="LIST",
+        default=None,
+        help="1-based anode numbers as shown in the UI (e.g. 1,3 for indices 0,2).",
+    )
     return p.parse_args()
 
 
 def main() -> int:
     _apply_argv_log_dir(sys.argv[1:])
+    from config.argv_channels import apply_coilshield_active_channels_from_argv
+
+    if apply_coilshield_active_channels_from_argv(sys.argv[1:]) == 2:
+        return 2
     args = _parse_args()
     if args.sim:
         os.environ["COILSHIELD_SIM"] = "1"

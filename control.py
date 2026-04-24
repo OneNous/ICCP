@@ -6,9 +6,11 @@ Design principles:
   - OPEN: no reliable path → 0% duty. REGULATE: approach current toward target
     with per-mode PWM_STEP_* ramps (optional per-channel CHANNEL_PWM_STEP_* dicts when
     `SHARED_RETURN_PWM` is off) under Vcell duty cap. PROTECTING: fine servo.
-  - When `SHARED_RETURN_PWM` is on (default in settings): all MOSFET gates share the same
+  - When `SHARED_RETURN_PWM` is True: all MOSFET gates share the same
     duty; ramps use **aggregate** I vs **sum of per-channel targets** and global
-    `PWM_STEP_*` only. Identical software duty does not phase-align separate RPi.GPIO
+    `PWM_STEP_*` only. Default in settings is **False** (independent per-channel duty);
+    set `SHARED_RETURN_PWM = True` in `config/settings.py` for shared bank. Identical
+    software duty does not phase-align separate RPi.GPIO
     soft-PWM instances; use one GPIO fanout to gates if you need a single edge-aligned wave.
   - Internal path class (PATH_OPEN / PATH_WEAK / PATH_STRONG) drives transitions;
     PROTECTING requires PATH_STRONG plus near-target hysteresis.
@@ -373,6 +375,7 @@ class Controller:
     """
 
     def __init__(self) -> None:
+        cfg.validate_channel_config()
         self._pwm = PWMBank()
         self._states = [ChannelState(i) for i in range(cfg.NUM_CHANNELS)]
         self._fault_latched = False
@@ -493,7 +496,11 @@ class Controller:
         if not rows:
             self._pwm.set_duty_unified(0.0)
             return
-        t_tot = sum(self._channel_target(c) for c in range(cfg.NUM_CHANNELS))
+        t_tot = sum(
+            self._channel_target(c)
+            for c in range(cfg.NUM_CHANNELS)
+            if cfg.is_channel_active(c)
+        )
         i_tot = float(sum(r["current_ma"] for r in rows))
         min_bus = min(float(r["bus_v"]) for r in rows)
         min_duty_cap = duty_pct_cap_for_vcell(min_bus, cfg)
@@ -662,6 +669,15 @@ class Controller:
                 if state.latch_message:
                     self._faults.append(state.latch_message)
                 self._maybe_auto_clear_fault(ch, state, r)
+                continue
+
+            if not cfg.is_channel_active(ch):
+                state.overcurrent_streak = 0
+                if state.status != ChannelState.FAULT:
+                    state.status = ChannelState.OPEN
+                self._pwm.set_duty(ch, 0.0)
+                if use_bank:
+                    continue
                 continue
 
             if not r.get("ok"):
@@ -1102,6 +1118,10 @@ class Controller:
         for ch, state in enumerate(self._states):
             r = readings.get(ch, {})
             state.last_shift_mv = shift_mv
+
+            if not cfg.is_channel_active(ch):
+                _set_state(state, STATE_V2_OFF)
+                continue
 
             # Legacy FAULT already holds PWM at 0%; mirror into state_v2 and skip timers.
             if state.status == ChannelState.FAULT:

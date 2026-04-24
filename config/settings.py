@@ -283,8 +283,28 @@ LED_STATUS_GPIO = 25
 
 # Shared electrochemical return / electrolyte: one MOSFET duty (software bank) for all
 # anode gate GPIOs. When True, CHANNEL_PWM_STEP_* per-channel dicts are ignored; ramps use
-# the global PWM_STEP_* scalars. See docs/hardware-shared-anode-bank.md.
+# the global PWM_STEP_* scalars. See docs/hardware-shared-anode-bank.md. Default False =
+# per-channel software PWM; set True to unify duty across gates.
 SHARED_RETURN_PWM: bool = False
+
+
+def validate_channel_layout() -> None:
+    """
+    INA219 address count, logical channel count, and MOSFET GPIO count must match.
+    :func:`control.Controller` calls this at construction so a mis-tuned settings.py
+    fails with ``ValueError`` before the control loop, instead of ``IndexError`` mid-tick.
+    """
+    n_addr = len(INA219_ADDRESSES)
+    n_ch = int(NUM_CHANNELS)
+    n_pin = len(PWM_GPIO_PINS)
+    if n_addr == n_ch == n_pin and n_addr > 0:
+        return
+    raise ValueError(
+        f"Channel layout mismatch: len(INA219_ADDRESSES)={n_addr}, "
+        f"NUM_CHANNELS={n_ch}, len(PWM_GPIO_PINS)={n_pin} — "
+        "all three must be equal and positive"
+    )
+
 
 # High-side anode 5V disconnect (per channel), optional. When set, de-energize on
 # all_outputs_off / process shutdown. Wiring TBD: energize = anodes powered to INA219 chain.
@@ -459,6 +479,70 @@ SIM_CH_MA_BIAS_DRY = (0.006, 0.020, 0.034, 0.011)
 SIM_CH_MA_BIAS_WET = (0.0, 0.07, -0.055, 0.045)
 SIM_CH_DRY_NOISE_SCALE = (1.0, 1.4, 0.75, 1.2)
 SIM_CH_WET_NOISE_SCALE = (1.0, 1.25, 0.85, 1.1)
+
+
+def _parse_active_channel_indices() -> frozenset[int] | None:
+    """
+    Comma-separated 0-based indices in ``COILSHIELD_ACTIVE_CHANNELS`` (e.g. ``0,2``).
+    ``None`` means all channels ``0..NUM_CHANNELS-1`` are driven by the controller.
+    """
+    raw = (os.environ.get("COILSHIELD_ACTIVE_CHANNELS") or "").strip()
+    if not raw:
+        return None
+    out: set[int] = set()
+    for p in raw.replace(" ", "").split(","):
+        if not p:
+            continue
+        out.add(int(p, 10))
+    nch = int(NUM_CHANNELS)
+    for i in out:
+        if i < 0 or i >= nch:
+            raise ValueError(
+                f"COILSHIELD_ACTIVE_CHANNELS: index {i} out of range 0..{nch - 1}"
+            )
+    if not out:
+        return None
+    return frozenset(out)
+
+
+ACTIVE_CHANNEL_INDICES: frozenset[int] | None = _parse_active_channel_indices()
+
+
+def is_channel_active(ch: int) -> bool:
+    """True if this logical anode is selected for CP drive (regulation, PWM) this run."""
+    ac = ACTIVE_CHANNEL_INDICES
+    nch = int(NUM_CHANNELS)
+    if 0 > ch or ch >= nch:
+        return False
+    if ac is None:
+        return True
+    return ch in ac
+
+
+def validate_active_channel_selection() -> None:
+    """
+    :func:`is_channel_active` is strict subset of ``0..NUM_CHANNELS-1``;
+    partial selection cannot use shared bank PWM (see docs/hardware-shared-anode-bank.md).
+    """
+    ac = ACTIVE_CHANNEL_INDICES
+    nch = int(NUM_CHANNELS)
+    if ac is None:
+        return
+    if not ac:
+        raise ValueError("COILSHIELD_ACTIVE_CHANNELS must name at least one anode index")
+    if bool(SHARED_RETURN_PWM) and len(ac) < nch:
+        raise ValueError(
+            "Partial anode selection (COILSHIELD_ACTIVE_CHANNELS or --channels / --anodes) "
+            "requires SHARED_RETURN_PWM = False: bank mode drives every MOSFET gate to the "
+            "same duty. Set SHARED_RETURN_PWM = False in config/settings.py or clear the "
+            "anode filter to use all channels."
+        )
+
+
+def validate_channel_config() -> None:
+    """:func:`control.Controller` calls this at construction: layout + active anode set."""
+    validate_channel_layout()
+    validate_active_channel_selection()
 
 
 def resolved_telemetry_paths() -> dict[str, str]:

@@ -50,6 +50,11 @@ def _apply_dashboard_argv_log_dir() -> None:
 
 _apply_dashboard_argv_log_dir()
 
+from config.argv_channels import apply_coilshield_active_channels_from_argv
+
+if apply_coilshield_active_channels_from_argv(sys.argv[1:]) == 2:
+    raise SystemExit(2)
+
 from flask import Flask, Response, jsonify, make_response, request, send_file
 
 import config.settings as cfg
@@ -1984,7 +1989,8 @@ def main() -> None:
         default=None,
         help="Telemetry directory (absolute path). Same as COILSHIELD_LOG_DIR; applied from argv before config import.",
     )
-    args = p.parse_args()
+    # --channels / --anodes: see config/argv_channels.py (import-time); allow unknowns for passthrough.
+    args, _unknown = p.parse_known_args()
 
     cfg.LOG_DIR.mkdir(parents=True, exist_ok=True)
     _warn_sqlite_lag_support()

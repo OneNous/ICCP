@@ -835,6 +835,7 @@ class DataLogger:
                 if s and s not in system_alerts:
                     system_alerts.append(s[:500])
 
+        ac = getattr(cfg, "ACTIVE_CHANNEL_INDICES", None)
         payload: dict = {
             "ts": ts,
             "ts_unix": ts_unix,
@@ -843,6 +844,7 @@ class DataLogger:
             "fault_latched": fault_latched,
             "faults": list(faults),
             "system_alerts": system_alerts,
+            "active_channel_indices": (sorted(ac) if ac is not None else None),
             "channels": public_channels,
             "total_ma": total_ma,
             "supply_v_avg": supply_v_avg,

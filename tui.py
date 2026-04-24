@@ -27,8 +27,11 @@ import time
 from pathlib import Path
 
 from config.argv_log_dir import apply_coilshield_log_dir_from_argv
+from config.argv_channels import apply_coilshield_active_channels_from_argv
 
 apply_coilshield_log_dir_from_argv(sys.argv[1:])
+if apply_coilshield_active_channels_from_argv(sys.argv[1:]) == 2:
+    raise SystemExit(2)
 
 import config.settings as cfg
 
@@ -921,7 +924,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar="SEC",
         help="seconds between latest.json reads (default: 0.25)",
     )
-    return p.parse_args(argv)
+    # --channels / --anodes are consumed in config/argv_channels.py at import; allow here
+    # so `iccp tui --channels 0,1` does not error after the subcommand reinvokes tui.
+    args, _unknown = p.parse_known_args(argv)
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -20,7 +20,8 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 - **`--sim`**: simulated sensors (passed through to `main.main()`).
 - **`--log-dir PATH`**: same telemetry directory as the dashboard; use an absolute path.
 - On a Pi, **`ICCP_SYSTEMD_SYNC`** (default on) triggers **`sudo systemctl daemon-reload`** only — **no** `restart`, so you do not bounce the service before foreground start.
-- Anode **PWM** behavior is configured in `config/settings.py` (default **`SHARED_RETURN_PWM` = True** gives one shared duty for all MOSFET gates; see [hardware-shared-anode-bank.md](hardware-shared-anode-bank.md)).
+- Anode **PWM** behavior is configured in `config/settings.py` (default **`SHARED_RETURN_PWM` = False**: independent duty per gate; set **`True`** for one shared duty on all MOSFET gates; see [hardware-shared-anode-bank.md](hardware-shared-anode-bank.md)).
+- **Subset of anodes:** `--channels 0,2` (0-based indices) or `--anodes 1,3` (same numbering as the UI) limits which channels the controller **drives**; others stay at 0% PWM. Incompatible with **`SHARED_RETURN_PWM` = True** (validation error at startup). You can also set environment **`COILSHIELD_ACTIVE_CHANNELS=0,2`** before `iccp start`. The same flags are accepted on **`iccp tui`**, **`iccp dashboard`**, **`iccp commission`**, and **`iccp probe`** so the process sees the same selection before `import config.settings`. `latest.json` includes **`active_channel_indices`** (or `null` for all anodes).
 
 ---
 

@@ -163,6 +163,10 @@ def _print_help() -> None:
                              On Pi: refuses if systemd iccp is already active (use --force).
                              Optional: --log-dir /abs/path/logs (same as COILSHIELD_LOG_DIR;
                              must match dashboard / tui).
+                             Anode subset: --channels 0,2 (0-based) or --anodes 1,3 (UI
+                             numbers). Requires SHARED_RETURN_PWM = False. Same flags work
+                             on tui, dashboard, commission, probe (env is set before config).
+                             Or set env COILSHIELD_ACTIVE_CHANNELS=0,2 (no --channels flag).
 
   iccp commission [--sim] [--force] [--native-only] [--no-anode-prompts]
                              Self-commission (writes commissioning.json).
@@ -551,8 +555,11 @@ def main() -> int:
         sys.path.insert(0, str(root))
 
     from config.argv_log_dir import apply_coilshield_log_dir_from_argv
+    from config.argv_channels import apply_coilshield_active_channels_from_argv
 
     apply_coilshield_log_dir_from_argv(argv)
+    if apply_coilshield_active_channels_from_argv(argv) == 2:
+        return 2
 
     _sync_systemd_for_iccp_cli(cmd)
 

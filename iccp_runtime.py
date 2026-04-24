@@ -63,9 +63,11 @@ def run_iccp_forever(args: Namespace) -> int:
 
     leds.setup()
 
+    _ac = getattr(cfg, "ACTIVE_CHANNEL_INDICES", None)
+    _ac_s = "all" if _ac is None else ",".join(str(i) for i in sorted(_ac))
     print(
         f"CoilShield starting (sim={sim}, TARGET_MA={cfg.TARGET_MA}, "
-        f"clear fault: touch {cfg.CLEAR_FAULT_FILE})"
+        f"anodes={_ac_s}, clear fault: touch {cfg.CLEAR_FAULT_FILE})"
     )
     _tp = cfg.resolved_telemetry_paths()
     print(

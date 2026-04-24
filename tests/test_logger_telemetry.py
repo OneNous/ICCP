@@ -72,6 +72,8 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     assert "surface_hint" in ch0
     assert "sigma_proxy_s" in ch0
     assert "fqi_smooth_s" in ch0
+    assert "active_channel_indices" in latest
+    assert latest["active_channel_indices"] is None
     assert "cross" in latest and "i_cv" in latest["cross"]
     assert ch0.get("sensor_error") in ("", None)
     assert latest["channels"]["0"].get("target_ma") == pytest.approx(
