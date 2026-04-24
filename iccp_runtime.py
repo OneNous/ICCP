@@ -101,9 +101,17 @@ def run_iccp_forever(args: Namespace) -> int:
         else:
             ref.load_native()
             cfg.TARGET_MA = commissioning.load_commissioned_target()
+            bl = ref.baseline_mv_for_shift()
+            gline = ""
+            if ref.galvanic_offset_mv is not None:
+                gline = (
+                    f"  galv_offset={ref.galvanic_offset_mv:.1f} mV"
+                    f"{'  SERVICE' if ref.galvanic_offset_service_recommended else ''}"
+                )
+            bls = f"{bl:.1f}" if bl is not None else "—"
             print(
-                f"[main] Commissioning loaded — native={ref.native_mv:.1f} mV  "
-                f"target={cfg.TARGET_MA:.3f} mA"
+                f"[main] Commissioning loaded — true_native(1a)={ref.native_mv:.1f} mV  "
+                f"shift_baseline={bls} mV{gline}  target={cfg.TARGET_MA:.3f} mA"
             )
     else:
         ref.load_native()
@@ -180,6 +188,12 @@ def run_iccp_forever(args: Namespace) -> int:
                     i: ctrl.channel_target_ma(i) for i in range(cfg.NUM_CHANNELS)
                 },
                 t_to_system_protected_s=ctrl.t_to_system_protected_s(),
+                native_mv=ref.baseline_mv_for_shift(),
+                native_true_anodes_out_mv=ref.native_mv,
+                native_oc_anodes_in_mv=ref.native_oc_anodes_in_mv,
+                galvanic_offset_mv=ref.galvanic_offset_mv,
+                galvanic_offset_baseline_mv=ref.galvanic_offset_baseline_mv,
+                galvanic_offset_service_recommended=ref.galvanic_offset_service_recommended,
             )
             log.maybe_flush()
         except Exception as e:
@@ -371,15 +385,16 @@ def run_iccp_forever(args: Namespace) -> int:
 
             # --- Drift warning while sustained Protected (docs/iccp-requirements.md §2.3) ---
             drift_trigger = float(getattr(cfg, "NATIVE_DRIFT_TRIGGER_MV", 40.0))
+            _bl_drift = ref.baseline_mv_for_shift()
             if (
-                ref.native_mv is not None
+                _bl_drift is not None
                 and ctrl.all_protected()
-                and abs(ref_raw_mv - ref.native_mv) > drift_trigger
+                and abs(ref_raw_mv - _bl_drift) > drift_trigger
                 and (time.time() - _last_drift_alert_ts) > 300.0
             ):
                 _last_drift_alert_ts = time.time()
                 runtime_alerts.append(
-                    f"Reference drift: |ref {ref_raw_mv:.1f} − native {ref.native_mv:.1f}| "
+                    f"Reference drift: |ref {ref_raw_mv:.1f} − shift_baseline {_bl_drift:.1f}| "
                     f"> {drift_trigger:.0f} mV while all_protected"
                 )
 
@@ -420,7 +435,12 @@ def run_iccp_forever(args: Namespace) -> int:
                     all_protected=ctrl.all_protected(),
                     any_active=ctrl.any_active(),
                     any_overprotected=ctrl.any_overprotected(),
-                    native_mv=ref.native_mv,
+                    native_mv=ref.baseline_mv_for_shift(),
+                    native_true_anodes_out_mv=ref.native_mv,
+                    native_oc_anodes_in_mv=ref.native_oc_anodes_in_mv,
+                    galvanic_offset_mv=ref.galvanic_offset_mv,
+                    galvanic_offset_baseline_mv=ref.galvanic_offset_baseline_mv,
+                    galvanic_offset_service_recommended=ref.galvanic_offset_service_recommended,
                     native_age_s=ref.native_age_s(),
                     next_native_recapture_s=ref.next_native_recapture_s(),
                     ref_valid=ref_valid,

@@ -5,6 +5,8 @@
 
 All "Today" call-outs are verbatim descriptions of current code, cited by file and line, so the delta between "what we have" and "what we need" is explicit. If a current-behavior note is wrong, fix it here first, then fix the code later.
 
+**Code map (Tier 1 vs Tier 2 timing):** [supervisor-architecture.md](supervisor-architecture.md) — the slow “headquarters” loop lives in `iccp_runtime.py` + `Controller.update_potential_target`, not a separate `supervisor.py`.
+
 ---
 
 ## 1. Purpose and north star

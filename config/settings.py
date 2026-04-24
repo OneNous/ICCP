@@ -332,9 +332,9 @@ def validate_channel_layout() -> None:
     )
 
 
-# High-side anode 5V disconnect (per channel), optional. When set, de-energize on
-# all_outputs_off / process shutdown. Wiring TBD: energize = anodes powered to INA219 chain.
-# Example (placeholder): (5, 6, 12, 13) — do not use until board matches.
+# High-side anode 5V disconnect (per channel), optional — CoilShield production has none
+# (MOSFETs only; safe-off = 0% PWM). For alternate/legacy PCBs with a supply relay, set
+# pin tuple; de-energize on all_outputs_off / process shutdown. Example placeholder: (5, 6, 12, 13).
 ANODE_RELAY_GPIO_PINS: tuple[int, ...] | None = None
 # If True, relay coil energized (anodes to supply path on) when GPIO is HIGH; de-energize drives LOW.
 ANODE_RELAY_ENERGIZE_HIGH: bool = True
@@ -383,7 +383,9 @@ SQLITE_PURGE_EVERY_N_INSERTS = 10_000
 # --- Reference electrode (ADS1115 default; legacy INA219 if REF_ADC_BACKEND) ---
 # Set False to skip reference ADC init until hardware is wired.
 REF_ENABLED = True
-# Polarization shift = native_mv − instant-off mV (positive when protected). Default 100 mV
+# Polarization shift = baseline_mv_for_shift − instant-off mV (positive when protected); baseline
+# is open-circuit with anodes in bath (Phase 1b) when commissioned, else Phase 1a true native.
+# Default 100 mV
 # matches a common field picture: native ~100–130 mV at the AIN after Phase 1, ramp succeeds
 # when OC inflection sits ~20–40 mV (order ~100 mV below native). Tune if chemistry differs.
 TARGET_SHIFT_MV = 100
@@ -436,11 +438,18 @@ COMMISSIONING_PHASE1_OFF_VERIFY = True
 # Phase 1: stop soft-PWM and hold each gate pin at static LOW (same idea as PWMBank.cleanup).
 # Improves “true off” vs ChangeDutyCycle(0) alone; set False only if your hardware misbehaves.
 COMMISSIONING_PHASE1_STATIC_GATE_LOW = True
-# Pauses: confirm anodes **removed** before open-circuit native (Phase 1), then **installed**
-# before CP ramp (Phase 2). Gated in code: off in `COILSHIELD_SIM=1`, when stdin is not a TTY
-# (``commissioning._anode_placement_should_interact``), or
+# Pauses: confirm anodes **removed** before open-circuit native (Phase 1a), then **installed**
+# for Phase 1b (OCP, MOSFETs off, same T_RELAX as 1a), then Phase 2 ramp. Gated in code: off in
+# `COILSHIELD_SIM=1`, when stdin is not a TTY, or
 # `iccp commission --no-anode-prompts` / env `ICCP_COMMISSION_NO_ANODE_PROMPTS=1`.
 COMMISSIONING_ANODE_PLACEMENT_PROMPTS: bool = True
+# After Phase 1a, run Phase 1b: second ``capture_native`` with anodes in the bath, gates off.
+# Shift / instant-off use the 1b scalar as baseline when present (see ``baseline_mv_for_shift``).
+# Set False or `ICCP_SKIP_GALVANIC_1B=1` for legacy single-baseline installs.
+COMMISSIONING_GALVANIC_1B_ENABLED: bool = True
+# Re-commission: if new ``galvanic_offset_mv`` < this fraction of ``galvanic_offset_baseline_mv``
+# (first install), persist ``galvanic_offset_service_recommended`` and print a warning.
+GALVANIC_OFFSET_SERVICE_FRACTION: float = 0.2
 COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S = 3.0
 # Stricter ceiling (mA) for “at rest” before native averaging — abort if exceeded after long settle.
 # Align with I_REST_MA (spec rest gate) so Phase 1 and scheduled native capture use the same idea
@@ -504,7 +513,7 @@ T_POLARIZE_MAX: float = 3600.0             # s in Polarizing → CANNOT_POLARIZE
 T_PROBE_MAX: float = 30.0
 T_OVER_EXIT: float = 30.0
 T_OVER_FAULT: float = 60.0
-T_SYSTEM_STABLE: float = 60.0               # §2.2 — all channels Protected this long → all_protected
+T_SYSTEM_STABLE: float = 60.0               # §2.2 — participating channels (active, not Off/Fault) Protected this long → all_protected
 # Hysteresis (mV)
 HYST_PROT_EXIT_MV: float = 10.0
 HYST_OVER_EXIT_MV: float = 10.0
@@ -517,8 +526,8 @@ POLARIZE_RETRY_INTERVAL_S: float = T_POLARIZE_MAX  # wait between failed polariz
 CLEAR_FAULT_CHANNEL_FILE = PROJECT_ROOT / "clear_fault_channel"
 
 # --- Simulator ---
-# Bench nominal bus (V); intentionally not tied to field supply (~4.85 V) — tune for your rig.
-SIM_NOMINAL_BUS_V = 4.85
+# Bench nominal bus (V). Matches single-5V-USB product story (~4.8 V); field DMM may read 4.85–5.0.
+SIM_NOMINAL_BUS_V = 4.8
 SIM_NOISE_MA = 0.05
 SIM_DRIFT_MA = 0.002
 SIM_INJECT_FAULT_CH = None

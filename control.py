@@ -936,7 +936,7 @@ class Controller:
     def update_potential_target(self, shift_mv: float | None) -> None:
         """
         Outer loop: nudge TARGET_MA to keep polarization in the safe window.
-        ``shift_mv`` should be **native_mv − instant-off ref** (IR-free) when the runtime
+        ``shift_mv`` should be **baseline_mv_for_shift − instant-off ref** (IR-free) when the runtime
         uses ``OUTER_LOOP_INSTANT_OFF``; legacy callers may pass live on-potential shift.
         Positive shift means the reference reading fell under CP vs native.
         Call once per LOG_INTERVAL_S tick, not every SAMPLE_INTERVAL_S.

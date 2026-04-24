@@ -35,11 +35,15 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(time, "sleep", lambda _s: None)
 
     ref = ReferenceElectrode()
-    monkeypatch.setattr(
-        ReferenceElectrode,
-        "capture_native",
-        lambda *a, **k: (210.0, "ok"),
-    )
+    _cap_n = 0
+
+    def _cap_native(*a, **k) -> tuple[float, str]:
+        nonlocal _cap_n
+        _cap_n += 1
+        # Phase 1a: 210 mV; Phase 1b: 200 mV → +10 mV galvanic offset (1a−1b)
+        return (210.0, "ok") if _cap_n == 1 else (200.0, "ok")
+
+    monkeypatch.setattr(ReferenceElectrode, "capture_native", _cap_native)
     monkeypatch.setattr(
         ReferenceElectrode,
         "read",
@@ -79,6 +83,10 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     assert "commissioned_target_ma" in data
     assert "commissioned_at" in data
     assert isinstance(data["native_mv"], (int, float))
+    assert data["native_mv"] == 210.0
+    assert data.get("native_oc_anodes_in_mv") == 200.0
+    assert data.get("galvanic_offset_mv") == 10.0
+    assert data.get("galvanic_offset_baseline_mv") == 10.0
     assert data.get("final_shift_mv") == 110.0
 
 

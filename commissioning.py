@@ -190,6 +190,17 @@ def _anode_placement_should_interact(
     return bool(sys.stdin.isatty())
 
 
+def _galvanic_1b_wanted() -> bool:
+    """Second OCP capture (anodes in bath, gates off) after Phase 1a, same T_RELAX."""
+    if (os.environ.get("ICCP_SKIP_GALVANIC_1B", "") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return False
+    return bool(getattr(cfg, "COMMISSIONING_GALVANIC_1B_ENABLED", True))
+
+
 def _anode_placement_pause(
     step: str,
     *,
@@ -212,9 +223,10 @@ def _anode_placement_pause(
             "then press Enter."
         )
     elif step == "after_phase1":
-        print_commission_section("Anode placement — before current ramp (Phase 2)")
+        print_commission_section("Anode placement — Phase 1b then ramp (Phases 2–3)")
         print(
-            "[main] Install anodes, then press Enter to continue the ramp."
+            "[main] Install anodes in the bath, then press Enter for the second open-circuit "
+            "reference (Phase 1b, MOSFETs off), then commissioning continues to the current ramp."
         )
     else:  # pragma: no cover
         print_commission_section(f"Anode placement (internal: {step!r})")
@@ -861,8 +873,9 @@ def _instant_off_ref_mv_and_restore(
         sim_state.duties = controller.duties()
 
     shift: float | None = None
-    if reference.native_mv is not None:
-        shift = round(float(reference.native_mv) - raw_inst, 2)
+    bl = reference.baseline_mv_for_shift()
+    if bl is not None:
+        shift = round(float(bl) - raw_inst, 2)
     return raw_inst, shift, depol_rate
 
 
@@ -894,6 +907,22 @@ def instant_off_ref_measurement(
     )
 
 
+def _pump_regulate_anode_snapshot(
+    controller: Any,
+    readings: dict[int, dict],
+) -> str:
+    """One-line shunt mA + PWM% per anode for commissioning progress (Phase 2/3)."""
+    chs = cfg.active_channel_indices_list()
+    ina = commission_ina_compact(
+        readings, num_channels=cfg.NUM_CHANNELS, channels=chs
+    )
+    duties = controller.duties()
+    duty_s = " ".join(
+        f"A{ch + 1}={float(duties.get(ch, 0.0)):.0f}%" for ch in chs
+    )
+    return f"{ina}  |  {duty_s}"
+
+
 def _pump_control(
     controller: Controller,
     sim_state: Any | None,
@@ -905,11 +934,14 @@ def _pump_control(
     progress_label: str = "Regulate",
     progress_next: str = "instant-off",
     progress_interval_s: float = _COMMISSION_PUMP_PROGRESS_S,
+    anode_progress_detail: bool = False,
 ) -> None:
     """Run the normal control loop for duration_s (settle / ramp).
 
     If ``commission_log`` is set (commissioning UI only), log **time remaining** until
     ``progress_next`` at ``progress_interval_s`` (monotonic wall, not tick drift).
+    When ``anode_progress_detail`` is True, each progress line also includes per-anode
+    shunt mA and duty (after ``controller.update`` for that tick).
     """
     duration = max(0.0, float(duration_s))
     t_end = time.monotonic() + duration
@@ -920,16 +952,6 @@ def _pump_control(
         # First line on first loop iteration.
         last_progress_announce = time.monotonic() - float(progress_interval_s)
     while time.monotonic() < t_end:
-        if need_progress and cl is not None:
-            now = time.monotonic()
-            if now - last_progress_announce >= float(progress_interval_s):
-                rem = max(0.0, t_end - now)
-                rsec = int(rem)
-                mm, ss = divmod(rsec, 60)
-                cl(
-                    f"{progress_label} — ~{mm:d}:{ss:02d} until {progress_next}"
-                )
-                last_progress_announce = now
         _check_comm_wall_deadline(wall_deadline_mono)
         readings = _sensor_readings(sim_state)
         controller.update(readings)
@@ -949,6 +971,19 @@ def _pump_control(
                 ref_valid=ref_valid,
                 ref_valid_reason=ref_valid_reason,
             )
+        if need_progress and cl is not None:
+            now = time.monotonic()
+            if now - last_progress_announce >= float(progress_interval_s):
+                rem = max(0.0, t_end - now)
+                rsec = int(rem)
+                mm, ss = divmod(rsec, 60)
+                extra = ""
+                if anode_progress_detail:
+                    extra = f"  |  {_pump_regulate_anode_snapshot(controller, readings)}"
+                cl(
+                    f"{progress_label} — ~{mm:d}:{ss:02d} until {progress_next}{extra}"
+                )
+                last_progress_announce = now
         time.sleep(cfg.SAMPLE_INTERVAL_S)
 
 
@@ -957,7 +992,7 @@ def _phase1_spec_native_capture(
     controller: Any,
     sim_state: Any | None,
     *,
-    on_relax_progress: Callable[[float, int], None] | None = None,
+    on_relax_progress: Callable[[float, int, float | None], None] | None = None,
 ) -> tuple[float | None, str]:
     """Phase 1 per docs/iccp-requirements.md §3.3: median native, rest gate, static LOW."""
     controller.all_outputs_off()
@@ -1033,11 +1068,16 @@ def run(
             sim_state=sim_state,
         )
 
-    def on_relax_progress(remaining: float, n: int) -> None:
+    def on_relax_progress(
+        remaining: float, n: int, last_read_mv: float | None = None
+    ) -> None:
         if not verbose:
             return
+        mpart = (
+            f"  ref(raw)={last_read_mv:.1f} mV" if last_read_mv is not None else ""
+        )
         commission_log_main(
-            f"Reference window: ~{remaining:.0f} s until median; {n} sample(s) so far"
+            f"Reference window: ~{remaining:.0f} s until median; {n} sample(s) so far{mpart}"
         )
 
     native_mv, cap_reason = _phase1_spec_native_capture(
@@ -1052,14 +1092,10 @@ def run(
     reference.save_native(native_mv, native_temp_f=pan_tf)
     if pan_tf is not None:
         log(
-            f"Native baseline: {native_mv:.1f} mV (pan {pan_tf:.1f} °F);  "
-            f"goal ≥{cfg.TARGET_SHIFT_MV} mV shift → ref ≈{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
+            f"Phase 1a — true native (anodes out): {native_mv:.1f} mV (pan {pan_tf:.1f} °F)"
         )
     else:
-        log(
-            f"Native baseline: {native_mv:.1f} mV;  "
-            f"goal ≥{cfg.TARGET_SHIFT_MV} mV shift → ref ≈{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
-        )
+        log(f"Phase 1a — true native (anodes out): {native_mv:.1f} mV")
 
     with _phase1_static_gate_context(controller):
         _anode_placement_pause(
@@ -1068,6 +1104,37 @@ def run(
             controller=controller,
             reference=reference,
             sim_state=sim_state,
+        )
+
+    if _galvanic_1b_wanted():
+        if verbose:
+            print()
+            print_commission_section("Phase 1b — OCP with anodes in bath (MOSFETs off)")
+        native_in, cap2 = _phase1_spec_native_capture(
+            reference,
+            controller,
+            sim_state,
+            on_relax_progress=on_relax_progress,
+        )
+        if native_in is None:
+            raise RuntimeError(
+                f"Phase 1b (anodes in, open-circuit) failed: {cap2}. "
+                f"{_native_capture_fail_hint(cap2)}  "
+                f"To skip: ICCP_SKIP_GALVANIC_1B=1 or set COMMISSIONING_GALVANIC_1B_ENABLED=False."
+            )
+        assert reference.native_mv is not None
+        reference.save_native_oc_anodes_in(native_in, true_native_mv=float(reference.native_mv))
+        off = reference.galvanic_offset_mv
+        if verbose and off is not None:
+            log(
+                f"Phase 1b: OCP with anodes in: {native_in:.1f} mV;  "
+                f"galvanic offset (1a−1b) = {off:.1f} mV"
+            )
+    bl0 = reference.baseline_mv_for_shift()
+    if bl0 is not None and verbose:
+        log(
+            f"Shift baseline for control: {bl0:.1f} mV;  goal ≥{cfg.TARGET_SHIFT_MV} mV shift → "
+            f"instant-off ref ≈{bl0 - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
         )
 
     original_target_ma = float(cfg.TARGET_MA)
@@ -1138,6 +1205,7 @@ def _phase2_3_ramp_lock(
             progress_label="Phase 2 regulate",
             progress_next="instant-off",
             progress_interval_s=_COMMISSION_PUMP_PROGRESS_S,
+            anode_progress_detail=True,
         )
         if verbose:
             r_settle = _sensor_readings(sim_state)
@@ -1271,13 +1339,15 @@ def run_native_only(
     verbose: bool = True,
     anode_placement_prompts: bool | None = None,
 ) -> tuple[float | None, str]:
-    """Phase 1 only: re-capture the native baseline without ramp/lock phases.
+    """Phase 1 only: re-capture baselines without ramp/lock phases.
 
-    Drives all channels to 0% PWM (plus Phase 1 static gate-low context), runs the new
-    `ReferenceElectrode.capture_native` primitive, and — on success — persists the new
-    native_mv / native_measured_at / native_recapture_due_unix fields via save_native.
-    Returns (native_mv, reason). Reason is "ok" on success; otherwise a diagnostic string
-    the caller should surface via telemetry / CLI exit code.
+    Runs Phase 1a (anodes out, `capture_native`) and, when
+    :func:`_galvanic_1b_wanted` is True, Phase 1b (anodes in bath, MOSFETs off, same
+    T_RELAX). Persists ``native_mv``, optional ``native_oc_anodes_in_mv`` /
+    ``galvanic_offset_mv`` / ``galvanic_offset_baseline_mv`` via
+    :meth:`reference.ReferenceElectrode.save_native` and
+    :meth:`reference.ReferenceElectrode.save_native_oc_anodes_in`.
+    Returns ``(native_mv, reason)``; reason is ``"ok"`` when the selected phases succeed.
     """
 
     def log(msg: str) -> None:
@@ -1297,11 +1367,16 @@ def run_native_only(
             sim_state=sim_state,
         )
 
-    def on_relax_progress(remaining: float, n: int) -> None:
+    def on_relax_progress(
+        remaining: float, n: int, last_read_mv: float | None = None
+    ) -> None:
         if not verbose:
             return
+        mpart = (
+            f"  ref(raw)={last_read_mv:.1f} mV" if last_read_mv is not None else ""
+        )
         commission_log_main(
-            f"Reference window: ~{remaining:.0f} s until median; {n} sample(s) so far"
+            f"Reference window: ~{remaining:.0f} s until median; {n} sample(s) so far{mpart}"
         )
 
     native_mv, reason = _phase1_spec_native_capture(
@@ -1314,5 +1389,36 @@ def run_native_only(
 
     pan_tf = temp_mod.read_fahrenheit()
     reference.save_native(native_mv, native_temp_f=pan_tf)
-    log(f"native_mv = {native_mv:.2f} mV (reason={reason})")
-    return native_mv, reason
+    log(f"Phase 1a native_mv = {native_mv:.2f} mV (reason={reason})")
+
+    with _phase1_static_gate_context(controller):
+        _anode_placement_pause(
+            "after_phase1",
+            anode_placement_prompts=anode_placement_prompts,
+            controller=controller,
+            reference=reference,
+            sim_state=sim_state,
+        )
+
+    if _galvanic_1b_wanted():
+        if verbose:
+            print()
+            print_commission_section("Phase 1b — OCP with anodes in bath (MOSFETs off)")
+        native_in, r2 = _phase1_spec_native_capture(
+            reference, controller, sim_state, on_relax_progress=on_relax_progress
+        )
+        if native_in is None:
+            return None, f"phase1b failed: {r2}"
+        assert reference.native_mv is not None
+        reference.save_native_oc_anodes_in(
+            native_in, true_native_mv=float(reference.native_mv)
+        )
+        if verbose and reference.galvanic_offset_mv is not None:
+            log(
+                f"Phase 1b: {native_in:.2f} mV; galvanic offset = {reference.galvanic_offset_mv:.2f} mV"
+            )
+    if not _galvanic_1b_wanted():
+        return native_mv, reason
+    if reference.native_oc_anodes_in_mv is None:  # pragma: no cover
+        return None, "phase1b_not_saved"
+    return native_mv, "ok"

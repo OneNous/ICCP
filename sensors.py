@@ -553,7 +553,7 @@ def read_all_sim(state: SimSensorState) -> dict[int, ChannelReading]:
     for ch in range(cfg.NUM_CHANNELS):
         wet = state.channel_is_wet(ch, sim_s)
         duty = state.duties.get(ch, 0.0)
-        # cfg.SIM_NOMINAL_BUS_V is a bench nominal; field supply is often ~4.85 V.
+        # cfg.SIM_NOMINAL_BUS_V is sim bench nominal (see config.settings); field USB is often ~4.8–5.0 V.
         bus_v = (
             cfg.SIM_NOMINAL_BUS_V
             + _sim_ch_nudge("SIM_CH_BUS_OFFSET_V", ch)

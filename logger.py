@@ -594,6 +594,12 @@ class DataLogger:
         ref_valid: bool | None = None,
         ref_valid_reason: str | None = None,
         t_to_system_protected_s: float | None = None,
+        # Phase 1a/1b galvanic calibration (docs/galvanic-offset-calibration.md)
+        native_true_anodes_out_mv: float | None = None,
+        native_oc_anodes_in_mv: float | None = None,
+        galvanic_offset_mv: float | None = None,
+        galvanic_offset_baseline_mv: float | None = None,
+        galvanic_offset_service_recommended: bool = False,
     ) -> dict[str, object]:
         wet = any_wet
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -885,6 +891,22 @@ class DataLogger:
             bool(any_overprotected) if any_overprotected is not None else False
         )
         payload["native_mv"] = native_mv
+        if native_true_anodes_out_mv is not None:
+            payload["native_true_anodes_out_mv"] = round(
+                float(native_true_anodes_out_mv), 2
+            )
+        if native_oc_anodes_in_mv is not None:
+            payload["native_oc_anodes_in_mv"] = round(
+                float(native_oc_anodes_in_mv), 2
+            )
+        if galvanic_offset_mv is not None:
+            payload["galvanic_offset_mv"] = round(float(galvanic_offset_mv), 2)
+        if galvanic_offset_baseline_mv is not None:
+            payload["galvanic_offset_baseline_mv"] = round(
+                float(galvanic_offset_baseline_mv), 2
+            )
+        if galvanic_offset_service_recommended:
+            payload["galvanic_offset_service_recommended"] = True
         payload["native_age_s"] = (
             round(float(native_age_s), 2) if native_age_s is not None else None
         )

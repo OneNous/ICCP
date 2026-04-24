@@ -82,6 +82,17 @@ def test_collect_oc_decay_samples_duration_mode_sim(
     assert all(isinstance(p[0], float) and isinstance(p[1], float) for p in pts)
 
 
+def test_baseline_mv_for_shift_prefers_anodes_in_ocp(monkeypatch: pytest.MonkeyPatch) -> None:
+    ref = ReferenceElectrode()
+    ref.native_mv = 308.0
+    ref.native_oc_anodes_in_mv = 275.0
+    assert ref.baseline_mv_for_shift() == 275.0
+    monkeypatch.setattr(
+        ReferenceElectrode, "read", lambda self, *a, **k: 200.0
+    )
+    assert ref.shift_mv() == 75.0  # 275 - 200
+
+
 def test_protection_status_from_shift(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "TARGET_SHIFT_MV", 100)
     monkeypatch.setattr(cfg, "MAX_SHIFT_MV", 200)

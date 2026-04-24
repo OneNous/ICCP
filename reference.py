@@ -497,7 +497,7 @@ def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> floa
         elif st == "OPEN":
             shift += 0.0
     # Under CP the mV-like scalar falls vs native; model raw = native − effect so
-    # shift_mv = native − raw stays positive when protected (matches hardware).
+    # shift_mv = baseline_mv_for_shift − raw stays positive when protected (matches hardware).
     return round(native - shift + random.gauss(0, 1.5), 2)
 
 
@@ -770,6 +770,14 @@ class ReferenceElectrode:
 
     def __init__(self) -> None:
         self.native_mv: float | None = None
+        # Phase 1b: OCP with anodes in electrolyte, MOSFETs off (same T_RELAX as 1a).
+        self.native_oc_anodes_in_mv: float | None = None
+        self.native_oc_anodes_measured_at: str | None = None
+        # native_mv (1a) − native_oc_anodes_in_mv (1b); positive = "depression" vs true metal.
+        self.galvanic_offset_mv: float | None = None
+        # First-install offset for health trending (not overwritten on later commissions).
+        self.galvanic_offset_baseline_mv: float | None = None
+        self.galvanic_offset_service_recommended: bool = False
         self.native_temp_f: float | None = None
         self.native_measured_at: str | None = None
         self.native_measured_unix: float | None = None
@@ -792,6 +800,25 @@ class ReferenceElectrode:
         try:
             data = json.loads(_COMM_FILE.read_text(encoding="utf-8"))
             self.native_mv = float(data["native_mv"])
+            nai = data.get("native_oc_anodes_in_mv")
+            try:
+                self.native_oc_anodes_in_mv = float(nai) if nai is not None else None
+            except (TypeError, ValueError):
+                self.native_oc_anodes_in_mv = None
+            self.native_oc_anodes_measured_at = data.get("native_oc_anodes_measured_at")
+            go = data.get("galvanic_offset_mv")
+            try:
+                self.galvanic_offset_mv = float(go) if go is not None else None
+            except (TypeError, ValueError):
+                self.galvanic_offset_mv = None
+            gob = data.get("galvanic_offset_baseline_mv")
+            try:
+                self.galvanic_offset_baseline_mv = float(gob) if gob is not None else None
+            except (TypeError, ValueError):
+                self.galvanic_offset_baseline_mv = None
+            self.galvanic_offset_service_recommended = bool(
+                data.get("galvanic_offset_service_recommended", False)
+            )
             nt = data.get("native_temp_f")
             if nt is not None and str(nt).strip() != "":
                 try:
@@ -842,12 +869,29 @@ class ReferenceElectrode:
             payload["native_recapture_due_unix"] = round(self.native_measured_unix + recap, 3)
         if self.native_temp_f is not None:
             payload["native_temp_f"] = round(float(self.native_temp_f), 2)
+        if self.native_oc_anodes_in_mv is not None:
+            payload["native_oc_anodes_in_mv"] = round(float(self.native_oc_anodes_in_mv), 2)
+        if self.native_oc_anodes_measured_at is not None:
+            payload["native_oc_anodes_measured_at"] = str(self.native_oc_anodes_measured_at)
+        if self.galvanic_offset_mv is not None:
+            payload["galvanic_offset_mv"] = round(float(self.galvanic_offset_mv), 2)
+        if self.galvanic_offset_baseline_mv is not None:
+            payload["galvanic_offset_baseline_mv"] = round(
+                float(self.galvanic_offset_baseline_mv), 2
+            )
+        if self.galvanic_offset_service_recommended:
+            payload["galvanic_offset_service_recommended"] = True
         return payload
 
     def save_native(
         self, mv: float, *, native_temp_f: float | None = None
     ) -> None:
         self.native_mv = mv
+        # New 1a invalidates previous Phase 1b — clear until 1b is re-run.
+        self.native_oc_anodes_in_mv = None
+        self.native_oc_anodes_measured_at = None
+        self.galvanic_offset_mv = None
+        self.galvanic_offset_service_recommended = False
         now = time.time()
         ts = (
             time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -856,7 +900,14 @@ class ReferenceElectrode:
         )
         self.native_measured_at = ts
         self.native_measured_unix = now if now > 1_000_000_000 else None
-        payload: dict[str, Any] = {"native_mv": mv, "native_measured_at": ts}
+        payload: dict[str, Any] = {
+            "native_mv": mv,
+            "native_measured_at": ts,
+            "native_oc_anodes_in_mv": None,
+            "native_oc_anodes_measured_at": None,
+            "galvanic_offset_mv": None,
+            "galvanic_offset_service_recommended": False,
+        }
         if self.native_measured_unix is not None:
             payload["native_measured_unix"] = round(self.native_measured_unix, 3)
         recap = float(getattr(cfg, "NATIVE_RECAPTURE_S", 24 * 3600.0))
@@ -866,6 +917,82 @@ class ReferenceElectrode:
             self.native_temp_f = round(float(native_temp_f), 2)
             payload["native_temp_f"] = self.native_temp_f
         _update_comm_file(payload)
+        # Do not clear galvanic_offset_baseline_mv — it is the first-install reference for health.
+
+    def save_native_oc_anodes_in(
+        self,
+        mv: float,
+        *,
+        true_native_mv: float,
+    ) -> None:
+        """
+        Phase 1b: OCP with anodes in bath, MOSFETs off. Persists offset vs Phase 1a
+        (``true_native_mv``) and sets service flag if offset vs first-install baseline
+        falls below GALVANIC_OFFSET_SERVICE_FRACTION.
+        """
+        now = time.time()
+        ts = (
+            time.strftime("%Y-%m-%dT%H:%M:%S")
+            if now > 1_000_000_000
+            else "CLOCK_UNSYNCED"
+        )
+        self.native_oc_anodes_in_mv = float(mv)
+        self.native_oc_anodes_measured_at = ts
+        off = round(float(true_native_mv) - float(mv), 2)
+        self.galvanic_offset_mv = off
+        self.galvanic_offset_service_recommended = False
+
+        existing: dict = {}
+        if _COMM_FILE.exists():
+            try:
+                existing = json.loads(_COMM_FILE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        if existing.get("galvanic_offset_baseline_mv") is None and off > 0:
+            # First time we have a full 1a+1b pair — anchor health trending.
+            self.galvanic_offset_baseline_mv = off
+        else:
+            try:
+                g0 = existing.get("galvanic_offset_baseline_mv")
+                self.galvanic_offset_baseline_mv = (
+                    float(g0) if g0 is not None else self.galvanic_offset_baseline_mv
+                )
+            except (TypeError, ValueError):
+                self.galvanic_offset_baseline_mv = self.galvanic_offset_baseline_mv
+
+        frac = float(getattr(cfg, "GALVANIC_OFFSET_SERVICE_FRACTION", 0.2))
+        bl = self.galvanic_offset_baseline_mv
+        if bl is not None and bl > 0 and off < frac * bl:
+            self.galvanic_offset_service_recommended = True
+            print(
+                f"[reference] Galvanic offset {off:.1f} mV < {frac:.0%} of install baseline "
+                f"({bl:.1f} mV) — anode service / replacement may be needed (see "
+                f"docs/galvanic-offset-calibration.md).",
+                file=sys.stderr,
+            )
+
+        upd: dict[str, Any] = {
+            "native_oc_anodes_in_mv": round(float(mv), 2),
+            "native_oc_anodes_measured_at": ts,
+            "galvanic_offset_mv": off,
+            "galvanic_offset_service_recommended": self.galvanic_offset_service_recommended,
+        }
+        if self.galvanic_offset_baseline_mv is not None:
+            upd["galvanic_offset_baseline_mv"] = round(
+                float(self.galvanic_offset_baseline_mv), 2
+            )
+        _update_comm_file(upd)
+
+    def baseline_mv_for_shift(self) -> float | None:
+        """
+        Open-circuit baseline for shift = this − raw (when 1b was run, use in-situ OCP
+        with anodes installed; else Phase 1a true native only).
+        """
+        if self.native_oc_anodes_in_mv is not None:
+            return float(self.native_oc_anodes_in_mv)
+        return self.native_mv
 
     def read(
         self,
@@ -918,7 +1045,7 @@ class ReferenceElectrode:
         rest_current_ok: callable | None = None,  # type: ignore[valid-type]
         static_gate_low: callable | None = None,  # type: ignore[valid-type]
         gate_restore: callable | None = None,  # type: ignore[valid-type]
-        on_relax_progress: Callable[[float, int], None] | None = None,
+        on_relax_progress: Callable[[float, int, float | None], None] | None = None,
     ) -> tuple[float | None, str]:
         """
         Capture a fresh native baseline per docs/iccp-requirements.md §8.1 Phase 1.
@@ -962,20 +1089,20 @@ class ReferenceElectrode:
                 samples: list[tuple[float, float]] = []
                 t0 = time.monotonic()
                 if on_relax_progress is not None:
-                    on_relax_progress(t_relax, 0)
+                    on_relax_progress(t_relax, 0, None)
                 _last_relax_log = t0
                 while time.monotonic() - t0 < t_relax:
-                    if on_relax_progress is not None:
-                        _now = time.monotonic()
-                        if _now - _last_relax_log >= _relax_log_every_s:
-                            _rem = max(0.0, t_relax - (_now - t0))
-                            on_relax_progress(_rem, len(samples))
-                            _last_relax_log = _now
                     mv = self.read(temp_f=temp_f)
                     if not SIM_MODE and _REF_LAST_READ_FAILED:
                         last_reason = "read_failed_during_capture"
                         break
                     samples.append((time.monotonic() - t0, float(mv)))
+                    if on_relax_progress is not None:
+                        _now = time.monotonic()
+                        if _now - _last_relax_log >= _relax_log_every_s:
+                            _rem = max(0.0, t_relax - (_now - t0))
+                            on_relax_progress(_rem, len(samples), float(mv))
+                            _last_relax_log = _now
                     time.sleep(interval)
                 else:
                     if len(samples) < 3:
@@ -1036,11 +1163,12 @@ class ReferenceElectrode:
         *,
         temp_f: float | None = None,
     ) -> float | None:
-        """Polarization vs native: native_mv − raw (positive when reading drops under CP)."""
-        if self.native_mv is None:
+        """Polarization vs open-circuit baseline: baseline_mv_for_shift − raw."""
+        bl = self.baseline_mv_for_shift()
+        if bl is None:
             return None
         raw = self.read(duties, statuses, temp_f=temp_f)
-        return round(self.native_mv - raw, 2)
+        return round(bl - raw, 2)
 
     def read_raw_and_shift(
         self,
@@ -1054,9 +1182,10 @@ class ReferenceElectrode:
         except RuntimeError as e:
             print(e)
             return 0.0, None
-        if self.native_mv is None:
+        bl = self.baseline_mv_for_shift()
+        if bl is None:
             return raw, None
-        return raw, round(self.native_mv - raw, 2)
+        return raw, round(bl - raw, 2)
 
     def collect_oc_decay_samples(self) -> list[tuple[float, float]]:
         """
@@ -1154,7 +1283,7 @@ class ReferenceElectrode:
         return samples
 
     def protection_status(self, shift_mv: float | None = None) -> str:
-        """Band vs TARGET_SHIFT_MV / MAX_SHIFT_MV for shift = native − raw (not a CP survey criterion)."""
+        """Band vs TARGET_SHIFT_MV / MAX_SHIFT_MV for shift = baseline − raw (not a CP survey criterion)."""
         if shift_mv is None:
             return "UNKNOWN"
         lo = getattr(cfg, "TARGET_SHIFT_MV", 100)
