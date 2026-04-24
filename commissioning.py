@@ -23,8 +23,14 @@ from console_ui import (
     commission_ina_compact,
     commission_log_main,
     print_commission_section,
+    print_status_table,
 )
-from reference import ReferenceElectrode, _update_comm_file, find_oc_curve_metrics
+from reference import (
+    ReferenceElectrode,
+    _update_comm_file,
+    find_oc_curve_metrics,
+    ref_hw_message,
+)
 
 if TYPE_CHECKING:
     from control import Controller
@@ -41,27 +47,90 @@ def _commission_oc_debug() -> bool:
     )
 
 
-# Elapsed + skip-hint while blocking on anode Enter (controlling TTY only).
-_TTY_ANODE_WAIT_SELECT_S: float = 1.0
+# Skip-hint to stderr while blocking on anode Enter. Select period matches control tick.
 _TTY_ANODE_SKIP_HINT_S: float = 75.0
 # Commission-only regulate / settle: time-remaining to instant-off.
 _COMMISSION_PUMP_PROGRESS_S: float = 20.0
 
 
-def _readline_wait_enter_for_anode_prompt() -> None:
+def _print_commission_status_like_start(
+    controller: Any,
+    reference: ReferenceElectrode,
+    sim_state: Any | None,
+    *,
+    tick_dt_s: float | None = None,
+) -> None:
+    """One ``iccp start``-style status table: INA, PWM, state, ref — no ``latest.json`` row."""
+    import sensors
+
+    if sensors.SIM_MODE and sim_state is not None:
+        readings = sensors.read_all_sim(sim_state)
+    else:
+        readings = sensors.read_all_real()
+    faults, fault_latched = controller.update(readings)
+    duties = controller.duties()
+    if sim_state is not None:
+        sim_state.duties = dict(duties)
+    ch_status = controller.channel_statuses()
+    any_wet = controller.any_wet()
+    temp_f = temp_mod.read_fahrenheit()
+    ref_raw, ref_shift = reference.read_raw_and_shift(
+        duties=duties, statuses=ch_status, temp_f=temp_f
+    )
+    ref_band = (
+        reference.protection_status(ref_shift) if ref_shift is not None else "—"
+    )
+    ref_valid, ref_valid_reason = reference.ref_valid()
+    controller.advance_shift_fsm(
+        readings,
+        shift_mv=ref_shift,
+        ref_valid=ref_valid,
+        ref_valid_reason=ref_valid_reason,
+    )
+    z_med = {i: controller.median_impedance_ohm(i) for i in range(cfg.NUM_CHANNELS)}
+    print_status_table(
+        readings,
+        faults,
+        duties,
+        fault_latched,
+        ch_status,
+        any_wet,
+        ref_raw,
+        ref_shift,
+        ref_band,
+        ref_hw_message(),
+        temp_f,
+        "",
+        z_median=z_med,
+        live_ch=None,
+        ctrl=controller,
+        tick_dt_s=tick_dt_s,
+        path_tags=controller.channel_path_tags(),
+    )
+
+
+def _readline_wait_enter_for_anode_prompt(
+    *,
+    on_select_timeout: Callable[[], None] | None = None,
+) -> None:
     """
     Block until the operator sends a line (Enter).
 
-    Prefer ``/dev/tty`` (binary, unbuffered) + :func:`select` so we can show **elapsed
-    time** on ``stderr`` while waiting; a ``\\r`` line is cleared with a final newline
-    on exit. If ``/dev/tty`` cannot be opened, falls back to :func:`input` (no live timer).
-    (Same idea as :func:`getpass.getpass` for avoiding broken ``sys.stdin``.)
+    Uses ``/dev/tty`` (binary) + :func:`select` with a timeout of ``SAMPLE_INTERVAL_S``:
+    on each timeout, optional ``on_select_timeout`` (e.g. same status table as
+    :func:`iccp start`). Skip hints to ``stderr`` every :data:`_TTY_ANODE_SKIP_HINT_S``.
+    If ``/dev/tty`` cannot be opened, falls back to a single tick + :func:`input()`.
     """
-    t0 = time.monotonic()
-    last_skip_announce = t0
+    poll = max(0.05, float(getattr(cfg, "SAMPLE_INTERVAL_S", 0.5)))
+    last_skip_announce = time.monotonic()
     try:
         f = open("/dev/tty", "rb", buffering=0)
     except OSError:
+        if on_select_timeout is not None:
+            try:
+                on_select_timeout()
+            except (OSError, ValueError) as e:
+                print(f"[main] status line (anode wait): {e}", file=sys.stderr)
         try:
             input()
         except (EOFError, KeyboardInterrupt) as e:
@@ -72,26 +141,23 @@ def _readline_wait_enter_for_anode_prompt() -> None:
     try:
         while True:
             try:
-                r, _, _ = select.select(
-                    [fd], [], [], float(_TTY_ANODE_WAIT_SELECT_S)
-                )
+                r, _, _ = select.select([fd], [], [], float(poll))
             except (OSError, ValueError):
-                # e.g. fd not selectable — best-effort read
                 f.readline()
                 break
             if r:
                 f.readline()
                 break
-            elapsed = time.monotonic() - t0
-            mm, ss = divmod(int(elapsed), 60)
-            sys.stderr.write(
-                f"\r[main] Waiting for Enter — {mm:d}:{ss:02d} elapsed  "
-            )
-            sys.stderr.flush()
+            if on_select_timeout is not None:
+                try:
+                    on_select_timeout()
+                except (OSError, ValueError) as e:
+                    print(f"[main] status line (anode wait): {e}", file=sys.stderr)
             if time.monotonic() - last_skip_announce >= float(_TTY_ANODE_SKIP_HINT_S):
-                sys.stderr.write(
-                    "\n[main] To skip anode pauses: set ICCP_COMMISSION_NO_ANODE_PROMPTS=1 or "
-                    " use iccp commission --no-anode-prompts\n"
+                print(
+                    "[main] To skip anode pauses: set ICCP_COMMISSION_NO_ANODE_PROMPTS=1 or "
+                    " use iccp commission --no-anode-prompts",
+                    file=sys.stderr,
                 )
                 last_skip_announce = time.monotonic()
     except KeyboardInterrupt:
@@ -99,11 +165,6 @@ def _readline_wait_enter_for_anode_prompt() -> None:
     finally:
         try:
             f.close()
-        except OSError:
-            pass
-        try:
-            sys.stderr.write("\n")
-            sys.stderr.flush()
         except OSError:
             pass
 
@@ -135,9 +196,13 @@ def _anode_placement_pause(
     step: str,
     *,
     anode_placement_prompts: bool | None,
+    controller: Any | None = None,
+    reference: ReferenceElectrode | None = None,
+    sim_state: Any | None = None,
 ) -> None:
     if not _anode_placement_should_interact(anode_placement_prompts):
         return
+    t_relax = float(getattr(cfg, "T_RELAX", 30.0))
     next_on_enter = {
         "before_phase1": "native Ecorr / baseline (Phase 1, open-circuit)",
         "after_phase1": "current ramp toward target shift (Phase 2)",
@@ -157,7 +222,31 @@ def _anode_placement_pause(
         print_commission_section(f"Anode placement (internal: {step!r})")
         print("[main] Press Enter when ready.")
     print(f"[main] Next on Enter: {next_on_enter}")
-    _readline_wait_enter_for_anode_prompt()
+    if step == "before_phase1":
+        print(
+            f"[main] After Enter, the reference window (T_RELAX = {t_relax:g} s) "
+            "will show time remaining until the median is taken."
+        )
+    on_timeout: Callable[[], None] | None = None
+    if (
+        controller is not None
+        and reference is not None
+    ):
+        _last = time.monotonic()
+
+        def _on_timeout() -> None:
+            nonlocal _last
+            now = time.monotonic()
+            _print_commission_status_like_start(
+                controller,
+                reference,
+                sim_state,
+                tick_dt_s=now - _last,
+            )
+            _last = now
+
+        on_timeout = _on_timeout
+    _readline_wait_enter_for_anode_prompt(on_select_timeout=on_timeout)
 
 
 def _native_capture_fail_hint(cap_reason: str) -> str:
@@ -853,6 +942,8 @@ def _phase1_spec_native_capture(
     reference: ReferenceElectrode,
     controller: Any,
     sim_state: Any | None,
+    *,
+    on_relax_progress: Callable[[float, int], None] | None = None,
 ) -> tuple[float | None, str]:
     """Phase 1 per docs/iccp-requirements.md §3.3: median native, rest gate, static LOW."""
     controller.all_outputs_off()
@@ -891,6 +982,7 @@ def _phase1_spec_native_capture(
                     # calls gate_restore when non-None).
                     static_gate_low=None if use_static_ctx else _static_low,
                     gate_restore=None if use_static_ctx else _restore,
+                    on_relax_progress=on_relax_progress,
                 )
             finally:
                 controller.set_thermal_pause(False)
@@ -919,8 +1011,24 @@ def run(
         print_commission_section("Phase 1 — native Ecorr (open-circuit, spec capture)")
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
-    _anode_placement_pause("before_phase1", anode_placement_prompts=anode_placement_prompts)
-    native_mv, cap_reason = _phase1_spec_native_capture(reference, controller, sim_state)
+    _anode_placement_pause(
+        "before_phase1",
+        anode_placement_prompts=anode_placement_prompts,
+        controller=controller,
+        reference=reference,
+        sim_state=sim_state,
+    )
+
+    def on_relax_progress(remaining: float, n: int) -> None:
+        if not verbose:
+            return
+        commission_log_main(
+            f"Reference window: ~{remaining:.0f} s until median; {n} sample(s) so far"
+        )
+
+    native_mv, cap_reason = _phase1_spec_native_capture(
+        reference, controller, sim_state, on_relax_progress=on_relax_progress
+    )
     if native_mv is None:
         raise RuntimeError(
             f"Phase 1 native capture failed: {cap_reason}. "
@@ -939,7 +1047,13 @@ def run(
             f"goal ≥{cfg.TARGET_SHIFT_MV} mV shift → ref ≈{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
         )
 
-    _anode_placement_pause("after_phase1", anode_placement_prompts=anode_placement_prompts)
+    _anode_placement_pause(
+        "after_phase1",
+        anode_placement_prompts=anode_placement_prompts,
+        controller=controller,
+        reference=reference,
+        sim_state=sim_state,
+    )
 
     original_target_ma = float(cfg.TARGET_MA)
     wto = float(getattr(cfg, "COMMISSIONING_WALL_TIMEOUT_S", 0.0) or 0.0)
@@ -1145,8 +1259,24 @@ def run_native_only(
         print_commission_section("Phase 1 — native only (re-capture baseline)")
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
-    _anode_placement_pause("before_phase1", anode_placement_prompts=anode_placement_prompts)
-    native_mv, reason = _phase1_spec_native_capture(reference, controller, sim_state)
+    _anode_placement_pause(
+        "before_phase1",
+        anode_placement_prompts=anode_placement_prompts,
+        controller=controller,
+        reference=reference,
+        sim_state=sim_state,
+    )
+
+    def on_relax_progress(remaining: float, n: int) -> None:
+        if not verbose:
+            return
+        commission_log_main(
+            f"Reference window: ~{remaining:.0f} s until median; {n} sample(s) so far"
+        )
+
+    native_mv, reason = _phase1_spec_native_capture(
+        reference, controller, sim_state, on_relax_progress=on_relax_progress
+    )
 
     if native_mv is None:
         log(f"native capture failed: {reason}")

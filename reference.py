@@ -26,6 +26,7 @@ import statistics
 import sys
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import config.settings as cfg
@@ -896,6 +897,7 @@ class ReferenceElectrode:
         rest_current_ok: callable | None = None,  # type: ignore[valid-type]
         static_gate_low: callable | None = None,  # type: ignore[valid-type]
         gate_restore: callable | None = None,  # type: ignore[valid-type]
+        on_relax_progress: Callable[[float, int], None] | None = None,
     ) -> tuple[float | None, str]:
         """
         Capture a fresh native baseline per docs/iccp-requirements.md §8.1 Phase 1.
@@ -919,6 +921,7 @@ class ReferenceElectrode:
             except Exception as e:  # pragma: no cover — best effort
                 print(f"[reference] capture_native: static_gate_low raised: {e}", file=sys.stderr)
         last_reason = "unknown"
+        _relax_log_every_s = 2.0
         try:
             for attempt in range(retries + 1):
                 if rest_current_ok is not None:
@@ -937,7 +940,16 @@ class ReferenceElectrode:
                         continue
                 samples: list[tuple[float, float]] = []
                 t0 = time.monotonic()
+                if on_relax_progress is not None:
+                    on_relax_progress(t_relax, 0)
+                _last_relax_log = t0
                 while time.monotonic() - t0 < t_relax:
+                    if on_relax_progress is not None:
+                        _now = time.monotonic()
+                        if _now - _last_relax_log >= _relax_log_every_s:
+                            _rem = max(0.0, t_relax - (_now - t0))
+                            on_relax_progress(_rem, len(samples))
+                            _last_relax_log = _now
                     mv = self.read(temp_f=temp_f)
                     if not SIM_MODE and _REF_LAST_READ_FAILED:
                         last_reason = "read_failed_during_capture"

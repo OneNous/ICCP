@@ -240,10 +240,10 @@ REGULATE_IDLE_OFF_BELOW_MA = 0.05
 DUTY_PROTECT_MAX = 80.0
 
 # Hard ceiling on effective cell drive: Vc ≈ bus_v × (PWM%/100) ≤ this (clamps max duty).
-# Example at bus≈4.85V: 1.6V → max duty ≈33%; 3.0V → ≈62%. A low cap with high-Z tap water
-# limits current (Vc/R) and can block polarization / commissioning — raise for bench, lower
-# for production cell chemistry, or set 0 to disable (PWM_MAX_DUTY only).
-VCELL_HARD_MAX_V = 3.0
+# Example at bus≈4.85V: 1.6V → max duty ≈33%; 3.0V → ≈62%; 4.8V → ≈99%. A low cap with
+# high-Z tap water limits current (Vc/R) and can block polarization / commissioning — raise
+# for bench, lower for production cell chemistry, or set 0 to disable (PWM_MAX_DUTY only).
+VCELL_HARD_MAX_V = 4.8
 
 # Rolling window for median effective Ω logging (per channel).
 IMPEDANCE_MEDIAN_WINDOW = 32
