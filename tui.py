@@ -6,7 +6,8 @@ Launch (after ``pip install -e .`` from repo root):
     iccp tui
 
 Live feed: ``latest.json`` (same as web dashboard). Trends: SQLite ``readings``.
-Match ``COILSHIELD_LOG_DIR`` / ``--log-dir`` to the controller (``iccp start``).
+With no ``COILSHIELD_LOG_DIR`` / ``--log-dir``, Linux follows a running ``iccp start``; else set
+env to match the controller explicitly.
 
 Tabs: Live | Diagnostics | Commands | Trends. Keys: 1–4 tabs, ? help, q quit.
 
@@ -26,10 +27,14 @@ import threading
 import time
 from pathlib import Path
 
-from config.argv_log_dir import apply_coilshield_log_dir_from_argv
+from config.argv_log_dir import (
+    apply_coilshield_log_dir_from_argv,
+    apply_coilshield_log_dir_from_running_controller_if_unset,
+)
 from config.argv_channels import apply_coilshield_active_channels_from_argv
 
 apply_coilshield_log_dir_from_argv(sys.argv[1:])
+apply_coilshield_log_dir_from_running_controller_if_unset()
 if apply_coilshield_active_channels_from_argv(sys.argv[1:]) == 2:
     raise SystemExit(2)
 

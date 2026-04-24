@@ -488,6 +488,7 @@ def run_iccp_forever(args: Namespace) -> int:
                         f"anodes: {wet_map}  (W=wet  .=dry)"
                     )
                 if ref_log_tick:
+                    _ch_rows = cfg.active_channel_indices_list()
                     print_status_table(
                         readings,
                         faults,
@@ -510,6 +511,7 @@ def run_iccp_forever(args: Namespace) -> int:
                         tick_dt_s=v_dt,
                         path_tags=ctrl.channel_path_tags(),
                         include_pwm_path_caption=False,
+                        channels=_ch_rows,
                     )
                 elif temp_in_band:
                     print_verbose_tick_line(
@@ -524,6 +526,7 @@ def run_iccp_forever(args: Namespace) -> int:
                         temp_f,
                         v_dt,
                         sim_line=sim_line,
+                        channels=cfg.active_channel_indices_list(),
                     )
 
             elif faults or fault_latched:

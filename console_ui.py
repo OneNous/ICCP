@@ -28,13 +28,19 @@ def commission_log_main(msg: str) -> None:
     print(f"[main] {msg}")
 
 
-def commission_ina_compact(readings: Any, *, num_channels: int) -> str:
-    """Shorter one-line shunt report for each ramp (same data as the legacy INA delivered line)."""
+def commission_ina_compact(
+    readings: Any,
+    *,
+    num_channels: int,
+    channels: list[int] | None = None,
+) -> str:
+    """Shorter one-line shunt report per anode (``channels`` defaults to ``0..num-1``)."""
     segs: list[str] = []
     total = 0.0
     ok = False
     n = int(num_channels)
-    for ch in range(n):
+    ch_iter = channels if channels is not None else list(range(n))
+    for ch in ch_iter:
         r = readings.get(ch, {})
         tag = f"A{ch + 1}"
         if r.get("ok"):
@@ -94,6 +100,7 @@ def print_status_table(
     path_tags: dict[int, str] | None = None,
     *,
     include_pwm_path_caption: bool = True,
+    channels: list[int] | None = None,
 ) -> None:
     try:
         if sim_line:
@@ -131,10 +138,15 @@ def print_status_table(
 
         i_floor = float(getattr(_cfg, "Z_COMPUTE_I_A_MIN", 1e-6))
         w = 152
+        row_ch = (
+            channels
+            if channels is not None
+            else list(range(int(_cfg.NUM_CHANNELS)))
+        )
         if ctrl is not None and hasattr(ctrl, "channel_target_ma"):
             parts = [
                 f"{anode_label(i)}={ctrl.channel_target_ma(i):.3f}"
-                for i in range(int(_cfg.NUM_CHANNELS))
+                for i in row_ch
             ]
             print(
                 "  I_target (mA) — PROTECTING servos to this; REGULATE ramps toward it; "
@@ -147,8 +159,8 @@ def print_status_table(
             f"{'P(W)':<9} {'E(J)':<10} {'η':<10}"
         )
         print("─" * w)
-        for i in sorted(readings.keys()):
-            r = readings[i]
+        for i in row_ch:
+            r = readings.get(i, {})
             st = ch_status.get(i, "?")
             ptag = (path_tags or {}).get(i, "—")
             zm = z_median.get(i) if z_median else None
@@ -233,6 +245,8 @@ def print_verbose_tick_line(
     temp_f: float | None,
     tick_dt_s: float | None,
     sim_line: str = "",
+    *,
+    channels: list[int] | None = None,
 ) -> None:
     """One line per control tick in verbose mode (between full :func:`print_status_table` dumps)."""
     if sim_line:
@@ -240,7 +254,8 @@ def print_verbose_tick_line(
     import config.settings as _cfg
 
     n = int(_cfg.NUM_CHANNELS)
-    ina = commission_ina_compact(readings, num_channels=n)
+    chs = channels if channels is not None else list(range(n))
+    ina = commission_ina_compact(readings, num_channels=n, channels=chs)
     shift_s = (
         f"{ref_shift:+.0f} mV"
         if ref_shift is not None
@@ -256,7 +271,7 @@ def print_verbose_tick_line(
     )
     st_s = " ".join(
         f"{anode_label(i)}={ch_status.get(i, '?')[:4]}"
-        for i in range(n)
+        for i in chs
     )
     print(
         f"[tick]{dt}  {st_s}  |  {ina}  |  "

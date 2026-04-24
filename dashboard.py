@@ -13,9 +13,10 @@ Reads from the same ``config.settings`` as the controller. Telemetry directory:
 - **Environment:** ``COILSHIELD_LOG_DIR`` or ``ICCP_LOG_DIR`` (absolute path recommended).
 - **CLI (before config import):** ``iccp dashboard --log-dir /abs/path/to/logs --host 0.0.0.0``
 
-If the dashboard shows **stale** ``latest.json`` while the controller is running, the
-controller is almost certainly writing to a **different** log directory — match
-env/``--log-dir`` to the controller.
+If ``COILSHIELD_LOG_DIR`` / ``ICCP_LOG_DIR`` are **unset**, the dashboard (Linux) tries to
+inherit the same directory as a running ``iccp start`` process (via ``/proc``). You can still
+override with ``--log-dir`` or env. If the feed is stale while the controller runs, set
+``--log-dir`` explicitly to the path the controller uses.
 
 Direct execution (``python3 dashboard.py``) is not supported — it prints a redirect and
 exits. The module stays importable so ``iccp dashboard`` can drive it.
@@ -43,9 +44,13 @@ from pathlib import Path
 
 def _apply_dashboard_argv_log_dir() -> None:
     """Set COILSHIELD_LOG_DIR from argv before ``import config.settings`` (LOG_DIR is fixed at import)."""
-    from config.argv_log_dir import apply_coilshield_log_dir_from_argv
+    from config.argv_log_dir import (
+        apply_coilshield_log_dir_from_argv,
+        apply_coilshield_log_dir_from_running_controller_if_unset,
+    )
 
     apply_coilshield_log_dir_from_argv(sys.argv[1:])
+    apply_coilshield_log_dir_from_running_controller_if_unset()
 
 
 _apply_dashboard_argv_log_dir()

@@ -165,6 +165,7 @@ def _print_help() -> None:
                              must match dashboard / tui).
                              Anode subset: --channels 0,2 or --channel 0 (0-based), or
                              --anodes 1,3 or --anode 1 (1-based; singular = one anode only).
+                             Status tables / INA lines show only selected anodes (same as iccp start).
                              Requires SHARED_RETURN_PWM = False. Same flags on tui, dashboard,
                              commission, probe. Or env COILSHIELD_ACTIVE_CHANNELS=0,2.
                              Field tunables: COILSHIELD_TARGET_MA, COILSHIELD_REF_ADS_SCALE,
@@ -179,8 +180,9 @@ def _print_help() -> None:
                              then anodes in (before Phase 2). Disabled for sim, pipes, or
                              COMMISSIONING_ANODE_PLACEMENT_PROMPTS=0 / ICCP_COMMISSION_NO_ANODE_PROMPTS=1.
                              If Enter is ignored, pass --no-anode-prompts (reads are from /dev/tty first).
-                             While waiting for Enter, [main] shows elapsed time on stderr; long
-                             regulate steps show time until instant-off.
+                             With --anode / --anodes / --channels, INA status lines list only those anodes.
+                             While waiting for Enter, a read-only INA line every few seconds (outputs off);
+                             long regulate steps show time until instant-off.
 
   iccp probe [args ...]      Hardware probe (I2C, INA219 smbus2, ADS1115, DS18B20, PWM).
                              See `iccp probe --help` for options.

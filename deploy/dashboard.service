@@ -3,8 +3,9 @@
 # INSTALL (on the Pi):
 #   1. sudo cp deploy/dashboard.service /etc/systemd/system/iccp-dashboard.service
 #   2. Edit User, Group, WorkingDirectory, ExecStart, and Environment to match your install.
-#      Use the SAME COILSHIELD_LOG_DIR as the iccp controller unit so /api/live reads the
-#      same latest.json the controller writes.
+#      If you omit COILSHIELD_LOG_DIR here, ``iccp dashboard`` on Linux copies the controller's
+#      telemetry dir from a running ``iccp start`` (``/proc``). Setting Environment= explicitly
+#      still overrides that and is fine for non-default layouts.
 #   3. sudo systemctl daemon-reload
 #   4. sudo systemctl enable --now iccp-dashboard
 #

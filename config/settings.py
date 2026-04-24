@@ -569,6 +569,15 @@ def is_channel_active(ch: int) -> bool:
     return ch in ac
 
 
+def active_channel_indices_list() -> list[int]:
+    """Sorted 0-based indices for UI rows when ``COILSHIELD_ACTIVE_CHANNELS`` is a subset."""
+    ac = ACTIVE_CHANNEL_INDICES
+    nch = int(NUM_CHANNELS)
+    if ac is None:
+        return list(range(nch))
+    return sorted(int(x) for x in ac)
+
+
 def validate_active_channel_selection() -> None:
     """
     :func:`is_channel_active` is strict subset of ``0..NUM_CHANNELS-1``;

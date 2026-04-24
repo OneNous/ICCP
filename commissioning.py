@@ -23,7 +23,6 @@ from console_ui import (
     commission_ina_compact,
     commission_log_main,
     print_commission_section,
-    print_status_table,
 )
 from reference import (
     ReferenceElectrode,
@@ -47,65 +46,41 @@ def _commission_oc_debug() -> bool:
     )
 
 
-# Skip-hint to stderr while blocking on anode Enter. Select period matches control tick.
+# Skip-hint to stderr while blocking on anode Enter.
 _TTY_ANODE_SKIP_HINT_S: float = 75.0
+# Passive status line while waiting for Enter (no controller.update — gates must stay off).
+_COMMISSION_ANODE_WAIT_STATUS_S: float = 5.0
 # Commission-only regulate / settle: time-remaining to instant-off.
 _COMMISSION_PUMP_PROGRESS_S: float = 20.0
 
 
-def _print_commission_status_like_start(
+def _print_commission_anode_wait_line(
     controller: Any,
     reference: ReferenceElectrode,
     sim_state: Any | None,
-    *,
-    tick_dt_s: float | None = None,
 ) -> None:
-    """One ``iccp start``-style status table: INA, PWM, state, ref — no ``latest.json`` row."""
+    """INA + PWM% + ref raw — read-only (does not run the ICCP control tick)."""
     import sensors
 
     if sensors.SIM_MODE and sim_state is not None:
         readings = sensors.read_all_sim(sim_state)
     else:
         readings = sensors.read_all_real()
-    faults, fault_latched = controller.update(readings)
-    duties = controller.duties()
-    if sim_state is not None:
-        sim_state.duties = dict(duties)
-    ch_status = controller.channel_statuses()
-    any_wet = controller.any_wet()
+    duties = {
+        ch: float(controller.output_duty_pct(ch)) for ch in range(cfg.NUM_CHANNELS)
+    }
     temp_f = temp_mod.read_fahrenheit()
-    ref_raw, ref_shift = reference.read_raw_and_shift(
-        duties=duties, statuses=ch_status, temp_f=temp_f
+    ref_mv = float(reference.read(temp_f=temp_f))
+    chs = cfg.active_channel_indices_list()
+    ina = commission_ina_compact(
+        readings, num_channels=cfg.NUM_CHANNELS, channels=chs
     )
-    ref_band = (
-        reference.protection_status(ref_shift) if ref_shift is not None else "—"
-    )
-    ref_valid, ref_valid_reason = reference.ref_valid()
-    controller.advance_shift_fsm(
-        readings,
-        shift_mv=ref_shift,
-        ref_valid=ref_valid,
-        ref_valid_reason=ref_valid_reason,
-    )
-    z_med = {i: controller.median_impedance_ohm(i) for i in range(cfg.NUM_CHANNELS)}
-    print_status_table(
-        readings,
-        faults,
-        duties,
-        fault_latched,
-        ch_status,
-        any_wet,
-        ref_raw,
-        ref_shift,
-        ref_band,
-        ref_hw_message(),
-        temp_f,
-        "",
-        z_median=z_med,
-        live_ch=None,
-        ctrl=controller,
-        tick_dt_s=tick_dt_s,
-        path_tags=controller.channel_path_tags(),
+    duty_s = " ".join(f"A{ch + 1}={duties[ch]:.0f}%" for ch in chs)
+    ts = time.strftime("%H:%M:%S")
+    t_s = f"{temp_f:.1f}°F" if temp_f is not None else "—"
+    print(
+        f"[commission] {ts}  (anode wait, read-only)  {ina}  |  {duty_s}  |  "
+        f"ref(raw)={ref_mv:.1f} mV  |  T={t_s}"
     )
 
 
@@ -121,7 +96,7 @@ def _readline_wait_enter_for_anode_prompt(
     :func:`iccp start`). Skip hints to ``stderr`` every :data:`_TTY_ANODE_SKIP_HINT_S``.
     If ``/dev/tty`` cannot be opened, falls back to a single tick + :func:`input()`.
     """
-    poll = max(0.05, float(getattr(cfg, "SAMPLE_INTERVAL_S", 0.5)))
+    poll = min(0.5, max(0.05, float(getattr(cfg, "SAMPLE_INTERVAL_S", 0.5))))
     last_skip_announce = time.monotonic()
     try:
         f = open("/dev/tty", "rb", buffering=0)
@@ -227,23 +202,21 @@ def _anode_placement_pause(
             f"[main] After Enter, the reference window (T_RELAX = {t_relax:g} s) "
             "will show time remaining until the median is taken."
         )
+        print(
+            f"[main] While waiting: read-only INA/ref line every "
+            f"{int(_COMMISSION_ANODE_WAIT_STATUS_S)} s (outputs stay off; no control tick)."
+        )
     on_timeout: Callable[[], None] | None = None
-    if (
-        controller is not None
-        and reference is not None
-    ):
-        _last = time.monotonic()
+    if controller is not None and reference is not None:
+        _last_status_mono = 0.0
 
         def _on_timeout() -> None:
-            nonlocal _last
+            nonlocal _last_status_mono
             now = time.monotonic()
-            _print_commission_status_like_start(
-                controller,
-                reference,
-                sim_state,
-                tick_dt_s=now - _last,
-            )
-            _last = now
+            if now - _last_status_mono < float(_COMMISSION_ANODE_WAIT_STATUS_S):
+                return
+            _last_status_mono = now
+            _print_commission_anode_wait_line(controller, reference, sim_state)
 
         on_timeout = _on_timeout
     _readline_wait_enter_for_anode_prompt(on_select_timeout=on_timeout)
@@ -1011,13 +984,13 @@ def run(
         print_commission_section("Phase 1 — native Ecorr (open-circuit, spec capture)")
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
-    _anode_placement_pause(
-        "before_phase1",
-        anode_placement_prompts=anode_placement_prompts,
-        controller=controller,
-        reference=reference,
-        sim_state=sim_state,
-    )
+        _anode_placement_pause(
+            "before_phase1",
+            anode_placement_prompts=anode_placement_prompts,
+            controller=controller,
+            reference=reference,
+            sim_state=sim_state,
+        )
 
     def on_relax_progress(remaining: float, n: int) -> None:
         if not verbose:
@@ -1047,13 +1020,14 @@ def run(
             f"goal ≥{cfg.TARGET_SHIFT_MV} mV shift → ref ≈{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
         )
 
-    _anode_placement_pause(
-        "after_phase1",
-        anode_placement_prompts=anode_placement_prompts,
-        controller=controller,
-        reference=reference,
-        sim_state=sim_state,
-    )
+    with _phase1_static_gate_context(controller):
+        _anode_placement_pause(
+            "after_phase1",
+            anode_placement_prompts=anode_placement_prompts,
+            controller=controller,
+            reference=reference,
+            sim_state=sim_state,
+        )
 
     original_target_ma = float(cfg.TARGET_MA)
     wto = float(getattr(cfg, "COMMISSIONING_WALL_TIMEOUT_S", 0.0) or 0.0)
@@ -1128,7 +1102,7 @@ def _phase2_3_ramp_lock(
             r_settle = _sensor_readings(sim_state)
             log(
                 f"Setpoint {current_target_ma:.3f} mA · {RAMP_SETTLE_S:.0f}s regulate  |  "
-                f"{commission_ina_compact(r_settle, num_channels=cfg.NUM_CHANNELS)}"
+                f"{commission_ina_compact(r_settle, num_channels=cfg.NUM_CHANNELS, channels=cfg.active_channel_indices_list())}"
             )
         raw, shift, _depol = _instant_off_ref_mv_and_restore(
             controller,
@@ -1202,7 +1176,7 @@ def _phase2_3_ramp_lock(
         r_lock = _sensor_readings(sim_state)
         log(
             f"After {phase3_s:.0f}s  |  "
-            f"{commission_ina_compact(r_lock, num_channels=cfg.NUM_CHANNELS)}"
+            f"{commission_ina_compact(r_lock, num_channels=cfg.NUM_CHANNELS, channels=cfg.active_channel_indices_list())}"
         )
     _final_raw, final_shift, _f_depol = _instant_off_ref_mv_and_restore(
         controller,
@@ -1274,13 +1248,13 @@ def run_native_only(
         print_commission_section("Phase 1 — native only (re-capture baseline)")
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
-    _anode_placement_pause(
-        "before_phase1",
-        anode_placement_prompts=anode_placement_prompts,
-        controller=controller,
-        reference=reference,
-        sim_state=sim_state,
-    )
+        _anode_placement_pause(
+            "before_phase1",
+            anode_placement_prompts=anode_placement_prompts,
+            controller=controller,
+            reference=reference,
+            sim_state=sim_state,
+        )
 
     def on_relax_progress(remaining: float, n: int) -> None:
         if not verbose:
