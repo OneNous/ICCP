@@ -179,6 +179,8 @@ def _print_help() -> None:
                              then anodes in (before Phase 2). Disabled for sim, pipes, or
                              COMMISSIONING_ANODE_PLACEMENT_PROMPTS=0 / ICCP_COMMISSION_NO_ANODE_PROMPTS=1.
                              If Enter is ignored, pass --no-anode-prompts (reads are from /dev/tty first).
+                             While waiting for Enter, [main] shows elapsed time on stderr; long
+                             regulate steps show time until instant-off.
 
   iccp probe [args ...]      Hardware probe (I2C, INA219 smbus2, ADS1115, DS18B20, PWM).
                              See `iccp probe --help` for options.

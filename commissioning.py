@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import statistics
 import sys
 import time
@@ -40,27 +41,70 @@ def _commission_oc_debug() -> bool:
     )
 
 
+# Elapsed + skip-hint while blocking on anode Enter (controlling TTY only).
+_TTY_ANODE_WAIT_SELECT_S: float = 1.0
+_TTY_ANODE_SKIP_HINT_S: float = 75.0
+# Commission-only regulate / settle: time-remaining to instant-off.
+_COMMISSION_PUMP_PROGRESS_S: float = 20.0
+
+
 def _readline_wait_enter_for_anode_prompt() -> None:
     """
     Block until the operator sends a line (Enter).
 
-    Prefer ``/dev/tty`` on POSIX — same idea as :func:`getpass.getpass`: ``input()`` on
-    ``sys.stdin`` can block forever if stdin is not the TTY the user is typing on (e.g. some
-    ``sudo``/ssh/wrapper cases). The controlling terminal still receives the keys.
+    Prefer ``/dev/tty`` (binary, unbuffered) + :func:`select` so we can show **elapsed
+    time** on ``stderr`` while waiting; a ``\\r`` line is cleared with a final newline
+    on exit. If ``/dev/tty`` cannot be opened, falls back to :func:`input` (no live timer).
+    (Same idea as :func:`getpass.getpass` for avoiding broken ``sys.stdin``.)
     """
-    enc = getattr(sys.stdin, "encoding", None) or "utf-8"
+    t0 = time.monotonic()
+    last_skip_announce = t0
     try:
-        with open(
-            "/dev/tty",
-            "r",
-            encoding=enc,
-            errors="replace",
-        ) as tty:
-            tty.readline()
+        f = open("/dev/tty", "rb", buffering=0)
     except OSError:
         try:
             input()
-        except EOFError:
+        except (EOFError, KeyboardInterrupt) as e:
+            if isinstance(e, KeyboardInterrupt):
+                raise
+        return
+    fd = f.fileno()
+    try:
+        while True:
+            try:
+                r, _, _ = select.select(
+                    [fd], [], [], float(_TTY_ANODE_WAIT_SELECT_S)
+                )
+            except (OSError, ValueError):
+                # e.g. fd not selectable — best-effort read
+                f.readline()
+                break
+            if r:
+                f.readline()
+                break
+            elapsed = time.monotonic() - t0
+            mm, ss = divmod(int(elapsed), 60)
+            sys.stderr.write(
+                f"\r[main] Waiting for Enter — {mm:d}:{ss:02d} elapsed  "
+            )
+            sys.stderr.flush()
+            if time.monotonic() - last_skip_announce >= float(_TTY_ANODE_SKIP_HINT_S):
+                sys.stderr.write(
+                    "\n[main] To skip anode pauses: set ICCP_COMMISSION_NO_ANODE_PROMPTS=1 or "
+                    " use iccp commission --no-anode-prompts\n"
+                )
+                last_skip_announce = time.monotonic()
+    except KeyboardInterrupt:
+        raise
+    finally:
+        try:
+            f.close()
+        except OSError:
+            pass
+        try:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+        except OSError:
             pass
 
 
@@ -94,23 +138,25 @@ def _anode_placement_pause(
 ) -> None:
     if not _anode_placement_should_interact(anode_placement_prompts):
         return
+    next_on_enter = {
+        "before_phase1": "native Ecorr / baseline (Phase 1, open-circuit)",
+        "after_phase1": "current ramp toward target shift (Phase 2)",
+    }.get(step, "next commissioning step")
     if step == "before_phase1":
         print_commission_section("Anode placement — before native Ecorr (Phase 1)")
         print(
-            "[main] Remove anode assemblies from the bath (open-circuit), then press Enter…",
-            end="",
-            flush=True,
+            "[main] Remove anode assemblies from the bath (open-circuit), "
+            "then press Enter."
         )
     elif step == "after_phase1":
         print_commission_section("Anode placement — before current ramp (Phase 2)")
         print(
-            "[main] Install anodes, then press Enter to continue the ramp…",
-            end="",
-            flush=True,
+            "[main] Install anodes, then press Enter to continue the ramp."
         )
     else:  # pragma: no cover
         print_commission_section(f"Anode placement (internal: {step!r})")
-        print("[main] Press Enter…", end="", flush=True)
+        print("[main] Press Enter when ready.")
+    print(f"[main] Next on Enter: {next_on_enter}")
     _readline_wait_enter_for_anode_prompt()
 
 
@@ -752,10 +798,35 @@ def _pump_control(
     *,
     reference: ReferenceElectrode | None = None,
     wall_deadline_mono: float | None = None,
+    commission_log: Callable[[str], None] | None = None,
+    progress_label: str = "Regulate",
+    progress_next: str = "instant-off",
+    progress_interval_s: float = _COMMISSION_PUMP_PROGRESS_S,
 ) -> None:
-    """Run the normal control loop for duration_s (settle / ramp)."""
-    t_end = time.monotonic() + duration_s
+    """Run the normal control loop for duration_s (settle / ramp).
+
+    If ``commission_log`` is set (commissioning UI only), log **time remaining** until
+    ``progress_next`` at ``progress_interval_s`` (monotonic wall, not tick drift).
+    """
+    duration = max(0.0, float(duration_s))
+    t_end = time.monotonic() + duration
+    last_progress_announce: float = 0.0
+    cl = commission_log
+    need_progress = cl is not None and duration > 0.5 and float(progress_interval_s) > 0
+    if need_progress:
+        # First line on first loop iteration.
+        last_progress_announce = time.monotonic() - float(progress_interval_s)
     while time.monotonic() < t_end:
+        if need_progress and cl is not None:
+            now = time.monotonic()
+            if now - last_progress_announce >= float(progress_interval_s):
+                rem = max(0.0, t_end - now)
+                rsec = int(rem)
+                mm, ss = divmod(rsec, 60)
+                cl(
+                    f"{progress_label} — ~{mm:d}:{ss:02d} until {progress_next}"
+                )
+                last_progress_announce = now
         _check_comm_wall_deadline(wall_deadline_mono)
         readings = _sensor_readings(sim_state)
         controller.update(readings)
@@ -934,6 +1005,10 @@ def _phase2_3_ramp_lock(
             RAMP_SETTLE_S,
             reference=reference,
             wall_deadline_mono=comm_deadline,
+            commission_log=log if verbose else None,
+            progress_label="Phase 2 regulate",
+            progress_next="instant-off",
+            progress_interval_s=_COMMISSION_PUMP_PROGRESS_S,
         )
         if verbose:
             r_settle = _sensor_readings(sim_state)
@@ -1004,6 +1079,10 @@ def _phase2_3_ramp_lock(
         phase3_s,
         reference=reference,
         wall_deadline_mono=comm_deadline,
+        commission_log=log if verbose else None,
+        progress_label="Phase 3 (final) regulate",
+        progress_next="last instant-off",
+        progress_interval_s=_COMMISSION_PUMP_PROGRESS_S,
     )
     if verbose:
         r_lock = _sensor_readings(sim_state)
