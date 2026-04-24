@@ -914,7 +914,10 @@ def _pump_regulate_anode_snapshot(
     """One-line shunt mA + PWM% per anode for commissioning progress (Phase 2/3)."""
     chs = cfg.active_channel_indices_list()
     ina = commission_ina_compact(
-        readings, num_channels=cfg.NUM_CHANNELS, channels=chs
+        readings,
+        num_channels=cfg.NUM_CHANNELS,
+        channels=chs,
+        mark_highest_shunt=True,
     )
     duties = controller.duties()
     duty_s = " ".join(
@@ -970,6 +973,8 @@ def _pump_control(
                 shift_mv=ref_shift,
                 ref_valid=ref_valid,
                 ref_valid_reason=ref_valid_reason,
+                shift_target_mv=reference.effective_shift_target_mv(),
+                shift_max_mv=reference.effective_max_shift_mv(),
             )
         if need_progress and cl is not None:
             now = time.monotonic()
@@ -1132,10 +1137,22 @@ def run(
             )
     bl0 = reference.baseline_mv_for_shift()
     if bl0 is not None and verbose:
-        log(
-            f"Shift baseline for control: {bl0:.1f} mV;  goal ≥{cfg.TARGET_SHIFT_MV} mV shift → "
-            f"instant-off ref ≈{bl0 - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
-        )
+        eff = reference.effective_shift_target_mv()
+        ttot = float(cfg.TARGET_SHIFT_MV)
+        off = reference.galvanic_offset_mv
+        n1a = reference.native_mv
+        if off is not None and n1a is not None:
+            log(
+                f"Shift baseline: {bl0:.1f} mV (1b OCP). Total goal from true native(1a) = "
+                f"{ttot:.0f} mV; galvanic(1a−1b) = {off:.1f} mV → target additional shift from "
+                f"1b = {eff:.1f} mV; instant-off ref under CP ≈ {bl0 - eff:.1f} mV "
+                f"(≈ {n1a - ttot:.1f} mV vs 1a)"
+            )
+        else:
+            log(
+                f"Shift baseline for control: {bl0:.1f} mV;  goal ≥{ttot:.0f} mV shift → "
+                f"instant-off ref ≈{bl0 - eff:.1f} mV under CP"
+            )
 
     original_target_ma = float(cfg.TARGET_MA)
     wto = float(getattr(cfg, "COMMISSIONING_WALL_TIMEOUT_S", 0.0) or 0.0)
@@ -1147,6 +1164,10 @@ def run(
     if verbose:
         print()
         print_commission_section("Phase 2 — ramp to target shift")
+        log(
+            "Shunt mA: A# = firmware row (A1=ch0 = first INA+GPIO in config). "
+            "If only the third shunt is wired, expect |I| on A3 — not on A1."
+        )
     try:
         _phase2_3_ramp_lock(
             reference,
@@ -1211,7 +1232,7 @@ def _phase2_3_ramp_lock(
             r_settle = _sensor_readings(sim_state)
             log(
                 f"Setpoint {current_target_ma:.3f} mA · {RAMP_SETTLE_S:.0f}s regulate  |  "
-                f"{commission_ina_compact(r_settle, num_channels=cfg.NUM_CHANNELS, channels=cfg.active_channel_indices_list())}"
+                f"{commission_ina_compact(r_settle, num_channels=cfg.NUM_CHANNELS, channels=cfg.active_channel_indices_list(), mark_highest_shunt=True)}"
             )
         raw, shift, _depol = _instant_off_ref_mv_and_restore(
             controller,
@@ -1221,14 +1242,23 @@ def _phase2_3_ramp_lock(
             wall_deadline_mono=comm_deadline,
         )
         shift_str = f"{shift:.1f}" if shift is not None else "N/A"
+        eff_thr = reference.effective_shift_target_mv()
+        ttot = float(cfg.TARGET_SHIFT_MV)
         if verbose:
-            log(
-                f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
-                f"shift (native−off) {shift_str} / {cfg.TARGET_SHIFT_MV} mV"
-            )
+            if reference.galvanic_offset_mv is not None:
+                log(
+                    f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
+                    f"shift (1b−off) {shift_str} / {eff_thr:.1f} mV additional "
+                    f"({ttot:.0f} mV total from 1a)"
+                )
+            else:
+                log(
+                    f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
+                    f"shift (native−off) {shift_str} / {ttot:.0f} mV"
+                )
 
         tol = float(getattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_TOLERANCE", 0.9))
-        thr = float(cfg.TARGET_SHIFT_MV)
+        thr = float(eff_thr)
         if shift is not None and shift >= thr:
             confirm_count += 1
             if verbose:
@@ -1247,7 +1277,7 @@ def _phase2_3_ramp_lock(
             )
             step = (
                 ramp_fine
-                if shift is not None and shift > thr * near_frac
+                if shift is not None and shift > eff_thr * near_frac
                 else ramp_coarse
             )
             current_target_ma = round(current_target_ma + step, 3)
@@ -1285,7 +1315,7 @@ def _phase2_3_ramp_lock(
         r_lock = _sensor_readings(sim_state)
         log(
             f"After {phase3_s:.0f}s  |  "
-            f"{commission_ina_compact(r_lock, num_channels=cfg.NUM_CHANNELS, channels=cfg.active_channel_indices_list())}"
+            f"{commission_ina_compact(r_lock, num_channels=cfg.NUM_CHANNELS, channels=cfg.active_channel_indices_list(), mark_highest_shunt=True)}"
         )
     _final_raw, final_shift, _f_depol = _instant_off_ref_mv_and_restore(
         controller,

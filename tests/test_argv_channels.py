@@ -6,7 +6,10 @@ import os
 
 import pytest
 
-from config.argv_channels import apply_coilshield_active_channels_from_argv
+from config.argv_channels import (
+    apply_coilshield_active_channels_from_argv,
+    parse_channel_indices_from_flag_strings,
+)
 
 
 def test_apply_channels_0based_sets_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,3 +50,22 @@ def test_apply_both_flags_returns_2(monkeypatch: pytest.MonkeyPatch) -> None:
         == 2
     )
     assert "COILSHIELD_ACTIVE_CHANNELS" not in os.environ
+
+
+def test_parse_indices_anode_1() -> None:
+    assert parse_channel_indices_from_flag_strings(4, anode="1") == frozenset({0})
+
+
+def test_parse_indices_channels_list() -> None:
+    assert parse_channel_indices_from_flag_strings(4, channels="0,2") == frozenset(
+        {0, 2}
+    )
+
+
+def test_parse_indices_empty_means_all() -> None:
+    assert parse_channel_indices_from_flag_strings(4) is None
+
+
+def test_parse_indices_rejects_mixed() -> None:
+    with pytest.raises(ValueError, match="0-based"):
+        parse_channel_indices_from_flag_strings(4, channel="0", anode="1")

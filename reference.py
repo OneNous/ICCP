@@ -994,6 +994,31 @@ class ReferenceElectrode:
             return float(self.native_oc_anodes_in_mv)
         return self.native_mv
 
+    def effective_shift_target_mv(self) -> float:
+        """
+        Additional mV of shift (from :meth:`baseline_mv_for_shift`) needed so that
+        **total** polarization from Phase 1a (true native) reaches ``TARGET_SHIFT_MV``.
+
+        If galvanic OCP (1a−1b) already moved the reading by ``galvanic_offset_mv``,
+        only ``TARGET_SHIFT_MV − offset`` mV more is required from the 1b baseline.
+        When 1b was not commissioned, offset is unknown → use full ``TARGET_SHIFT_MV``.
+        """
+        t = float(getattr(cfg, "TARGET_SHIFT_MV", 100.0))
+        if self.galvanic_offset_mv is None:
+            return t
+        return max(0.0, t - float(self.galvanic_offset_mv))
+
+    def effective_max_shift_mv(self) -> float:
+        """
+        Max **additional** shift from the 1b baseline (when present) that keeps
+        total polarization from 1a at or below ``MAX_SHIFT_MV``:
+        ``max(0, MAX_SHIFT_MV - galvanic_offset_mv)``.
+        """
+        m = float(getattr(cfg, "MAX_SHIFT_MV", 200.0))
+        if self.galvanic_offset_mv is None:
+            return m
+        return max(0.0, m - float(self.galvanic_offset_mv))
+
     def read(
         self,
         duties: dict[int, float] | None = None,
@@ -1283,12 +1308,12 @@ class ReferenceElectrode:
         return samples
 
     def protection_status(self, shift_mv: float | None = None) -> str:
-        """Band vs TARGET_SHIFT_MV / MAX_SHIFT_MV for shift = baseline − raw (not a CP survey criterion)."""
+        """Band vs effective target/max for shift = baseline − raw (not a CP survey criterion)."""
         if shift_mv is None:
             return "UNKNOWN"
-        lo = getattr(cfg, "TARGET_SHIFT_MV", 100)
-        hi = getattr(cfg, "MAX_SHIFT_MV", 200)
-        if shift_mv < lo * 0.8:
+        t = self.effective_shift_target_mv()
+        hi = self.effective_max_shift_mv()
+        if shift_mv < t * 0.8:
             return "UNDER"
         if shift_mv > hi:
             return "OVER"

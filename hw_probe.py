@@ -15,9 +15,11 @@ Steps:
 Launch (after ``pip install -e .`` from repo root):  iccp probe [flags]
 
 Useful flags:
-  • --continuous / --live  All INA + ADS AIN0..3 every ``--interval`` s until Ctrl+C.
+  • --anode N / --anodes N[,N]…  1-based (``iccp probe --anode 1``) — INA219 + PWM only.
+  • --channel N / --channels N[,N]…  Same, 0-based index (A1=0). Not with --anode(s).
+  • --continuous / --live  INA (filtered if --anode) + ADS AIN0..3 every ``--interval`` s.
   • --ads1115 [ADDR]   Quick ADS1115 AIN0..3 only (default ADDR 0x48); plan checklist.
-  • --init             Force INA219 CONFIG write on each channel before reads.
+  • --init             Force INA219 CONFIG write on each included channel before reads.
   • --ads1115-only     Same as --ads1115 with address from config/settings.
 
 Pi tips:
@@ -45,6 +47,8 @@ try:
     import config.settings as cfg
 except ImportError:
     cfg = None  # type: ignore[assignment]
+
+from config.argv_channels import parse_channel_indices_from_flag_strings
 
 try:
     from channel_labels import anode_label
@@ -166,6 +170,12 @@ def _format_z_ohm_effective(bus_v: float, current_ma: float) -> str:
     if z >= 1e3:
         return f"{z / 1e3:.2f} kΩ"
     return f"{z:.1f} Ω"
+
+
+def _ina_ch_indices(ch_filter: frozenset[int] | None) -> list[int]:
+    """0-based INA row indices to exercise (all rows when ``ch_filter`` is None)."""
+    n = len(INA219_ADDRESSES)
+    return sorted(ch_filter) if ch_filter is not None else list(range(n))
 
 
 def _i2c_diagnostic(e: BaseException, bus: int) -> None:
@@ -308,8 +318,14 @@ def mux_downstream_i2c_probe(bus: int) -> MuxDownstreamI2CResult | None:
     return out
 
 
-def run_i2c_scan(bus: int) -> None:
+def run_i2c_scan(bus: int, ch_filter: frozenset[int] | None = None) -> None:
     section("STEP 1 — I2C scan")
+    idxs = _ina_ch_indices(ch_filter)
+    if ch_filter is not None:
+        al = ", ".join(f"A{i + 1}" for i in idxs)
+        print(
+            f"\n  (Anode filter: {al} — full idle scan; INA/PWM from STEP 2 use this subset.)\n"
+        )
     print(
         f"\n  Scanning bus {bus} for all devices (0x03–0x77) without mux select (idle) …"
     )
@@ -343,6 +359,8 @@ def run_i2c_scan(bus: int) -> None:
             if mux_r.ina_rows or mux_r.ads_checked:
                 section("STEP 1b — I2C downstream (TCA9548A per port)")
             for ch, tca_ch, ina_addr, ok in mux_r.ina_rows:
+                if ch_filter is not None and ch not in ch_filter:
+                    continue
                 st = "✓" if ok else "✗"
                 print(
                     f"  {st}  Anode idx {ch}  TCA ch{tca_ch}  INA@ {hex(ina_addr)}"
@@ -354,10 +372,15 @@ def run_i2c_scan(bus: int) -> None:
                     f"(TCA ch{mux_r.ads_tca_ch} — from config)"
                 )
             if mux_r.ina_rows:
-                if all(r[3] for r in mux_r.ina_rows):
+                rows_f = (
+                    [r for r in mux_r.ina_rows if ch_filter is None or r[0] in ch_filter]
+                    if ch_filter is not None
+                    else list(mux_r.ina_rows)
+                )
+                if rows_f and all(r[3] for r in rows_f):
                     print("  ✓ All configured anode INA219 addresses respond behind mux")
-                else:
-                    mina = [hex(r[2]) for r in mux_r.ina_rows if not r[3]]
+                elif rows_f:
+                    mina = [hex(r[2]) for r in rows_f if not r[3]]
                     print(f"\n  ✗ MISSING (behind mux): {mina}")
                     print(
                         "    • Per-port wiring, A0/A1, power, or TCA ch vs "
@@ -405,13 +428,20 @@ def run_i2c_scan(bus: int) -> None:
             if mux_r.error:
                 return
 
-    missing = [a for a in INA219_ADDRESSES if a not in found]
+    expected_vals = [INA219_ADDRESSES[i] for i in idxs]
+    missing = [a for a in expected_vals if a not in found]
     extra: list[int] = [a for a in found if a not in INA219_ADDRESSES]
     if mxa is not None:
         extra = [a for a in extra if a != int(mxa)]
 
     if not missing:
-        print("  ✓ All 4 expected INA219 addresses present (idle / no-mux scan)")
+        if ch_filter is not None:
+            al = ", ".join(f"A{i + 1}" for i in idxs)
+            print(
+                f"  ✓ Expected INA219 for {al} present (idle / no-mux scan)"
+            )
+        else:
+            print("  ✓ All 4 expected INA219 addresses present (idle / no-mux scan)")
     else:
         print(f"\n  ✗ MISSING: {[hex(a) for a in missing]}")
         print(
@@ -444,10 +474,21 @@ def run_i2c_scan(bus: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
+def run_ina219_reads(
+    bus: int,
+    shunt_ohms: float,
+    *,
+    force_init: bool,
+    ch_filter: frozenset[int] | None = None,
+) -> None:
     from i2c_bench import INA219_DEFAULT_CONFIG_WORD, ina219_read, ina219_write_config
 
-    section("STEP 2 — Raw INA219 reads (smbus2)")
+    idxs = _ina_ch_indices(ch_filter)
+    if ch_filter is not None:
+        al = ", ".join(f"A{i + 1}" for i in idxs)
+        section(f"STEP 2 — Raw INA219 reads (smbus2)  —  {al} only")
+    else:
+        section("STEP 2 — Raw INA219 reads (smbus2)")
     print(f"""
   Shunt resistance: {shunt_ohms} Ω  (--shunt N to override)
   bus_v    = voltage at IN− (load side of shunt)
@@ -471,9 +512,10 @@ def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
         if force_init:
             print(
                 f"  (--init) writing INA219 CONFIG 0x{INA219_DEFAULT_CONFIG_WORD:04X} "
-                "(pi-ina219 RANGE_16V / PGA÷1 / 128×ADC) on each channel …"
+                "(pi-ina219 RANGE_16V / PGA÷1 / 128×ADC) on each selected channel …"
             )
-            for ch, addr in enumerate(INA219_ADDRESSES):
+            for ch in idxs:
+                addr = int(INA219_ADDRESSES[ch])
                 if not _mux_select_anode_for_probe(sm, ch):
                     print(
                         f"  [!] mux before init 0x{addr:02X}: failed — "
@@ -485,7 +527,8 @@ def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
                     time.sleep(0.015)
                 except OSError as e:
                     print(f"  [!] init 0x{addr:02X}: {e}")
-        for ch, addr in enumerate(INA219_ADDRESSES):
+        for ch in idxs:
+            addr = int(INA219_ADDRESSES[ch])
             if not _mux_select_anode_for_probe(sm, ch):
                 readings[addr] = {
                     "ok": False,
@@ -501,7 +544,8 @@ def run_ina219_reads(bus: int, shunt_ohms: float, *, force_init: bool) -> None:
         f"  {'Anode':<14} {'Addr':<6} {'Bus V':>8} {'Shunt mV':>10} {'mA':>10} {'mW':>10}  Status"
     )
     print("  " + "─" * 58)
-    for ch, addr in enumerate(INA219_ADDRESSES):
+    for ch in idxs:
+        addr = int(INA219_ADDRESSES[ch])
         label = anode_label(ch)
         r = readings.get(addr, {"ok": False, "error": "not read"})
         if r.get("ok"):
@@ -526,6 +570,7 @@ def run_continuous(
     *,
     force_init: bool,
     interval_s: float = 1.0,
+    ch_filter: frozenset[int] | None = None,
 ) -> None:
     from i2c_bench import (
         INA219_DEFAULT_CONFIG_WORD,
@@ -534,14 +579,23 @@ def run_continuous(
         ina219_write_config,
     )
 
+    idxs = _ina_ch_indices(ch_filter)
     ref_ain = int(getattr(cfg, "ADS1115_CHANNEL", 0) if cfg is not None else 0)
-    section("LIVE / CONTINUOUS — Ctrl+C to stop")
+    if ch_filter is not None:
+        al = ", ".join(f"A{i + 1}" for i in idxs)
+        section(f"LIVE / CONTINUOUS — {al}  —  Ctrl+C to stop")
+    else:
+        section("LIVE / CONTINUOUS — Ctrl+C to stop")
     if skip_ads:
-        print(f"  Every {interval_s:.2f} s: INA219 only (no ADS).")
+        print(
+            f"  Every {interval_s:.2f} s: INA219"
+            f"{' (filtered)' if ch_filter is not None else ''} (no ADS)."
+        )
     else:
         print(
-            f"  Every {interval_s:.2f} s: all INA219 ch + ADS1115 AIN0..3 "
-            f"(firmware ref = AIN{ref_ain})."
+            f"  Every {interval_s:.2f} s: INA219"
+            f"{' (selected anodes) ' if ch_filter is not None else ' '}"
+            f"+ ADS1115 AIN0..3 (firmware ref = AIN{ref_ain})."
         )
     print()
 
@@ -567,9 +621,10 @@ def run_continuous(
     if force_init:
         print(
             f"  (--init) writing INA219 CONFIG 0x{INA219_DEFAULT_CONFIG_WORD:04X} "
-            "(pi-ina219 parity) on each channel …"
+            "(pi-ina219 parity) on each selected channel …"
         )
-        for ch, addr in enumerate(INA219_ADDRESSES):
+        for ch in idxs:
+            addr = int(INA219_ADDRESSES[ch])
             if not _mux_select_anode_for_probe(sm, ch):
                 print(
                     f"  [!] mux before init 0x{addr:02X}: failed (EIO?) — stop other I2C users"
@@ -591,7 +646,8 @@ def run_continuous(
                 f"  {'Anode':<14} {'Bus V':>8} {'Shunt mV':>10} {'mA':>10} {'mW':>10}  Status"
             )
             print("  " + "─" * 52)
-            for ch, addr in enumerate(INA219_ADDRESSES):
+            for ch in idxs:
+                addr = int(INA219_ADDRESSES[ch])
                 label = anode_label(ch)
                 if not _mux_select_anode_for_probe(sm, ch):
                     print(
@@ -742,8 +798,28 @@ def run_pwm_test(
     *,
     force_init: bool = False,
     read_ina219: bool = True,
+    ch_filter: frozenset[int] | None = None,
 ) -> None:
-    section("STEP 5 — PWM GPIO test")
+    to_test: list[int]
+    n_pin_max = min(len(PWM_PINS_BCM), len(INA219_ADDRESSES))
+    if ch_filter is None:
+        to_test = list(range(n_pin_max))
+    else:
+        to_test = [
+            i
+            for i in sorted(ch_filter)
+            if 0 <= i < n_pin_max
+        ]
+    if ch_filter is not None and not to_test:
+        section("STEP 5 — PWM GPIO test")
+        print("  [!] --anode/--channels selection has no INA+PWM row in this build.")
+        return
+    if ch_filter is not None and len(to_test) == 1:
+        section(
+            f"STEP 5 — PWM GPIO test  (A{to_test[0] + 1} only)"
+        )
+    else:
+        section("STEP 5 — PWM GPIO test")
 
     try:
         import RPi.GPIO as GPIO  # noqa: N814
@@ -770,8 +846,7 @@ def run_pwm_test(
         print(
             f"  (--init) INA219 CONFIG 0x{INA219_DEFAULT_CONFIG_WORD:04X} before PWM …"
         )
-        nch = min(len(PWM_PINS_BCM), len(INA219_ADDRESSES))
-        for ch in range(nch):
+        for ch in to_test:
             if not _mux_select_anode_for_probe(sm, ch):
                 print(
                     f"  [!] mux before init 0x{INA219_ADDRESSES[ch]:02X}: EIO (skipped CONFIG)"
@@ -798,8 +873,14 @@ def run_pwm_test(
             "  I2C bus not opened — use DMM for mA/Ω, or fix smbus2 and permissions.\n"
         )
 
+    pin_list = to_test
+    pin_desc = (
+        f"{[PWM_PINS_BCM[i] for i in pin_list]}"
+        if ch_filter is not None
+        else f"{list(PWM_PINS_BCM)}"
+    )
     print(f"""
-  Testing pins BCM {PWM_PINS_BCM} one at a time at {PWM_FREQ_HZ} Hz.
+  Testing pins BCM {pin_desc} one at a time at {PWM_FREQ_HZ} Hz.
 
   At each duty level:
     Gate (GPIO)  → meter ≈ duty% × {GPIO_HIGH_V:.1f} V average
@@ -811,7 +892,8 @@ def run_pwm_test(
         GPIO.setwarnings(False)
 
         mux_eio_warned = False
-        for ch_idx, pin in enumerate(PWM_PINS_BCM):
+        for j, ch_idx in enumerate(to_test):
+            pin = int(PWM_PINS_BCM[ch_idx])
             ina_addr: int | None = None
             if ch_idx < len(INA219_ADDRESSES):
                 ina_addr = int(INA219_ADDRESSES[ch_idx])
@@ -876,10 +958,11 @@ def run_pwm_test(
             GPIO.setup(pin, GPIO.IN)
             print(f"\n  {anode_label(ch_idx)} done — pin LOW then INPUT.")
 
-            if ch_idx < len(PWM_PINS_BCM) - 1:
-                next_pin = PWM_PINS_BCM[ch_idx + 1]
+            if j < len(to_test) - 1:
+                next_ch = to_test[j + 1]
+                next_pin = int(PWM_PINS_BCM[next_ch])
                 pause(
-                    f"\n  Move meter to {anode_label(ch_idx + 1)} gate (BCM {next_pin}) → GND, "
+                    f"\n  Move meter to {anode_label(next_ch)} gate (BCM {next_pin}) → GND, "
                     f"then Enter..."
                 )
 
@@ -893,17 +976,26 @@ def run_pwm_test(
                 sm.close()
             except OSError:
                 pass
-    print("\n  All PWM pins tested.")
+    if ch_filter is not None:
+        al = ", ".join(f"A{c + 1}" for c in to_test)
+        print(f"\n  PWM test done for: {al}")
+    else:
+        print("\n  All PWM pins tested.")
 
 
 def _hex_int(s: str) -> int:
     return int(s, 0)
 
 
-def print_summary() -> None:
+def print_summary(ch_filter: frozenset[int] | None = None) -> None:
     section("Summary — confirm before `iccp start`")
-    print("""
-  INA219: 4 addresses on scan; bus_v sensible; mA tracks load
+    ina_line = (
+        "INA219: selected anode(s) on scan; bus_v sensible; mA tracks load"
+        if ch_filter is not None
+        else "INA219: 4 addresses on scan; bus_v sensible; mA tracks load"
+    )
+    print(f"""
+  {ina_line}
   ADS1115: AIN0..3 read without error (reference on AIN0 typically)
   DS18B20: optional — 28-* in sysfs when 1-Wire enabled
   PWM: gate follows duty × 3.3 V; anode follows if MOSFET correct; INA219 mA/Ω on line
@@ -929,7 +1021,7 @@ def main() -> int:
         "--live",
         action="store_true",
         dest="continuous",
-        help="Stream all INA + ADS AIN0..3 every --interval s (Ctrl+C stops).",
+        help="Stream INA (all rows, or --anode subset) + ADS AIN0..3 every --interval s (Ctrl+C).",
     )
     ap.add_argument(
         "--interval",
@@ -957,8 +1049,54 @@ def main() -> int:
         action="store_true",
         help="Force INA219 CONFIG write (same word as pi-ina219 RANGE_16V defaults) on each channel",
     )
+    ch_grp = ap.add_argument_group(
+        "anode selection (INA219 + PWM only; same rules as `iccp start --anode`)"
+    )
+    ch_grp.add_argument(
+        "--channel",
+        type=int,
+        default=None,
+        metavar="N",
+        help="0-based anode index only (A1=0). Same as --channels N with one value.",
+    )
+    ch_grp.add_argument(
+        "--channels",
+        default=None,
+        metavar="LIST",
+        help="Comma-separated 0-based indices (e.g. 0,2 for A1 and A3).",
+    )
+    ch_grp.add_argument(
+        "--anode",
+        type=int,
+        default=None,
+        metavar="N",
+        help="1-based anode number (UI) only, e.g. 1 = first MOSFET/INA row in config.",
+    )
+    ch_grp.add_argument(
+        "--anodes",
+        default=None,
+        metavar="LIST",
+        help="Comma-separated 1-based anode numbers (e.g. 1,3).",
+    )
     args = ap.parse_args()
     ads_bus = args.ads_bus if args.ads_bus is not None else ADS1115_BUS
+
+    if args.channels is not None and args.channel is not None:
+        ap.error("use only one of --channels and --channel (not both).")
+    if args.anodes is not None and args.anode is not None:
+        ap.error("use only one of --anodes and --anode (not both).")
+
+    n_ina = len(INA219_ADDRESSES)
+    try:
+        ch_filter = parse_channel_indices_from_flag_strings(
+            n_ina,
+            channels=args.channels,
+            channel=str(args.channel) if args.channel is not None else None,
+            anodes=args.anodes,
+            anode=str(args.anode) if args.anode is not None else None,
+        )
+    except ValueError as e:
+        ap.error(str(e))
 
     print("\n┌─────────────────────────────────────────────────────────┐")
     print("│   CoilShield hw_probe — smbus2 INA219 + ADS1115        │")
@@ -968,12 +1106,21 @@ def main() -> int:
         f"\n  INA219 bus: {args.bus}   ADS bus: {ads_bus}   "
         f"Shunt: {args.shunt} Ω   Supply assumed: {SUPPLY_V} V"
     )
+    if ch_filter is not None:
+        al = ", ".join(f"A{c + 1}" for c in sorted(ch_filter))
+        print(
+            f"  Anode filter: {al}  —  INA219 + PWM; ADS1115/DS18B20 are not per-anode"
+        )
 
     try:
         if args.ads1115 is not None:
+            if ch_filter is not None:
+                print("  (note: --anode / --channel ignored for --ads1115 quick read)")
             run_ads1115_reads(ads_bus, ads_address=args.ads1115)
             return 0
         if args.ads1115_only:
+            if ch_filter is not None:
+                print("  (note: --anode / --channel ignored for --ads1115-only)")
             run_ads1115_reads(ads_bus, ads_address=None)
             return 0
 
@@ -984,12 +1131,15 @@ def main() -> int:
                 skip_ads=args.skip_ads,
                 force_init=args.init,
                 interval_s=args.interval,
+                ch_filter=ch_filter,
             )
             return 0
 
         if not args.skip_ina:
-            run_i2c_scan(args.bus)
-            run_ina219_reads(args.bus, args.shunt, force_init=args.init)
+            run_i2c_scan(args.bus, ch_filter=ch_filter)
+            run_ina219_reads(
+                args.bus, args.shunt, force_init=args.init, ch_filter=ch_filter
+            )
 
         if not args.skip_ads:
             run_ads1115_reads(ads_bus)
@@ -1004,9 +1154,10 @@ def main() -> int:
                 args.shunt,
                 force_init=args.init,
                 read_ina219=not args.skip_ina,
+                ch_filter=ch_filter,
             )
 
-        print_summary()
+        print_summary(ch_filter=ch_filter)
 
     except KeyboardInterrupt:
         _safe_gpio_cleanup()

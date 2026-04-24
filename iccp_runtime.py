@@ -260,11 +260,15 @@ def run_iccp_forever(args: Namespace) -> int:
                 duties=duties, statuses=ch_status, temp_f=temp_f
             )
             ref_valid, ref_valid_reason = ref.ref_valid()
+            _eff_shift_t = ref.effective_shift_target_mv()
+            _eff_shift_m = ref.effective_max_shift_mv()
             ctrl.advance_shift_fsm(
                 readings,
                 shift_mv=ref_shift,
                 ref_valid=ref_valid,
                 ref_valid_reason=ref_valid_reason,
+                shift_target_mv=_eff_shift_t,
+                shift_max_mv=_eff_shift_m,
             )
 
             if not _ux_tip_shown:
@@ -298,16 +302,28 @@ def run_iccp_forever(args: Namespace) -> int:
                             )
                             ref_raw_mv = io_raw
                             ref_shift = io_shift
-                            ctrl.update_potential_target(io_shift)
+                            ctrl.update_potential_target(
+                                io_shift,
+                                shift_target_mv=_eff_shift_t,
+                                shift_max_mv=_eff_shift_m,
+                            )
                         except Exception as exc:
                             print(
                                 f"[main] outer-loop instant-off failed: {exc}",
                                 file=sys.stderr,
                             )
                             traceback.print_exc()
-                            ctrl.update_potential_target(ref_shift)
+                            ctrl.update_potential_target(
+                                ref_shift,
+                                shift_target_mv=_eff_shift_t,
+                                shift_max_mv=_eff_shift_m,
+                            )
                     else:
-                        ctrl.update_potential_target(ref_shift)
+                        ctrl.update_potential_target(
+                            ref_shift,
+                            shift_target_mv=_eff_shift_t,
+                            shift_max_mv=_eff_shift_m,
+                        )
                     outer_loop_counter = 0
                     ref_log_tick = True
 

@@ -14,6 +14,8 @@ CoilShield can commission a **true** metal/electrolyte baseline with anodes **ou
 
 **Shift / outer loop:** `baseline_mv_for_shift` is **`native_oc_anodes_in_mv`** when Phase 1b was run, otherwise `native_mv`. Polarization **shift** = that baseline − **instant-off** (or on-tick) reference, so the loop measures protection **from the in-situ open-circuit with anodes present**, not from a bench-only 1a number that ignores galvanic influence.
 
+**Total vs additional shift:** `TARGET_SHIFT_MV` is the **total** desired polarization from **true native (Phase 1a)**. With 1b, `galvanic_offset_mv = native(1a) − native(1b)` is already part of that total, so the **additional** shift required from the 1b baseline is `effective_shift_target_mv = max(0, TARGET_SHIFT_MV − galvanic_offset_mv)` (and similarly for `MAX_SHIFT_MV` via `effective_max_shift_mv`). Commissioning and the shift FSM use these effective values so you do not double-count the galvanic depolarization.
+
 **Telemetry** (`latest.json` system block): `native_mv` (shift baseline for display consistency), `native_true_anodes_out_mv` (1a), optional galvanic fields when commissioned.
 
 ## Operator flow
@@ -32,6 +34,10 @@ CoilShield can commission a **true** metal/electrolyte baseline with anodes **ou
 Automatic logging of (1) true native, (2) in-bath OCP, and (3) their difference — plus trending against a first-install reference — is intended as a **field-install health signal** and optional remote-operations hook (`galvanic_offset_*` in `latest.json` / `commissioning.json`).
 
 Legal claims are outside this repository; coordinate with counsel for patent filings, trade-secret marking, and customer-facing “health %” / warranty language.
+
+## Shunt mA: A1..A4 vs “my first anode”
+
+Commissioning lines list **A1, A2, …** = **firmware channel index 0, 1, …** = the order in `INA219_ADDRESSES` and `PWM_GPIO_PINS` (see `anode_hw_label` / `channel_labels.py`). If you install a single anode on the **third** harness row, |I| shows on **A3**, not A1. Values near **0.1 mA** on one channel and ~0 on others are often shunt **offset or noise** until real CP current (mA range) appears — confirm the anode/return is on the row you think matches A1 in your build.
 
 ## See also
 

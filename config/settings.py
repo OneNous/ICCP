@@ -388,7 +388,11 @@ REF_ENABLED = True
 # Default 100 mV
 # matches a common field picture: native ~100–130 mV at the AIN after Phase 1, ramp succeeds
 # when OC inflection sits ~20–40 mV (order ~100 mV below native). Tune if chemistry differs.
+# With two-phase 1a+1b commissioning, this is **total** polarization from true native(1a);
+# software subtracts ``galvanic_offset_mv`` for the additional shift from the 1b baseline.
 TARGET_SHIFT_MV = 100
+# Upper band for the same “total from 1a” story: effective max additional shift from 1b
+# is ``MAX_SHIFT_MV − galvanic_offset_mv`` when offset is known.
 MAX_SHIFT_MV = 200
 TARGET_MA_STEP = 0.02
 # Outer loop (``update_potential_target``): legacy behavior only nudged TARGET_MA when shift

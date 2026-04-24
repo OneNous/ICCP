@@ -33,13 +33,21 @@ def commission_ina_compact(
     *,
     num_channels: int,
     channels: list[int] | None = None,
+    mark_highest_shunt: bool = False,
 ) -> str:
-    """Shorter one-line shunt report per anode (``channels`` defaults to ``0..num-1``)."""
+    """Shorter one-line shunt report per anode (``channels`` defaults to ``0..num-1``).
+
+    **A# meaning:** ``A1`` = firmware index ``0`` = first row in ``INA219_ADDRESSES`` and
+    ``PWM_GPIO_PINS`` (not “an arbitrary jack order” unless your harness matches the board).
+    When ``mark_highest_shunt`` is True, appends which channel has the largest |I| (commissioning
+    only) so a single-populated anode is easy to spot.
+    """
     segs: list[str] = []
     total = 0.0
     ok = False
     n = int(num_channels)
     ch_iter = channels if channels is not None else list(range(n))
+    per_ch: list[tuple[int, float]] = []
     for ch in ch_iter:
         r = readings.get(ch, {})
         tag = f"A{ch + 1}"
@@ -48,11 +56,17 @@ def commission_ina_compact(
             segs.append(f"{tag}={c:.3f}")
             total += c
             ok = True
+            per_ch.append((ch, c))
         else:
             err = (r.get("sensor_error") or r.get("error") or "?")[:12]
             segs.append(f"{tag}=N/A({err})")
     suff = f"Σ={total:.3f} mA" if ok else "Σ=—"
-    return "  ".join(segs) + f"  {suff}"
+    line = "  ".join(segs) + f"  {suff}"
+    if mark_highest_shunt and per_ch:
+        ch_max, c_max = max(per_ch, key=lambda t: abs(t[1]))
+        if abs(c_max) >= 0.02:
+            line += f"  |  max|I| A{ch_max + 1}"
+    return line
 
 
 def print_sim_schedule(sensor_module: object) -> None:

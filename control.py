@@ -933,7 +933,13 @@ class Controller:
         """True if any channel is in ``Overprotected`` (shift FSM is already backing off duty)."""
         return any(s.state_v2 == STATE_V2_OVERPROTECTED for s in self._states)
 
-    def update_potential_target(self, shift_mv: float | None) -> None:
+    def update_potential_target(
+        self,
+        shift_mv: float | None,
+        *,
+        shift_target_mv: float | None = None,
+        shift_max_mv: float | None = None,
+    ) -> None:
         """
         Outer loop: nudge TARGET_MA to keep polarization in the safe window.
         ``shift_mv`` should be **baseline_mv_for_shift − instant-off ref** (IR-free) when the runtime
@@ -943,17 +949,26 @@ class Controller:
         No-ops when any channel is Overprotected (shift FSM reduces duty; avoid fighting it).
 
         When ``OUTER_LOOP_TRIM_TO_SHIFT_CENTER`` is True, also nudges while shift is in the
-        OK band (between ``0.8×TARGET_SHIFT_MV`` and ``MAX_SHIFT_MV``) toward ``TARGET_SHIFT_MV``
-        (see ``OUTER_LOOP_SHIFT_TRIM_TOL_MV``), so TARGET_MA is not frozen for long stretches.
+        OK band (between ``0.8×`` effective target and effective max) toward the effective
+        target (see ``OUTER_LOOP_SHIFT_TRIM_TOL_MV``), so TARGET_MA is not frozen for long stretches.
+
+        ``shift_target_mv`` / ``shift_max_mv`` default to :obj:`config.settings.TARGET_SHIFT_MV` /
+        ``MAX_SHIFT_MV``. When Phase 1b (galvanic) is commissioned, the reference layer should pass
+        the **additional** target from the 1b baseline so total polarization from true native(1a)
+        still matches ``TARGET_SHIFT_MV``.
         """
         if shift_mv is None:
             return
         if self.any_overprotected():
             return
 
-        lo = float(cfg.TARGET_SHIFT_MV) * 0.8
-        hi = float(cfg.MAX_SHIFT_MV)
-        center = float(cfg.TARGET_SHIFT_MV)
+        center = (
+            float(shift_target_mv)
+            if shift_target_mv is not None
+            else float(cfg.TARGET_SHIFT_MV)
+        )
+        hi = float(shift_max_mv) if shift_max_mv is not None else float(cfg.MAX_SHIFT_MV)
+        lo = center * 0.8
         trim_tol = float(getattr(cfg, "OUTER_LOOP_SHIFT_TRIM_TOL_MV", 3.0))
         step = float(cfg.TARGET_MA_STEP)
         max_target = float(cfg.MAX_MA) * 0.8
@@ -963,7 +978,7 @@ class Controller:
         elif shift_mv > hi:
             cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, 0.05), 3)
         elif bool(getattr(cfg, "OUTER_LOOP_TRIM_TO_SHIFT_CENTER", True)):
-            # In-band: steer current setpoint so polarization tends toward ``TARGET_SHIFT_MV``.
+            # In-band: steer current setpoint so polarization tends toward the effective target.
             if shift_mv < center - trim_tol:
                 cfg.TARGET_MA = round(min(cfg.TARGET_MA + step, max_target), 3)
             elif shift_mv > center + trim_tol:
@@ -1115,6 +1130,8 @@ class Controller:
         shift_mv: float | None,
         ref_valid: bool,
         ref_valid_reason: str = "",
+        shift_target_mv: float | None = None,
+        shift_max_mv: float | None = None,
     ) -> None:
         """Advance `state_v2` for every channel. Call once per tick AFTER `update()`.
 
@@ -1122,10 +1139,24 @@ class Controller:
         Overprotected (where it ramps duty down to reduce polarization) and when it
         latches CANNOT_POLARIZE / OVERPROTECTION faults (which zero duty via
         :meth:`_latch_fault`). All timers are per-channel and driven by `time.monotonic`.
+
+        ``shift_target_mv`` / ``shift_max_mv`` default to ``TARGET_SHIFT_MV`` / ``MAX_SHIFT_MV``.
+        When galvanic 1b is used, pass the **additional** shift from the 1b baseline from
+        :meth:`ReferenceElectrode.effective_shift_target_mv` (and
+        :meth:`ReferenceElectrode.effective_max_shift_mv`) so the total from true native(1a)
+        still matches the configured band.
         """
         now = time.monotonic()
-        target = float(getattr(cfg, "TARGET_SHIFT_MV", 100))
-        over_max = float(getattr(cfg, "MAX_SHIFT_MV", 200))
+        target = (
+            float(shift_target_mv)
+            if shift_target_mv is not None
+            else float(getattr(cfg, "TARGET_SHIFT_MV", 100))
+        )
+        over_max = (
+            float(shift_max_mv)
+            if shift_max_mv is not None
+            else float(getattr(cfg, "MAX_SHIFT_MV", 200))
+        )
         hy_exit = float(getattr(cfg, "HYST_PROT_EXIT_MV", 10.0))
         hy_over_exit = float(getattr(cfg, "HYST_OVER_EXIT_MV", 10.0))
         hy_over_fault = float(getattr(cfg, "HYST_OVER_FAULT_MV", 50.0))

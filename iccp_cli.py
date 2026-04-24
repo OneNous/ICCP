@@ -185,7 +185,8 @@ def _print_help() -> None:
                              long regulate steps show time until instant-off.
 
   iccp probe [args ...]      Hardware probe (I2C, INA219 smbus2, ADS1115, DS18B20, PWM).
-                             See `iccp probe --help` for options.
+                             Pass --anode N (1-based) or --channel N (0-based) to limit
+                             INA + PWM to that row; see `iccp probe --help`.
 
   iccp tui [--poll-interval SEC] [--log-dir PATH]
                              Live terminal dashboard (Textual). Same data as the web UI.
