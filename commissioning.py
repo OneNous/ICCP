@@ -18,12 +18,26 @@ from typing import TYPE_CHECKING, Any
 import config.settings as cfg
 import temp as temp_mod
 from channel_labels import anode_hw_label
+from console_ui import (
+    commission_ina_compact,
+    commission_log_main,
+    print_commission_section,
+)
 from reference import ReferenceElectrode, _update_comm_file, find_oc_curve_metrics
 
 if TYPE_CHECKING:
     from control import Controller
 
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
+
+
+def _commission_oc_debug() -> bool:
+    """Set ``ICCP_COMMISSION_DEBUG=1`` to print full OC-curve head/tail samples (very noisy)."""
+    return (os.environ.get("ICCP_COMMISSION_DEBUG", "") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _readline_wait_enter_for_anode_prompt() -> None:
@@ -80,23 +94,23 @@ def _anode_placement_pause(
 ) -> None:
     if not _anode_placement_should_interact(anode_placement_prompts):
         return
-    ts = f"[commission {time.strftime('%H:%M:%S')}]"
     if step == "before_phase1":
-        banner = (
-            f"\n{ts} Anode placement — before native Ecorr (Phase 1)\n"
-            "  • Confirm anode assemblies are **removed** from the electrolyte (open-circuit).\n"
-            "  Press Enter to start the reference measurement… "
+        print_commission_section("Anode placement — before native Ecorr (Phase 1)")
+        print(
+            "[main] Remove anode assemblies from the bath (open-circuit), then press Enter…",
+            end="",
+            flush=True,
         )
     elif step == "after_phase1":
-        banner = (
-            f"\n{ts} Anode placement — before CP ramp (Phase 2)\n"
-            "  • Phase 1 (native) is done. **Install** anode assemblies in the cell.\n"
-            "  Press Enter to continue with current ramp and polarization check… "
+        print_commission_section("Anode placement — before current ramp (Phase 2)")
+        print(
+            "[main] Install anodes, then press Enter to continue the ramp…",
+            end="",
+            flush=True,
         )
     else:  # pragma: no cover
-        banner = f"\n{ts} (internal: unknown anode step {step!r})\nPress Enter… "
-
-    print(banner, end="", flush=True)
+        print_commission_section(f"Anode placement (internal: {step!r})")
+        print("[main] Press Enter…", end="", flush=True)
     _readline_wait_enter_for_anode_prompt()
 
 
@@ -214,7 +228,7 @@ def load_commissioned_target() -> float:
 def reset() -> None:
     if _COMM_FILE.exists():
         _COMM_FILE.unlink()
-    print("[commission] Cleared. Will re-commission on next boot.")
+    commission_log_main("commissioning.json cleared — will re-commission on next boot")
 
 
 def _sensor_readings(sim_state: Any | None) -> dict[int, dict]:
@@ -355,10 +369,7 @@ def _wait_ina_oc_confirm(
         if ok:
             return True
         time.sleep(0.005)
-    print(
-        f"[commission {time.strftime('%H:%M:%S')}] "
-        "INA219 OC confirm timeout — last gate failures:"
-    )
+    print("[main] INA219 OC confirm timeout — last gate failures:")
     for ln in last_reasons:
         print(f"    {ln}")
     print("    last per-channel snapshot (ok, mA, bus_v, err):")
@@ -449,7 +460,7 @@ def _verify_phase1_drive_off(
         if log is not None:
             log(msg)
         else:
-            print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
+            commission_log_main(msg)
         controller.all_outputs_off()
         if sim_state is not None:
             sim_state.duties = controller.duties()
@@ -497,7 +508,7 @@ def _verify_phase1_drive_off(
         if log is not None:
             log(msg)
         else:
-            print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
+            commission_log_main(msg)
     else:
         nch = int(getattr(cfg, "NUM_CHANNELS", 4))
         if post_long_settle:
@@ -510,11 +521,11 @@ def _verify_phase1_drive_off(
                 f"Phase 1 off-check: all {nch} channels PWM 0% and |I| < {i_gate:g} mA "
                 "(gates closed, no CP drive through shunts)."
             )
-        # log() already prints with [commission HH:MM:SS] when verbose — do not print twice.
+        # log() already prefixes [main] when verbose — do not print twice.
         if log is not None:
             log(ok_msg)
         else:
-            print(f"[commission {time.strftime('%H:%M:%S')}] {ok_msg}")
+            commission_log_main(ok_msg)
 
 
 @contextmanager
@@ -607,22 +618,30 @@ def _instant_off_ref_mv_and_restore(
                 "WARNING: INA219 off-confirm timed out; continuing with ADS/ref OC read "
                 "(degraded — tune COMMISSIONING_OC_CONFIRM_* / OCBUS_*)."
             )
-            print(f"[commission {time.strftime('%H:%M:%S')}] {w}")
             if log is not None:
                 log(w)
+            else:
+                commission_log_main(w)
         if curve_on:
             # Short pre-burst settle; the burst’s skip_rates strip the inductive ring from samples.
             time.sleep(max(0.0, OC_CURVE_PREBURST_S))
             samples = reference.collect_oc_decay_samples()
             if log is not None and samples:
                 n = len(samples)
-                if n > 6:
-                    log(
-                        f"  OC curve n={n} head={samples[:3]!r} … "
-                        f"tail={samples[-3:]!r}"
-                    )
-                else:
-                    log(f"  OC curve n={n} pts={samples!r}")
+                t0, p0 = samples[0]
+                t1, p1 = samples[-1]
+                log(
+                    f"OC window: {n} pts, t={float(t0):.3f}…{float(t1):.3f} s, "
+                    f"ref {float(p0):.1f}…{float(p1):.1f} mV"
+                )
+                if _commission_oc_debug():
+                    if n > 6:
+                        log(
+                            f"OC detail: head={samples[:3]!r} "
+                            f"tail={samples[-3:]!r}"
+                        )
+                    else:
+                        log(f"OC detail: {samples!r}")
             inf, rate = find_oc_curve_metrics(samples)
             return float(reference.ref_temp_adjust_mv(float(inf), tf)), float(rate)
         time.sleep(INSTANT_OFF_WINDOW_S)
@@ -646,8 +665,8 @@ def _instant_off_ref_mv_and_restore(
                 raw_vals.append(inf_mv)
                 if log is not None:
                     log(
-                        f"  OC sequential {anode_hw_label(cut_ch)}: inflection "
-                        f"{raw_vals[-1]:.1f} mV (using min across anodes for shift)"
+                        f"OC sequential {anode_hw_label(cut_ch)}: inflection "
+                        f"{raw_vals[-1]:.1f} mV (min across anodes for shift)"
                     )
                 _restore_saved_pwm()
                 readings = _sensor_readings(sim_state)
@@ -666,8 +685,8 @@ def _instant_off_ref_mv_and_restore(
                 rates.append(rate_mv_s)
                 if log is not None and use_repeat:
                     log(
-                        f"  OC cut {cut_i + 1}/{ncuts}: inflection {inf_mv:.1f} mV "
-                        f"depol_slope={rate_mv_s:.3f} mV/s"
+                        f"OC cut {cut_i + 1}/{ncuts}: inflection {inf_mv:.1f} mV, "
+                        f"depol_slope {rate_mv_s:.3f} mV/s"
                     )
                 _restore_saved_pwm()
                 if cut_i + 1 < ncuts and repol_s > 0.0:
@@ -822,10 +841,11 @@ def run(
 
     def log(msg: str) -> None:
         if verbose:
-            print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
+            commission_log_main(msg)
 
-    # Phase 1 — native potential (docs/iccp-requirements.md §3.3: median, stability/slope gates)
-    log("Phase 1 — measuring native corrosion potential (spec capture / median)")
+    if verbose:
+        print()
+        print_commission_section("Phase 1 — native Ecorr (open-circuit, spec capture)")
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
     _anode_placement_pause("before_phase1", anode_placement_prompts=anode_placement_prompts)
@@ -838,24 +858,28 @@ def run(
     pan_tf = temp_mod.read_fahrenheit()
     reference.save_native(native_mv, native_temp_f=pan_tf)
     if pan_tf is not None:
-        log(f"Native reference scalar: {native_mv:.1f} mV (pan temp {pan_tf:.1f} °F recorded)")
+        log(
+            f"Native baseline: {native_mv:.1f} mV (pan {pan_tf:.1f} °F);  "
+            f"goal ≥{cfg.TARGET_SHIFT_MV} mV shift → ref ≈{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
+        )
     else:
-        log(f"Native reference scalar: {native_mv:.1f} mV")
-    log(
-        f"Target polarization shift: ≥{cfg.TARGET_SHIFT_MV} mV (native − reading); "
-        f"ref typically falls toward ~{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
-    )
+        log(
+            f"Native baseline: {native_mv:.1f} mV;  "
+            f"goal ≥{cfg.TARGET_SHIFT_MV} mV shift → ref ≈{native_mv - cfg.TARGET_SHIFT_MV:.1f} mV under CP"
+        )
 
     _anode_placement_pause("after_phase1", anode_placement_prompts=anode_placement_prompts)
 
     original_target_ma = float(cfg.TARGET_MA)
     wto = float(getattr(cfg, "COMMISSIONING_WALL_TIMEOUT_S", 0.0) or 0.0)
     comm_deadline: float | None = (time.monotonic() + wto) if wto > 0 else None
-    if comm_deadline is not None:
+    if comm_deadline is not None and verbose:
         log(
-            f"  wall timeout: {wto:g} s from Phase 2 start (COMMISSIONING_WALL_TIMEOUT_S)"
+            f"Wall limit: {wto:g} s from here (COMMISSIONING_WALL_TIMEOUT_S)"
         )
-    # Phase 2 — ramp until target shift
+    if verbose:
+        print()
+        print_commission_section("Phase 2 — ramp to target shift")
     try:
         _phase2_3_ramp_lock(
             reference,
@@ -881,8 +905,6 @@ def _phase2_3_ramp_lock(
     comm_deadline: float | None,
 ) -> None:
     """Phase 2 ramp + Phase 3 lock; mutates ``cfg.TARGET_MA`` on success."""
-    # Phase 2 — ramp until target shift
-    log("Phase 2 — ramping current toward target polarization")
     current_target_ma = max(cfg.TARGET_MA * 0.1, 0.05)
     confirm_count = 0
     curve_on = bool(getattr(cfg, "COMMISSIONING_OC_CURVE_ENABLED", True))
@@ -906,10 +928,6 @@ def _phase2_3_ramp_lock(
     while current_target_ma <= cfg.MAX_MA:
         _check_comm_wall_deadline(comm_deadline)
         cfg.TARGET_MA = round(current_target_ma, 3)
-        log(
-            f"  TARGET_MA = {current_target_ma:.3f} mA, "
-            f"regulating {RAMP_SETTLE_S:.0f}s ..."
-        )
         _pump_control(
             controller,
             sim_state,
@@ -919,9 +937,10 @@ def _phase2_3_ramp_lock(
         )
         if verbose:
             r_settle = _sensor_readings(sim_state)
-            log(f"  {_delivered_ma_report(r_settle)}")
-
-        log(f"  instant-off ({oc_desc}) …")
+            log(
+                f"Setpoint {current_target_ma:.3f} mA · {RAMP_SETTLE_S:.0f}s regulate  |  "
+                f"{commission_ina_compact(r_settle, num_channels=cfg.NUM_CHANNELS)}"
+            )
         raw, shift, _depol = _instant_off_ref_mv_and_restore(
             controller,
             reference,
@@ -930,16 +949,18 @@ def _phase2_3_ramp_lock(
             wall_deadline_mono=comm_deadline,
         )
         shift_str = f"{shift:.1f}" if shift is not None else "N/A"
-        log(
-            f"  ref@off: {raw:.1f} mV  shift(native−off): {shift_str} / "
-            f"{cfg.TARGET_SHIFT_MV} mV"
-        )
+        if verbose:
+            log(
+                f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
+                f"shift (native−off) {shift_str} / {cfg.TARGET_SHIFT_MV} mV"
+            )
 
         tol = float(getattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_TOLERANCE", 0.9))
         thr = float(cfg.TARGET_SHIFT_MV)
         if shift is not None and shift >= thr:
             confirm_count += 1
-            log(f"  target reached ({confirm_count}/{CONFIRM_TICKS})")
+            if verbose:
+                log(f"Shift in band — streak {confirm_count}/{CONFIRM_TICKS}")
             if confirm_count >= CONFIRM_TICKS:
                 break
         elif shift is not None and shift >= thr * tol:
@@ -967,12 +988,16 @@ def _phase2_3_ramp_lock(
         )
 
     _check_comm_wall_deadline(comm_deadline)
-    log(f"Phase 3 — locking in at {current_target_ma:.3f} mA/ch")
     phase3_s = max(
         float(RAMP_SETTLE_S),
         float(getattr(cfg, "COMMISSIONING_PHASE3_LOCK_SETTLE_S", 30.0)),
     )
-    log(f"  final regulate / settle {phase3_s:.0f}s before last instant-off …")
+    if verbose:
+        print()
+        print_commission_section("Phase 3 — lock, final OC, and save")
+    log(
+        f"Lock {current_target_ma:.3f} mA/ch — {phase3_s:.0f}s final regulate, then last instant-off"
+    )
     _pump_control(
         controller,
         sim_state,
@@ -982,7 +1007,10 @@ def _phase2_3_ramp_lock(
     )
     if verbose:
         r_lock = _sensor_readings(sim_state)
-        log(f"  {_delivered_ma_report(r_lock)}")
+        log(
+            f"After {phase3_s:.0f}s  |  "
+            f"{commission_ina_compact(r_lock, num_channels=cfg.NUM_CHANNELS)}"
+        )
     _final_raw, final_shift, _f_depol = _instant_off_ref_mv_and_restore(
         controller,
         reference,
@@ -1031,9 +1059,11 @@ def run_native_only(
 
     def log(msg: str) -> None:
         if verbose:
-            print(f"[commission {time.strftime('%H:%M:%S')}] {msg}")
+            commission_log_main(msg)
 
-    log("Phase 1 (native-only) — measuring native corrosion potential")
+    if verbose:
+        print()
+        print_commission_section("Phase 1 — native only (re-capture baseline)")
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
     _anode_placement_pause("before_phase1", anode_placement_prompts=anode_placement_prompts)

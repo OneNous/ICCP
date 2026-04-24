@@ -472,6 +472,7 @@ def _cmd_commission(rest: list[str]) -> int:
             "For real hardware, run on the Pi without --sim."
         )
 
+    import config.settings as cfg
     import commissioning
     import sensors
     from control import Controller
@@ -497,9 +498,12 @@ def _cmd_commission(rest: list[str]) -> int:
             return 1
 
     sim_state = sensors.SimSensorState() if sim else None
+    from console_ui import print_commission_header
+
     ctrl = Controller()
     ref = ReferenceElectrode()
-    print(f"[iccp commission] Reference path: {ref_hw_message()}")
+    print_commission_header()
+    print(f"[main] Reference path: {ref_hw_message()}")
     try:
         if native_only:
             native_mv, reason = commissioning.run_native_only(
@@ -507,21 +511,20 @@ def _cmd_commission(rest: list[str]) -> int:
             )
             if native_mv is None:
                 print(
-                    f"[iccp commission] Native capture failed: {reason}",
+                    f"[main] Native capture failed: {reason}",
                     file=sys.stderr,
                 )
                 return 1
             print(
-                f"[iccp commission] Native re-captured: native_mv={native_mv:.2f} mV "
-                f"(reason={reason})"
+                f"[main] Native re-captured: {native_mv:.2f} mV ({reason})"
             )
         else:
             commissioned = commissioning.run(
                 ref, ctrl, sim_state=sim_state, verbose=True, **anode_prompt_kw
             )
             print(
-                f"[iccp commission] Done. commissioned_target_ma={commissioned:.3f} "
-                f"(see commissioning.json)"
+                f"[main] Done — commissioned_target_ma={commissioned:.3f} mA "
+                f"→ {cfg.PROJECT_ROOT / 'commissioning.json'}"
             )
     finally:
         ctrl.cleanup()

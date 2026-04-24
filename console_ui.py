@@ -3,8 +3,50 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from channel_labels import anode_label
+
+# Match print_status_table width for visual continuity in commission / probe text.
+CONSOLE_COMMISSION_WIDTH = 80
+
+
+def print_commission_header() -> None:
+    """One line like ``CoilShield starting…`` in ``iccp start`` (foreground commission only)."""
+    print("CoilShield commissioning (Ctrl+C to stop; writes commissioning.json)")
+
+
+def print_commission_section(title: str, *, width: int = CONSOLE_COMMISSION_WIDTH) -> None:
+    """Section boundary — same idiom as rule lines in :func:`print_status_table`."""
+    print("─" * width)
+    print(f"  {title}")
+    print("─" * width)
+
+
+def commission_log_main(msg: str) -> None:
+    """User-facing line during commission — matches ``[main]`` in :func:`iccp_runtime.run_iccp_forever`."""
+    print(f"[main] {msg}")
+
+
+def commission_ina_compact(readings: Any, *, num_channels: int) -> str:
+    """Shorter one-line shunt report for each ramp (same data as the legacy INA delivered line)."""
+    segs: list[str] = []
+    total = 0.0
+    ok = False
+    n = int(num_channels)
+    for ch in range(n):
+        r = readings.get(ch, {})
+        tag = f"A{ch + 1}"
+        if r.get("ok"):
+            c = float(r.get("current", 0.0) or 0.0)
+            segs.append(f"{tag}={c:.3f}")
+            total += c
+            ok = True
+        else:
+            err = (r.get("sensor_error") or r.get("error") or "?")[:12]
+            segs.append(f"{tag}=N/A({err})")
+    suff = f"Σ={total:.3f} mA" if ok else "Σ=—"
+    return "  ".join(segs) + f"  {suff}"
 
 
 def print_sim_schedule(sensor_module: object) -> None:
