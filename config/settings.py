@@ -502,7 +502,7 @@ SIM_NATIVE_ZINC_MV = 200.0
 # --- Spec v2: shift-based FSM, native re-capture, fault taxonomy (docs/iccp-requirements.md) ---
 # Interim defaults per Decisions log Q3 — revisit after first bench soak where noted.
 # Native baseline capture gates (§3.2, §8.1 Phase 1).
-T_RELAX: float = 120.0                      # s relax before native samples [interim]
+T_RELAX: float = 60.0                       # s relax before native samples (1 min) [interim]
 NATIVE_SAMPLE_INTERVAL_S: float = 1.0      # s between samples during median capture
 NATIVE_CAPTURE_RETRIES: int = 3             # §3.3 — before REFERENCE_INVALID
 I_REST_MA: float = 0.3                      # |I| ceiling for “at rest” (stricter than legacy 1.0 mA)

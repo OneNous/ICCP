@@ -74,7 +74,7 @@ All of these must hold for the full capture window, not just at the start:
 
 1. **All anode gates at hard LOW**, not soft-PWM 0%. Hardware-equivalent of `controller.enter_static_gate_off()` (see [control.py](../control.py) `PWMBank.enter_static_gate_off`).
 2. **Shunt currents confirmed at rest.** Every INA219 reads `|I| < I_REST_MA` (proposed default `0.3` mA; today `COMMISSIONING_OC_CONFIRM_I_MA = 1.0` mA is too loose — see sidebar) for `T_REST_CONFIRM` seconds continuously.
-3. **Reference stable.** Rolling std-dev of the reference over a window `W_REF = 10` s below `NATIVE_STABILITY_MV` (proposed default `3` mV) for `T_RELAX` seconds (default `120` s **[interim — revisit after first bench soak]**).
+3. **Reference stable.** Rolling std-dev of the reference over a window `W_REF = 10` s below `NATIVE_STABILITY_MV` (proposed default `3` mV) for `T_RELAX` seconds (default `60` s **[interim — revisit after first bench soak]**).
 4. **Slope gate.** Linear slope over the capture window ≤ `NATIVE_SLOPE_MV_PER_MIN` (proposed default `2` mV/min). If the reference is still drifting faster than that, the cell has not relaxed.
 5. **Temperature recorded.** `pan_temp_f` from the DS18B20 is captured alongside the native so `REF_TEMP_COMP_MV_PER_F` has a valid anchor point (see [reference.py](../reference.py) `ref_temp_adjust_mv`).
 
@@ -434,7 +434,7 @@ Settled decisions for v1 of this document. Each row maps to the section of the d
 |---|---|---|---|---|
 | Q1 | `native_mv` per-channel vs scalar | Shared scalar | §3.1 | Single physical reference electrode; `instant-off` removes channel-specific IR artifact. |
 | Q2 | Native recapture cadence | Scheduled daily + drift-triggered warning + on-demand CLI | §3.4 | Drift trigger is a warning in `system_alerts`, not a forced re-capture. |
-| Q3 | Defaults for `T_POL_STABLE`, `T_RELAX`, `T_POLARIZE_MAX`, `MAX_SHIFT_MV` | Accept proposed 300 / 120 / 1800 s, 200 mV as **interim** | §2.1, §3.2, §4.4 | Tagged `[interim — revisit after first bench soak]` in the doc. |
+| Q3 | Defaults for `T_POL_STABLE`, `T_RELAX`, `T_POLARIZE_MAX`, `MAX_SHIFT_MV` | Accept proposed 300 / 60 / 1800 s, 200 mV as **interim** | §2.1, §3.2, §4.4 | Tagged `[interim — revisit after first bench soak]` in the doc. |
 | Q4 | `CANNOT_POLARIZE` handling | Auto-retry up to `POLARIZE_RETRY_MAX = 3` with `POLARIZE_RETRY_INTERVAL_S = T_POLARIZE_MAX`, then permanent latch | §6.1 | Separate retry interval from the general 60 s `FAULT_RETRY_INTERVAL_S` — polarization is slow. |
 | Q5 | `Overprotected` inner-loop behavior | Ramp duty down under potential control | §5.3 | Hard-cut oscillates; revisit only if potential-control recovery proves unstable on bench. |
 | Q6 | Reference sensor primary | ADS1115 only in the supported matrix; INA219 kept as legacy, out of support | §7.1 | INA219 path lacks slope/stability instrumentation §3 requires. |
