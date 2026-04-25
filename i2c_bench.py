@@ -260,19 +260,56 @@ def _ads1115_dr_conversion_s(dr: int) -> float:
     return 1.0 / sps
 
 
-def _ads1115_config_word(channel: int, fsr_v: float, dr: int = 5) -> int:
-    """Single-ended AINn vs GND, single-shot; DR[2:0] in bits [7:5] (default 101 = 250 SPS)."""
+def _ads1115_config_word(
+    channel: int,
+    fsr_v: float,
+    *,
+    dr: int = 5,
+    mux_bits: int | None = None,
+) -> int:
+    """
+    ADS1115 single-shot config word.
+
+    Back-compat: positional ``channel, fsr_v`` builds **single-ended** AINn vs GND.
+    For differential mode, pass an explicit ``mux_bits`` (bits [14:12]).
+    """
     if channel not in (0, 1, 2, 3):
         raise ValueError("ADS1115 channel must be 0..3")
     if (dr & 7) != dr:
         raise ValueError("ADS1115 DR must be 0..7")
-    mux = (4 + channel) << 12
+    if mux_bits is None:
+        mux_bits = 4 + int(channel)
+    if mux_bits not in range(0, 8):
+        raise ValueError("ADS1115 mux_bits must be 0..7")
+    mux = int(mux_bits) << 12
     # PGA bits 11-9
     pga_map = {6.144: 0x0000, 4.096: 0x0200, 2.048: 0x0400, 1.024: 0x0600, 0.512: 0x0800, 0.256: 0x0A00}
     pga = pga_map.get(round(fsr_v, 3), 0x0200)
     # OS=1 start, MUX, PGA, MODE=1 single, DR; COMP_QUE=00 (not 11) so ALERT/RDY can act as conversion-ready
     # when Lo/Hi_thresh are programmed (see reference._init_ref_ads1115).
     return 0x8000 | mux | pga | 0x0100 | ((dr & 7) << 5) | 0
+
+
+def _ads1115_mux_bits_differential(pos: int, neg: int) -> int:
+    """
+    ADS1115 differential MUX options are limited (TI Table 8-4):
+      0: AIN0-AIN1
+      1: AIN0-AIN3
+      2: AIN1-AIN3
+      3: AIN2-AIN3
+    """
+    pair = (int(pos), int(neg))
+    mux_map: dict[tuple[int, int], int] = {
+        (0, 1): 0,
+        (0, 3): 1,
+        (1, 3): 2,
+        (2, 3): 3,
+    }
+    if pair not in mux_map:
+        raise ValueError(
+            f"ADS1115 differential pair {pair} unsupported; valid: {sorted(mux_map)}"
+        )
+    return mux_map[pair]
 
 
 def _ads1115_volts_per_lsb(fsr_v: float) -> float:
@@ -357,6 +394,95 @@ def ads1115_read_single_ended(
                 bus,
                 addr,
                 channel,
+                fsr_v,
+                dr=dr,
+                conversion_delay_s=conversion_delay_s,
+                poll_interval_s=poll_interval_s,
+                poll_max=poll_max,
+            )
+        except OSError as e:
+            last = e
+            en = getattr(e, "errno", None)
+            if en is None or int(en) not in transient or attempt >= max_a:
+                raise
+            w = min(0.3, delay0 * attempt)
+            time.sleep(w)
+    assert last is not None  # pragma: no cover
+    raise last
+
+
+def _ads1115_read_differential_once(
+    bus: Any,
+    addr: int,
+    pos_channel: int,
+    neg_channel: int,
+    fsr_v: float,
+    *,
+    dr: int,
+    conversion_delay_s: float | None,
+    poll_interval_s: float,
+    poll_max: int | None,
+) -> float:
+    """Single attempt at differential single-shot read (no retry)."""
+    mux_bits = _ads1115_mux_bits_differential(pos_channel, neg_channel)
+    cfg = _ads1115_config_word(0, fsr_v, dr=dr, mux_bits=mux_bits)
+    dr_bits = (cfg >> 5) & 7
+    t_conv = _ads1115_dr_conversion_s(dr_bits)
+    if conversion_delay_s is None:
+        conversion_delay_s = t_conv * 1.25 + 5e-4
+    if poll_max is None:
+        poll_max = max(50, int(t_conv / max(poll_interval_s, 1e-6)) + 25)
+
+    bus.write_i2c_block_data(addr, 0x01, [(cfg >> 8) & 0xFF, cfg & 0xFF])
+    for _ in range(poll_max):
+        time.sleep(poll_interval_s)
+        hi, lo = bus.read_i2c_block_data(addr, 0x01, 2)
+        status = ((hi << 8) | lo) & 0xFFFF
+        if status & 0x8000:
+            break
+    else:
+        time.sleep(max(0.0, float(conversion_delay_s)))
+
+    raw = bus.read_i2c_block_data(addr, 0x00, 2)
+    val = (raw[0] << 8) | raw[1]
+    if val & 0x8000:
+        val -= 65536
+    return val * _ads1115_volts_per_lsb(fsr_v)
+
+
+def ads1115_read_differential(
+    bus: Any,
+    addr: int,
+    pos_channel: int,
+    neg_channel: int,
+    fsr_v: float = 4.096,
+    *,
+    dr: int = 5,
+    conversion_delay_s: float | None = None,
+    poll_interval_s: float = 0.002,
+    poll_max: int | None = None,
+) -> float:
+    """Return differential voltage in volts (AIN+ − AIN−) for supported ADS1115 mux pairs."""
+    max_a = 4
+    delay0 = 0.05
+    transient: tuple[int, ...] = (5, 121, 110)
+    try:
+        import config.settings as _cfg
+
+        max_a = max(1, int(getattr(_cfg, "ADS1115_SMBUS_READ_MAX_ATTEMPTS", 4)))
+        transient = tuple(
+            int(x) for x in getattr(_cfg, "I2C_TRANSIENT_ERRNOS", (5, 121, 110))
+        )
+    except Exception:
+        pass
+    last: OSError | None = None
+    for attempt in range(1, max_a + 1):
+        try:
+            return _ads1115_read_differential_once(
+                bus,
+                addr,
+                pos_channel,
+                neg_channel,
                 fsr_v,
                 dr=dr,
                 conversion_delay_s=conversion_delay_s,

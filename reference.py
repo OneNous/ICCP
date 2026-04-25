@@ -625,6 +625,7 @@ def _read_ads_mv_scaled_once(
         _ads1115_dr_conversion_s,
         ads1115_config_os_ready,
         ads1115_read_conversion_volts,
+        ads1115_read_differential,
         ads1115_read_single_ended,
         ads1115_start_single_shot,
         ads1115_wait_os_ready,
@@ -640,6 +641,9 @@ def _read_ads_mv_scaled_once(
     mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
     addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
     ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
+    use_diff = bool(getattr(cfg, "ADS1115_DIFFERENTIAL", False))
+    diff_p = int(getattr(cfg, "ADS1115_DIFF_POS_CHANNEL", 0))
+    diff_n = int(getattr(cfg, "ADS1115_DIFF_NEG_CHANNEL", 1))
     fsr = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
     scale = _effective_ref_ads_scale()
     pin = _ensure_ads_alrt_gpio() if use_alrt else None
@@ -739,6 +743,8 @@ def _read_ads_mv_scaled_once(
                     )
                 time.sleep(max(0.0, t_conv * 1.25 + 5e-4))
             return float(ads1115_read_conversion_volts(_ref_smbus, addr, fsr))
+        if use_diff:
+            return float(ads1115_read_differential(_ref_smbus, addr, diff_p, diff_n, fsr, dr=dr))
         return float(ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr))
 
     n_sub = max(1, int(median_subsamples))

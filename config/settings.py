@@ -57,6 +57,13 @@ NUM_CHANNELS = 4
 ADS1115_ADDRESS = 0x48
 ADS1115_BUS = 1
 ADS1115_CHANNEL = 0
+# If True, read the ADS1115 as a **differential** measurement (AIN+ − AIN−) instead of
+# single-ended AINn vs GND. Use for “metal sense” wiring where the negative sense lead
+# is a separate wire (e.g. AIN0=metal tip, AIN1=controller GND at the rail or a Kelvin return).
+ADS1115_DIFFERENTIAL = False
+# Differential pair only supports certain ADS1115 mux combos; (0,1) is the common one.
+ADS1115_DIFF_POS_CHANNEL = 0
+ADS1115_DIFF_NEG_CHANNEL = 1
 # TI PGA full-scale — must match the programmed range or every mV is scaled wrong vs a DMM.
 # ±2.048 V is typical for Ag/AgCl + divider when the AIN node stays below ~2 V; use ±4.096 only
 # if the front-end can exceed ±2.048 V (see COILSHIELD_ADS1115_FSR_V).

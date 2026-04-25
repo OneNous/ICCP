@@ -970,8 +970,9 @@ def _pump_control(
 
     If ``commission_log`` is set (commissioning UI only), log **time remaining** until
     ``progress_next`` at ``progress_interval_s`` (monotonic wall, not tick drift).
-    When ``anode_progress_detail`` is True, each progress line also includes per-anode
-    shunt mA and duty (after ``controller.update`` for that tick).
+    When ``anode_progress_detail`` is True, each progress line also includes
+    ``ref(raw)=… mV`` (when ``reference`` is not None) plus per-anode shunt mA
+    and duty (after ``controller.update`` for that tick).
     """
     duration = max(0.0, float(duration_s))
     t_end = time.monotonic() + duration
@@ -987,6 +988,7 @@ def _pump_control(
         controller.update(readings)
         if sim_state is not None:
             sim_state.duties = controller.duties()
+        ref_raw_for_progress: float | None = None
         if reference is not None:
             tf = temp_mod.read_fahrenheit()
             duties = controller.duties()
@@ -994,6 +996,7 @@ def _pump_control(
             _raw, ref_shift = reference.read_raw_and_shift(
                 duties=duties, statuses=st, temp_f=tf
             )
+            ref_raw_for_progress = _raw
             ref_valid, ref_valid_reason = reference.ref_valid()
             controller.advance_shift_fsm(
                 readings,
@@ -1011,7 +1014,9 @@ def _pump_control(
                 mm, ss = divmod(rsec, 60)
                 extra = ""
                 if anode_progress_detail:
-                    extra = f"  |  {_pump_regulate_anode_snapshot(controller, readings)}"
+                    if reference is not None:
+                        extra = f"  |  ref(raw)={ref_raw_for_progress:.1f} mV"
+                    extra += f"  |  {_pump_regulate_anode_snapshot(controller, readings)}"
                 cl(
                     f"{progress_label} — ~{mm:d}:{ss:02d} until {progress_next}{extra}"
                 )
