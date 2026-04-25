@@ -31,7 +31,14 @@ def run_iccp_forever(args: Namespace) -> int:
     from control import Controller
     from leds import StatusLEDs
     from logger import DataLogger
-    from reference import ReferenceElectrode, ref_hw_message, ref_hw_ok, ref_ux_hint
+    from reference import (
+        ReferenceElectrode,
+        ref_ads_sense_label,
+        ref_hw_message,
+        ref_hw_ok,
+        ref_raw_legend,
+        ref_ux_hint,
+    )
 
     import config.settings as cfg
 
@@ -183,6 +190,7 @@ def run_iccp_forever(args: Namespace) -> int:
                 ref_hint=hint0 or None,
                 ref_hw_message=ref_hw_message(),
                 ref_baseline_set=ref.native_mv is not None,
+                ref_ads_sense=ref_ads_sense_label(),
                 runtime_alerts=["Startup: first telemetry snapshot after init"],
                 channel_targets={
                     i: ctrl.channel_target_ma(i) for i in range(cfg.NUM_CHANNELS)
@@ -431,6 +439,7 @@ def run_iccp_forever(args: Namespace) -> int:
                     ref_hint=ref_hint or None,
                     ref_hw_message=ref_hw_line,
                     ref_baseline_set=ref_baseline_set,
+                    ref_ads_sense=ref_ads_sense_label(),
                     ref_depol_rate_mv_s=ref_depol_rate_mv_s,
                     diag_extra=diag_extra,
                     runtime_alerts=runtime_alerts or None,
@@ -572,12 +581,13 @@ def run_iccp_forever(args: Namespace) -> int:
                     else "— (no shift baseline)"
                 )
                 band_disp = ref_band if ref_shift is not None else "—"
+                rleg = ref_raw_legend()
                 print(
                     time.strftime("%H:%M:%S"),
                     "FAULTS:",
                     "; ".join(faults),
                     f"latched={fault_latched}",
-                    f"| ref raw={ref_raw_mv:.1f} mV shift={shift_str} band={band_disp}",
+                    f"| {rleg}={ref_raw_mv:.1f} mV shift={shift_str} band={band_disp}",
                 )
 
             time.sleep(cfg.SAMPLE_INTERVAL_S)

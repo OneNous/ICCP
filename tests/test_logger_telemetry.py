@@ -62,6 +62,8 @@ def test_logger_writes_sqlite_latest_json_and_csv(
     assert latest["ref_status"] == "N/A"
     assert latest["ref_baseline_set"] is False
     assert latest["ref_hw_message"] == "sim"
+    assert "ref_ads_sense" in latest
+    assert latest["ref_ads_sense"] is None
     assert "total_power_w" in latest
     assert latest.get("system_alerts") == []
     ch0 = latest["channels"]["0"]

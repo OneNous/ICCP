@@ -1056,7 +1056,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <h2 class="section-title">Reference electrode</h2>
     </div>
     <div class="ref-dl" role="list">
-      <div class="dl-row"><span class="dl-k" title="ADC or front-end reading used for polarization tracking.">Raw reading</span><span class="dl-v" id="ref-raw">—</span></div>
+      <div class="dl-row"><span class="dl-k" title="ref_raw_mv — ADS1115: single-ended vs differential is in ref_ads_sense / ref_hw_message.">Raw reading</span><span class="dl-v" id="ref-raw">—</span></div>
       <div class="dl-row"><span class="dl-k" title="mV vs commissioned baseline; null until baseline exists.">Polarization shift</span><span class="dl-v" id="ref-shift">—</span></div>
       <div class="dl-row"><span class="dl-k" title="Classification band for shift vs expected range.">Shift band</span><span class="dl-v" id="ref-band">—</span></div>
       <div class="dl-row"><span class="dl-k" title="Whether a commissioning baseline has been stored.">Baseline</span><span class="dl-v" id="ref-baseline">—</span></div>
@@ -1610,8 +1610,11 @@ async function fetchLive() {
       (sup != null && sup !== '') ? `${fmtOpt(sup, 3)} V` : '—';
     document.getElementById('kpi-temp').textContent =
       d.temp_f != null && d.temp_f !== '' ? `${d.temp_f} °F` : '—';
-    const raw = (d.ref_raw_mv != null && d.ref_raw_mv !== '')
+    const sense = (d.ref_ads_sense != null && d.ref_ads_sense !== '')
+      ? String(d.ref_ads_sense).trim() : '';
+    const rawNum = (d.ref_raw_mv != null && d.ref_raw_mv !== '')
       ? `${Number(d.ref_raw_mv).toFixed(1)} mV` : '—';
+    const raw = (rawNum !== '—' && sense) ? `${rawNum} (${sense})` : rawNum;
     const sh = (d.ref_shift_mv != null && d.ref_shift_mv !== '')
       ? `${Number(d.ref_shift_mv).toFixed(1)} mV` : '—';
     const bd = d.ref_status || '—';

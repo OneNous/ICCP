@@ -338,6 +338,42 @@ def ref_hw_ok() -> bool:
     return _ref_smbus is not None
 
 
+def ref_ads_sense_label() -> str:
+    """
+    How ``ref_raw_mv`` is acquired (ADS1115). Empty for INA219 ref, sim, or disabled.
+    Shown in telemetry, UI, and one-line ref banners so diff vs single-ended is obvious.
+    """
+    if not _REF_ENABLED or SIM_MODE or _REF_BACKEND != "ads1115":
+        return ""
+    if bool(getattr(cfg, "ADS1115_DIFFERENTIAL", False)):
+        p = int(getattr(cfg, "ADS1115_DIFF_POS_CHANNEL", 0))
+        n = int(getattr(cfg, "ADS1115_DIFF_NEG_CHANNEL", 1))
+        return f"Δ AIN{p}−AIN{n}"
+    ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
+    return f"SE AIN{ch} vs GND"
+
+
+def ref_raw_legend() -> str:
+    """
+    Log/UI field name for the scalar mV in ``ref.read()`` / ``ref_raw_mv``:
+    ``raw(Δ)`` in differential mode, else ``raw``.
+    """
+    s = ref_ads_sense_label()
+    if s.startswith("Δ"):
+        return "raw(Δ)"
+    return "raw"
+
+
+def ref_instant_legend() -> str:
+    """
+    Same idea as :func:`ref_raw_legend` but with a ``ref`` prefix (commissioning / compact lines).
+    """
+    s = ref_ads_sense_label()
+    if s.startswith("Δ"):
+        return "ref(Δ)"
+    return "ref"
+
+
 def ref_hw_message() -> str:
     """One-line status for console / dashboard."""
     if not _REF_ENABLED:
@@ -348,10 +384,14 @@ def ref_hw_message() -> str:
         if _ref_ina is not None:
             return f"INA219 OK {hex(cfg.REF_INA219_ADDRESS)} i2c-{_REF_I2C_BUS}"
     elif _ref_smbus is not None:
+        bus = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))
+        sense = ref_ads_sense_label()
+        if sense:
+            return f"ADS1115 OK {hex(cfg.ADS1115_ADDRESS)} {sense} i2c-{bus}"
         ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
         return (
             f"ADS1115 OK {hex(cfg.ADS1115_ADDRESS)} "
-            f"AIN{ch} i2c-{getattr(cfg, 'ADS1115_BUS', cfg.I2C_BUS)}"
+            f"AIN{ch} i2c-{bus}"
         )
     err = (_REF_INIT_ERROR or "unknown").replace("\n", " ")
     if len(err) > 72:

@@ -14,7 +14,7 @@ readings: per-tick telemetry including chN_impedance_ohm, chN_cell_voltage_v,
 cooling_cycles: one row per completed ICCP temperature band segment (same window as
   temp.in_operating_range): duration_s, avg_temp_f, chN_protect_s (PROTECTING dwell
   within that segment). Correlates wet dwell with coil cooling cycles.
-  latest.json reference keys (every tick): ref_raw_mv, ref_shift_mv, ref_status, ref_hw_ok,
+  latest.json reference keys (every tick): ref_raw_mv, ref_ads_sense, ref_shift_mv, ref_status, ref_hw_ok,
   ref_hw_message, ref_hint, ref_baseline_set, ref_depol_rate_mv_s (SQLite/CSV also carry
   raw/hw_ok/hint; hw_message, baseline_set, depol rate are CSV + JSON).
 
@@ -576,6 +576,7 @@ class DataLogger:
         ref_hint: str | None = None,
         ref_hw_message: str | None = None,
         ref_baseline_set: bool | None = None,
+        ref_ads_sense: str | None = None,
         ref_depol_rate_mv_s: float | None = None,
         diag_extra: dict[str, object] | None = None,
         runtime_alerts: list[str] | None = None,
@@ -601,6 +602,16 @@ class DataLogger:
         galvanic_offset_baseline_mv: float | None = None,
         galvanic_offset_service_recommended: bool = False,
     ) -> dict[str, object]:
+        if ref_ads_sense is None:
+            try:
+                from reference import ref_ads_sense_label
+
+                ref_ads_sense = ref_ads_sense_label()
+            except Exception:
+                ref_ads_sense = None
+        if ref_ads_sense is not None:
+            s = str(ref_ads_sense).strip()
+            ref_ads_sense = s if s else None
         wet = any_wet
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
         ts_unix = time.time()
@@ -873,6 +884,7 @@ class DataLogger:
             payload["sim_time"] = sim_time
         # Reference block: stable keys every tick for console parity / dashboard / scripts.
         payload["ref_raw_mv"] = ref_raw_mv
+        payload["ref_ads_sense"] = ref_ads_sense
         payload["ref_shift_mv"] = ref_shift_mv
         payload["ref_status"] = ref_status or "N/A"
         payload["ref_hw_ok"] = bool(ref_hw_ok) if ref_hw_ok is not None else False

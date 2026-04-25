@@ -29,6 +29,7 @@ from reference import (
     _update_comm_file,
     find_oc_curve_metrics,
     ref_hw_message,
+    ref_instant_legend,
 )
 
 if TYPE_CHECKING:
@@ -971,8 +972,9 @@ def _pump_control(
     If ``commission_log`` is set (commissioning UI only), log **time remaining** until
     ``progress_next`` at ``progress_interval_s`` (monotonic wall, not tick drift).
     When ``anode_progress_detail`` is True, each progress line also includes
-    ``ref(raw)=… mV`` (when ``reference`` is not None) plus per-anode shunt mA
-    and duty (after ``controller.update`` for that tick).
+    ``ref=`` / ``ref(Δ)=… mV`` (ADS1115 single-ended vs differential; when
+    ``reference`` is not None) plus per-anode shunt mA and duty (after
+    ``controller.update`` for that tick).
     """
     duration = max(0.0, float(duration_s))
     t_end = time.monotonic() + duration
@@ -1015,7 +1017,10 @@ def _pump_control(
                 extra = ""
                 if anode_progress_detail:
                     if reference is not None:
-                        extra = f"  |  ref(raw)={ref_raw_for_progress:.1f} mV"
+                        extra = (
+                            f"  |  {ref_instant_legend()}="
+                            f"{ref_raw_for_progress:.1f} mV"
+                        )
                     extra += f"  |  {_pump_regulate_anode_snapshot(controller, readings)}"
                 cl(
                     f"{progress_label} — ~{mm:d}:{ss:02d} until {progress_next}{extra}"

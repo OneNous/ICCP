@@ -283,8 +283,11 @@ def build_header_text(data: dict) -> str:
     raw = data.get("ref_raw_mv")
     shift = data.get("ref_shift_mv")
     band = data.get("ref_status") or "—"
+    sense = str(data.get("ref_ads_sense") or "").strip()
     shift_s = _fmt_float(shift, 1) + " mV" if shift is not None else "—"
     raw_s = _fmt_float(raw, 1) + " mV" if raw is not None else "—"
+    if sense:
+        raw_s = f"{raw_s}  ({sense})" if raw_s != "—" else raw_s
     lines.append(f"Ref: {ref_hw}")
     lines.append(
         f"  raw={raw_s}   shift={shift_s}   band={band}   "

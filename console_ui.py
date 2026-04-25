@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from channel_labels import anode_label
+from reference import ref_raw_legend
 
 # Match print_status_table width for visual continuity in commission / probe text.
 CONSOLE_COMMISSION_WIDTH = 80
@@ -128,8 +129,9 @@ def print_status_table(
         temp_str = f"{temp_f:.1f}°F" if temp_f is not None else "—"
         if ref_hw_line != "disabled":
             print(f"  Ref sensor: {ref_hw_line}")
+            rleg = ref_raw_legend()
             print(
-                f"    raw={ref_raw_mv:.1f} mV  |  polarization shift={shift_str}  "
+                f"    {rleg}={ref_raw_mv:.1f} mV  |  polarization shift={shift_str}  "
                 f"|  shift_band={band_disp}    Temp: {temp_str}"
             )
         else:
@@ -287,9 +289,10 @@ def print_verbose_tick_line(
         f"{anode_label(i)}={ch_status.get(i, '?')[:4]}"
         for i in chs
     )
+    rleg = ref_raw_legend()
     print(
         f"[tick]{dt}  {st_s}  |  {ina}  |  "
-        f"ref {ref_raw_mv:.0f} mV sh {shift_s} {band_s}  |  T {t_s}  |  "
+        f"{rleg} {ref_raw_mv:.0f} mV sh {shift_s} {band_s}  |  T {t_s}  |  "
         f"Wet={int(any_wet)}  Latch={int(latched)}  F: {f_s}"
     )
 
@@ -309,7 +312,8 @@ def print_ref_compact(
     )
     band_disp = ref_band if ref_shift is not None else "—"
     hint = f"  |  {ref_hint}" if ref_hint else ""
+    rleg = ref_raw_legend()
     print(
-        f"[ref] {ref_hw_line}  |  raw={ref_raw_mv:.1f} mV  |  shift={shift_str}  "
+        f"[ref] {ref_hw_line}  |  {rleg}={ref_raw_mv:.1f} mV  |  shift={shift_str}  "
         f"|  band={band_disp}{hint}"
     )
