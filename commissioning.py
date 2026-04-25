@@ -1204,8 +1204,7 @@ def run(
         for _line in _phase2_active_channel_lines():
             log(_line)
         log(
-            "Shunt mA: A# = firmware row (A1=ch0 = first INA+GPIO in config). "
-            "If only the third shunt is wired, expect |I| on A3 — not on A1."
+            "Shunt mA: A# = firmware row (A1=ch0 = first INA+GPIO in config)."
         )
     try:
         _phase2_3_ramp_lock(
