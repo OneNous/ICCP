@@ -132,3 +132,27 @@ def test_ina_confirm_off_details_not_ok_shows_error() -> None:
     )
     assert ok is False
     assert "NACK" in reasons[0]
+
+
+def test_phase2_active_channel_lines_all_default_adds_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "NUM_CHANNELS", 4, raising=False)
+    monkeypatch.setattr(cfg, "ACTIVE_CHANNEL_INDICES", None, raising=False)
+    lines = commissioning._phase2_active_channel_lines()
+    assert len(lines) == 2
+    assert "A1, A2, A3, A4" in lines[0]
+    assert "By default" in lines[1] and "--anode 1" in lines[1]
+
+
+def test_phase2_active_channel_subset_single_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "NUM_CHANNELS", 4, raising=False)
+    monkeypatch.setattr(
+        cfg, "ACTIVE_CHANNEL_INDICES", frozenset({0}), raising=False
+    )
+    lines = commissioning._phase2_active_channel_lines()
+    assert len(lines) == 1
+    assert "A1" in lines[0] and "A2" not in lines[0]
+    assert "By default" not in lines[0]

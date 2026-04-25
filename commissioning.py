@@ -46,6 +46,33 @@ def _commission_oc_debug() -> bool:
     )
 
 
+def _phase2_active_channel_lines() -> list[str]:
+    """
+    Log lines for Phase 2: which anode row(s) the control loop will use.
+
+    If ``COILSHIELD_ACTIVE_CHANNELS`` is unset, every logical row 0..NUM_CHANNELS-1 is
+    included — same duty on A1..A# as in progress lines. A single-physical-anode
+    field install should pass ``iccp commission --anode 1`` (or a 0-based env list)
+    so unused gates stay at 0% duty and off the ramp path.
+    """
+    nch = int(cfg.NUM_CHANNELS)
+    chs = cfg.active_channel_indices_list()
+    ac = cfg.ACTIVE_CHANNEL_INDICES
+    a_str = ", ".join(f"A{c + 1}" for c in chs)
+    ch_str = ", ".join(str(c) for c in chs)
+    lines: list[str] = [
+        f"CP includes {len(chs)} anode row(s) this run: {a_str} (0-based ch {ch_str})."
+    ]
+    if ac is None and nch > 1:
+        lines.append(
+            "By default all logical rows are in the control set, so the same duty appears "
+            "on every A#. If only one physical anode is installed, restrict with e.g. "
+            "`iccp commission --anode 1` (1-based) or `COILSHIELD_ACTIVE_CHANNELS=0` "
+            "(comma-separated 0-based indices) so other gates stay at 0%."
+        )
+    return lines
+
+
 # Skip-hint to stderr while blocking on anode Enter.
 _TTY_ANODE_SKIP_HINT_S: float = 75.0
 # Passive status line while waiting for Enter (no controller.update — gates must stay off).
@@ -1164,6 +1191,8 @@ def run(
     if verbose:
         print()
         print_commission_section("Phase 2 — ramp to target shift")
+        for _line in _phase2_active_channel_lines():
+            log(_line)
         log(
             "Shunt mA: A# = firmware row (A1=ch0 = first INA+GPIO in config). "
             "If only the third shunt is wired, expect |I| on A3 — not on A1."

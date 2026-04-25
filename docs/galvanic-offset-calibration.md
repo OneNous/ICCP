@@ -39,6 +39,8 @@ Legal claims are outside this repository; coordinate with counsel for patent fil
 
 Commissioning lines list **A1, A2, …** = **firmware channel index 0, 1, …** = the order in `INA219_ADDRESSES` and `PWM_GPIO_PINS` (see `anode_hw_label` / `channel_labels.py`). If you install a single anode on the **third** harness row, |I| shows on **A3**, not A1. Values near **0.1 mA** on one channel and ~0 on others are often shunt **offset or noise** until real CP current (mA range) appears — confirm the anode/return is on the row you think matches A1 in your build.
 
+**Control set vs harness:** if only one anode is physically installed, pass **`iccp commission --anode 1`** (for A1) or set **`COILSHIELD_ACTIVE_CHANNELS=0`** (0-based) so the firmware’s “active” anode list is only that row. Otherwise, by default, every logical row is in the control path and you will see the same duty and per-row shunt columns on A1..A# — not “only the wired leg.” (Requires per-channel PWM; see `SHARED_RETURN_PWM` and `docs/hardware-shared-anode-bank.md` if you use a shared return bank.)
+
 ## See also
 
 - [reference-electrode-placement.md](reference-electrode-placement.md) — reference tip placement vs anode return  
