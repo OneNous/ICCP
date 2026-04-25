@@ -60,7 +60,7 @@ ADS1115_CHANNEL = 0
 # If True, read the ADS1115 as a **differential** measurement (AIN+ − AIN−) instead of
 # single-ended AINn vs GND. Use for “metal sense” wiring where the negative sense lead
 # is a separate wire (e.g. AIN0=metal tip, AIN1=controller GND at the rail or a Kelvin return).
-ADS1115_DIFFERENTIAL = False
+ADS1115_DIFFERENTIAL = True
 # Differential pair only supports certain ADS1115 mux combos; (0,1) is the common one.
 ADS1115_DIFF_POS_CHANNEL = 0
 ADS1115_DIFF_NEG_CHANNEL = 1
