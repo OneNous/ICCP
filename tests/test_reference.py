@@ -91,7 +91,7 @@ def test_baseline_mv_for_shift_prefers_anodes_in_ocp(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         ReferenceElectrode, "read", lambda self, *a, **k: 200.0
     )
-    assert ref.shift_mv() == 75.0  # 275 - 200
+    assert ref.shift_mv() == -75.0  # 200 - 275 (raw − baseline)
     monkeypatch.setattr(cfg, "TARGET_SHIFT_MV", 100)
     monkeypatch.setattr(cfg, "MAX_SHIFT_MV", 200)
     # Total from 1a = 100 mV → only 100−33 = 67 mV more needed from 1b baseline
@@ -104,11 +104,11 @@ def test_protection_status_from_shift(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "MAX_SHIFT_MV", 200)
     ref = ReferenceElectrode()
     ref.native_mv = 200.0
-    # shift = native − raw → 100 mV when reading has fallen 100 mV vs native
+    # shift = raw − native → 100 mV when reading has risen 100 mV vs native
     monkeypatch.setattr(
         ReferenceElectrode,
         "read",
-        lambda self, duties=None, statuses=None, **kwargs: 100.0,
+        lambda self, duties=None, statuses=None, **kwargs: 300.0,
     )
     shift = ref.shift_mv(duties={}, statuses={})
     assert shift == 100.0

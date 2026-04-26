@@ -1,6 +1,10 @@
 """
 CoilShield — reference electrode (polarization shift input).
 
+**Shift (mV)** = `raw` − `baseline_mv_for_open_circuit` — matches a hand meter with **ref
+on +** and **structure/return on −**: CP makes the reading **increase** vs OCP, so shift is
+**positive** when protected.
+
 Hardware backends (see config.settings):
   • **ads1115** (default): ADS1115 @ `ADS1115_ADDRESS` on `ADS1115_BUS`, single-ended
     channel `ADS1115_CHANNEL`; raw scalar = volts × 1000 × effective scale (mV-like).
@@ -536,9 +540,9 @@ def _read_raw_mv_sim(duties: dict[int, float], statuses: dict[int, str]) -> floa
             shift += 18.0 * norm
         elif st == "OPEN":
             shift += 0.0
-    # Under CP the mV-like scalar falls vs native; model raw = native − effect so
-    # shift_mv = baseline_mv_for_shift − raw stays positive when protected (matches hardware).
-    return round(native - shift + random.gauss(0, 1.5), 2)
+    # Under CP, V(Ag/AgCl) − V(structure) **rises** (structure more cathodic). Model
+    # raw = native + effect so shift_mv = raw − baseline stays **positive** when protected.
+    return round(native + shift + random.gauss(0, 1.5), 2)
 
 
 def _linear_regression_slope_mv_s(points: list[tuple[float, float]]) -> float:
@@ -1033,8 +1037,9 @@ class ReferenceElectrode:
 
     def baseline_mv_for_shift(self) -> float | None:
         """
-        Open-circuit baseline for shift = this − raw (when 1b was run, use in-situ OCP
-        with anodes installed; else Phase 1a true native only).
+        Open-circuit baseline mV (instant-off) for **shift = raw − this** (industry: ref
+        to DVM +, structure/return to DVM −). When 1b was run, use in-situ OCP with
+        anodes installed; else Phase 1a true native only.
         """
         if self.native_oc_anodes_in_mv is not None:
             return float(self.native_oc_anodes_in_mv)
@@ -1234,12 +1239,12 @@ class ReferenceElectrode:
         *,
         temp_f: float | None = None,
     ) -> float | None:
-        """Polarization vs open-circuit baseline: baseline_mv_for_shift − raw."""
+        """Polarization vs open-circuit baseline: **raw − baseline_mv_for_shift** (mV)."""
         bl = self.baseline_mv_for_shift()
         if bl is None:
             return None
         raw = self.read(duties, statuses, temp_f=temp_f)
-        return round(bl - raw, 2)
+        return round(raw - bl, 2)
 
     def read_raw_and_shift(
         self,
@@ -1256,7 +1261,7 @@ class ReferenceElectrode:
         bl = self.baseline_mv_for_shift()
         if bl is None:
             return raw, None
-        return raw, round(bl - raw, 2)
+        return raw, round(raw - bl, 2)
 
     def collect_oc_decay_samples(self) -> list[tuple[float, float]]:
         """
@@ -1278,8 +1283,9 @@ class ReferenceElectrode:
         poll_s = max(0.0, float(getattr(cfg, "COMMISSIONING_OC_CURVE_POLL_S", 0.002)))
 
         def _sim_point(elapsed: float) -> tuple[float, float]:
+            # Instant-off: mV (ref − structure) decays from **above** OCP back toward native.
             base = float(getattr(cfg, "SIM_NATIVE_ZINC_MV", 200.0))
-            mv = base - 45.0 * (1.0 - math.exp(-elapsed / 0.08)) + random.gauss(0, 0.8)
+            mv = base + 45.0 * math.exp(-elapsed / 0.08) + random.gauss(0, 0.8)
             return elapsed, round(mv, 2)
 
         if SIM_MODE:
@@ -1354,7 +1360,7 @@ class ReferenceElectrode:
         return samples
 
     def protection_status(self, shift_mv: float | None = None) -> str:
-        """Band vs effective target/max for shift = baseline − raw (not a CP survey criterion)."""
+        """Band vs effective target/max for shift = raw − baseline (not a CP survey criterion)."""
         if shift_mv is None:
             return "UNKNOWN"
         t = self.effective_shift_target_mv()

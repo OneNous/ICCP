@@ -52,7 +52,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         commissioning,
         "_instant_off_ref_mv_and_restore",
-        lambda *a, **k: (100.0, 110.0, 0.0),
+        lambda *a, **k: (100.0, -100.0, 0.0),  # shift = raw − bl = 100 − 200 (1b OCP)
     )
 
     ctrl = SimpleNamespace(
@@ -87,7 +87,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     assert data.get("native_oc_anodes_in_mv") == 200.0
     assert data.get("galvanic_offset_mv") == 10.0
     assert data.get("galvanic_offset_baseline_mv") == 10.0
-    assert data.get("final_shift_mv") == 110.0
+    assert data.get("final_shift_mv") == -100.0
 
 
 def test_delivered_ma_report_formats_ina_channels() -> None:

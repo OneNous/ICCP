@@ -407,7 +407,8 @@ def latest_feed_stale_threshold_s() -> float:
 # --- Reference electrode (ADS1115 default; legacy INA219 if REF_ADC_BACKEND) ---
 # Set False to skip reference ADC init until hardware is wired.
 REF_ENABLED = True
-# Polarization shift = baseline_mv_for_shift − instant-off mV (positive when protected); baseline
+# Polarization shift = instant-off mV − baseline_mv_for_shift (same sign as a DMM: ref +,
+# structure −; **positive** when protected); baseline
 # is open-circuit with anodes in bath (Phase 1b) when commissioned, else Phase 1a true native.
 # Default 100 mV
 # matches a common field picture: native ~100–130 mV at the AIN after Phase 1, ramp succeeds

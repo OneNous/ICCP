@@ -903,7 +903,7 @@ def _instant_off_ref_mv_and_restore(
     shift: float | None = None
     bl = reference.baseline_mv_for_shift()
     if bl is not None:
-        shift = round(float(bl) - raw_inst, 2)
+        shift = round(float(raw_inst) - float(bl), 2)
     return raw_inst, shift, depol_rate
 
 
@@ -1286,13 +1286,13 @@ def _phase2_3_ramp_lock(
             if reference.galvanic_offset_mv is not None:
                 log(
                     f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
-                    f"shift (1b−off) {shift_str} / {eff_thr:.1f} mV additional "
+                    f"shift (ref@off−1b baseline) {shift_str} / {eff_thr:.1f} mV additional "
                     f"({ttot:.0f} mV total from 1a)"
                 )
             else:
                 log(
                     f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
-                    f"shift (native−off) {shift_str} / {ttot:.0f} mV"
+                    f"shift (ref@off−native) {shift_str} / {ttot:.0f} mV"
                 )
 
         tol = float(getattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_TOLERANCE", 0.9))

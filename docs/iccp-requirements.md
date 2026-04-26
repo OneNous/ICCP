@@ -11,7 +11,7 @@ All "Today" call-outs are verbatim descriptions of current code, cited by file a
 
 ## 1. Purpose and north star
 
-The controller's job is to **maintain at least 100 mV of negative polarization shift on every protected channel, relative to that channel's native (de-energized) reference potential**, within an operator-set tolerance band and without exceeding per-channel current and voltage safety limits.
+The controller's job is to **maintain at least 100 mV of cathodic polarization (industry DVM: reference on +, structure on −) on every protected channel, relative to that channel's native (de-energized) open-circuit reading**, within an operator-set tolerance band and without exceeding per-channel current and voltage safety limits. Software reports **`shift_mv = ref_reading_mV − native_baseline_mV`**, so **positive** shift means the same thing as a **higher** hand-meter reading under CP vs native.
 
 Every other requirement in this document — current regulation, PWM duty, per-channel state machine, commissioning procedure, telemetry — is in service of measuring and sustaining that shift.
 
@@ -33,7 +33,7 @@ The controller is "doing its job" when all of the following hold, observable fro
 
 For each enabled channel `c`:
 
-- `shift_mv = native_mv - ref_mv[c] >= TARGET_SHIFT_MV` (default `100` mV; `native_mv` is a single shared scalar — see §3.1), and
+- `shift_mv = ref_mv[c] - native_mv >= TARGET_SHIFT_MV` (default `100` mV; `native_mv` is a single shared scalar — see §3.1; **instant-off** `ref_mv` vs OCP baseline), and
 - That condition holds for at least `T_POL_STABLE` seconds continuously (new parameter; default `300` s = 5 min **[interim — revisit after first bench soak]**), and
 - `shunt_i_ma[c] <= CHANNEL_MAX_I_MA[c]` at all times, and
 - `shift_mv[c] <= MAX_SHIFT_MV` at all times (overprotection ceiling; default `200` mV **[interim — revisit after first bench soak]** — see [config/settings.py](../config/settings.py) `MAX_SHIFT_MV`).
@@ -356,7 +356,7 @@ For each `channels["0".."3"]`:
 | Field | Type | Meaning |
 |---|---|---|
 | `state` | string | One of `Off / Probing / Polarizing / Protected / Overprotected / Fault`. |
-| `shift_mv` | float \| null | `native_mv - ref_mv_for_this_channel`. `null` if native not set. |
+| `shift_mv` | float \| null | `ref_mv - native_mv` (shared scalar; `null` if baseline not set). |
 | `native_mv` | float \| null | The shared scalar `native_mv` (same value across all channels — see §3.1). Kept on each channel for UI convenience. |
 | `ref_mv` | float | Last reference reading used for this channel's shift. |
 | `duty_pct` | float | Commanded PWM duty %. |

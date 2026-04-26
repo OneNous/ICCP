@@ -12,7 +12,7 @@ CoilShield can commission a **true** metal/electrolyte baseline with anodes **ou
 | `galvanic_offset_baseline_mv` | Set on the **first** full 1a+1b pair at this site — used to trend anode **health** (optional service flag) |
 | `galvanic_offset_service_recommended` | `true` if current `galvanic_offset_mv` &lt; `GALVANIC_OFFSET_SERVICE_FRACTION` × `galvanic_offset_baseline_mv` at re-commissioning |
 
-**Shift / outer loop:** `baseline_mv_for_shift` is **`native_oc_anodes_in_mv`** when Phase 1b was run, otherwise `native_mv`. Polarization **shift** = that baseline − **instant-off** (or on-tick) reference, so the loop measures protection **from the in-situ open-circuit with anodes present**, not from a bench-only 1a number that ignores galvanic influence.
+**Shift / outer loop:** `baseline_mv_for_shift` is **`native_oc_anodes_in_mv`** when Phase 1b was run, otherwise `native_mv`. Polarization **shift** = **instant-off** (or on-tick) **reference mV − that baseline** (DVM: ref on +, structure/return on −; **positive** when protected), so the loop measures protection **from the in-situ open-circuit with anodes present**, not from a bench-only 1a number that ignores galvanic influence.
 
 **Total vs additional shift:** `TARGET_SHIFT_MV` is the **total** desired polarization from **true native (Phase 1a)**. With 1b, `galvanic_offset_mv = native(1a) − native(1b)` is already part of that total, so the **additional** shift required from the 1b baseline is `effective_shift_target_mv = max(0, TARGET_SHIFT_MV − galvanic_offset_mv)` (and similarly for `MAX_SHIFT_MV` via `effective_max_shift_mv`). Commissioning and the shift FSM use these effective values so you do not double-count the galvanic depolarization.
 

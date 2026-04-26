@@ -18,7 +18,8 @@ readings: per-tick telemetry including chN_impedance_ohm, chN_cell_voltage_v,
 cooling_cycles: one row per completed ICCP temperature band segment (same window as
   temp.in_operating_range): duration_s, avg_temp_f, chN_protect_s (PROTECTING dwell
   within that segment). Correlates wet dwell with coil cooling cycles.
-  latest.json reference keys (every tick): ref_raw_mv, ref_ads_sense, ref_shift_mv, ref_status, ref_hw_ok,
+  latest.json reference keys (every tick): ref_raw_mv, ref_ads_sense, ref_shift_mv
+  (instant-off mV − OCP baseline; + when protected), ref_status, ref_hw_ok,
   ref_hw_message, ref_hint, ref_baseline_set, ref_depol_rate_mv_s (SQLite/CSV also carry
   raw/hw_ok/hint; hw_message, baseline_set, depol rate are CSV + JSON).
 
