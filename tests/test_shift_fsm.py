@@ -3,9 +3,10 @@
 Covers the new `state_v2` transitions driven by `Controller.advance_shift_fsm`:
 
 * Probing → Polarizing on first driven current.
-* Polarizing → Protected only after `shift_mv >= TARGET_SHIFT_MV` sustained
-  for `T_POL_STABLE` — and exactly when every channel reaches Protected we
-  assert `all_protected` system-wide (per §2.4).
+* Polarizing → Protected only when `TARGET_SHIFT_MV <= shift_mv <= MAX_SHIFT_MV`
+  sustained for `T_POL_STABLE` — and exactly when every channel reaches
+  Protected we assert `all_protected` system-wide (per §2.4). Overshoot
+  above `MAX_SHIFT_MV` in Polarizing goes straight to `Overprotected`.
 * Polarizing window exceeds `T_POLARIZE_MAX` → `CANNOT_POLARIZE` retry bump,
   then a real latch after `POLARIZE_RETRY_MAX` exhausted retries.
 * Protected → Polarizing slip on shift below `TARGET - HYST_PROT_EXIT_MV`.
@@ -109,6 +110,26 @@ def test_polarizing_to_protected_drives_all_protected(
     )
     assert ctrl.all_protected() is True
     assert ctrl.any_active() is True
+
+
+def test_polarizing_shift_above_max_goes_overprotected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overshoot above the protected band in Polarizing → Overprotected (no T_POL to Protected)."""
+    _spec_v2_timings(monkeypatch)
+    monkeypatch.setattr(cfg, "MAX_SHIFT_MV", 200, raising=False)
+    advance = _make_clock(monkeypatch)
+    ctrl = Controller()
+    ch = 0
+    ctrl._pwm.set_duty(ch, 30.0)
+    ctrl.advance_shift_fsm(_all_ok(), shift_mv=50.0, ref_valid=True)
+    advance(0.1)
+    ctrl.advance_shift_fsm(_all_ok(), shift_mv=50.0, ref_valid=True)
+    assert ctrl.channel_state_v2()[ch] == STATE_V2_POLARIZING
+    ctrl.advance_shift_fsm(_all_ok(), shift_mv=250.0, ref_valid=True)
+    assert ctrl.channel_state_v2()[ch] == STATE_V2_OVERPROTECTED
+    # Still not Protected / all_protected.
+    assert ctrl.all_protected() is False
 
 
 def test_cannot_polarize_retry_then_latch_after_exhausted(

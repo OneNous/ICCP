@@ -135,6 +135,16 @@ def duty_pct_cap_for_vcell(bus_v: float, cfg) -> float:
     return min(float(cfg.PWM_MAX_DUTY), 100.0 * vlim / bus_v)
 
 
+def _quantize_duty_for_gpio(duty: float) -> float:
+    """Match ``PWM_DUTY_QUANTUM`` (e.g. 0.1 for 0.1% steps). ``0`` disables extra rounding."""
+    q = float(getattr(cfg, "PWM_DUTY_QUANTUM", 0.1) or 0.0)
+    d = max(0.0, min(100.0, float(duty)))
+    if q > 0.0:
+        d = round(d / q) * q
+        d = min(100.0, max(0.0, d))
+    return d
+
+
 def classify_path(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
     """
     Classify conduction path once per tick (before FSM transitions).
@@ -251,6 +261,10 @@ class PWMBank:
             duty = 0.0
         else:
             duty = float(max(cfg.PWM_MIN_DUTY, min(cfg.PWM_MAX_DUTY, duty)))
+            duty = _quantize_duty_for_gpio(duty)
+            duty = float(
+                max(cfg.PWM_MIN_DUTY, min(cfg.PWM_MAX_DUTY, duty))
+            )
         self._duties[ch] = duty
         if _SIM:
             return
@@ -264,7 +278,7 @@ class PWMBank:
             GPIO.setup(pin, GPIO.OUT)
             GPIO.output(pin, GPIO.LOW)
             return
-        self._pwm[ch].ChangeDutyCycle(int(round(duty)))
+        self._pwm[ch].ChangeDutyCycle(duty)
 
     def set_duty_unified(self, duty: float) -> None:
         """Set the same PWM duty (%) on every MOSFET gate. Sim-safe. Honors static mode."""
@@ -273,6 +287,10 @@ class PWMBank:
             duty = 0.0
         else:
             duty = float(max(cfg.PWM_MIN_DUTY, min(cfg.PWM_MAX_DUTY, duty)))
+            duty = _quantize_duty_for_gpio(duty)
+            duty = float(
+                max(cfg.PWM_MIN_DUTY, min(cfg.PWM_MAX_DUTY, duty))
+            )
         for ch in range(cfg.NUM_CHANNELS):
             self._duties[ch] = duty
         if _SIM:
@@ -289,7 +307,7 @@ class PWMBank:
                 GPIO.output(pin, GPIO.LOW)
             return
         for ch in range(cfg.NUM_CHANNELS):
-            self._pwm[ch].ChangeDutyCycle(int(round(duty)))
+            self._pwm[ch].ChangeDutyCycle(duty)
 
     def duty(self, ch: int) -> float:
         return self._duties[ch]
@@ -451,7 +469,7 @@ class Controller:
     def _any_drive_intent(self, readings: dict[int, dict]) -> bool:
         """True if any channel is regulating, driven, or reporting wet-scale current."""
         wet_ma = float(getattr(cfg, "CHANNEL_WET_THRESHOLD_MA", 0.15))
-        drive_floor = float(getattr(cfg, "PWM_MIN_DUTY", 1.0))
+        drive_floor = float(getattr(cfg, "PWM_MIN_DUTY", 0.1))
         for ch in range(cfg.NUM_CHANNELS):
             st = self._states[ch].status
             if st in (ChannelState.REGULATE, ChannelState.PROTECTING):
@@ -1142,7 +1160,13 @@ class Controller:
         latches CANNOT_POLARIZE / OVERPROTECTION faults (which zero duty via
         :meth:`_latch_fault`). All timers are per-channel and driven by `time.monotonic`.
 
-        ``shift_target_mv`` / ``shift_max_mv`` default to ``TARGET_SHIFT_MV`` / ``MAX_SHIFT_MV``.
+        ``shift_target_mv`` / ``shift_max_mv`` default to ``TARGET_SHIFT_MV`` / ``MAX_SHIFT_MV``,
+        which define the **protected band** ``[target, over_max]`` mV (defaults 100–200 mV).
+        **Protected** (``STATE_V2_PROTECTED``) means shift has entered and remains in that band
+        (per slip / over hysteresis). **Polarizing → Protected** requires shift in that band
+        (not only at/above *target*); if shift overshoots above *over_max* while polarizing,
+        the state moves to **Overprotected** immediately.
+
         When galvanic 1b is used, pass the **additional** shift from the 1b baseline from
         :meth:`ReferenceElectrode.effective_shift_target_mv` (and
         :meth:`ReferenceElectrode.effective_max_shift_mv`) so the total from true native(1a)
@@ -1209,7 +1233,7 @@ class Controller:
             i_ma = float(r.get("current", 0.0) or 0.0) if r_ok else 0.0
             duty = self._pwm.duty(0) if _shared_return_pwm() else self._pwm.duty(ch)
             probe_ma = float(getattr(cfg, "CHANNEL_DRY_MA", 0.1))
-            driving = duty >= float(getattr(cfg, "PWM_MIN_DUTY", 1.0)) and r_ok
+            driving = duty >= float(getattr(cfg, "PWM_MIN_DUTY", 0.1)) and r_ok
 
             # --- Transitions per state_v2 ---
             if state.state_v2 == STATE_V2_OFF:
@@ -1242,7 +1266,13 @@ class Controller:
                     continue
                 if shift_mv is None:
                     continue
-                if shift_mv >= target:
+                if shift_mv > over_max:
+                    # Overshoot: above protected band (target..over_max) → cut back, not
+                    # "in band" for Protected.
+                    state.shift_above_target_since = None
+                    _set_state(state, STATE_V2_OVERPROTECTED)
+                    continue
+                if target <= shift_mv <= over_max:
                     if state.shift_above_target_since is None:
                         state.shift_above_target_since = now
                     if now - state.shift_above_target_since >= t_pol_stable:
@@ -1250,8 +1280,7 @@ class Controller:
                         state.polarize_retry_next_unix = None
                         _set_state(state, STATE_V2_PROTECTED)
                     continue
-                else:
-                    state.shift_above_target_since = None
+                state.shift_above_target_since = None
                 pol_t0 = state.polarizing_since or state.state_v2_enter_monotonic
                 if now - pol_t0 >= t_pol_max:
                     # Exceeded polarize window without reaching target → CANNOT_POLARIZE.
@@ -1328,8 +1357,14 @@ class Controller:
                     if now - state.shift_under_max_since >= t_over_exit:
                         state.shift_over_max_since = None
                         state.shift_under_max_since = None
-                        state.shift_above_target_since = now  # already above target by def
-                        _set_state(state, STATE_V2_PROTECTED)
+                        state.shift_above_target_since = None
+                        if target <= shift_mv <= over_max:
+                            _set_state(state, STATE_V2_PROTECTED)
+                        elif shift_mv < target:
+                            state.polarizing_since = now
+                            _set_state(state, STATE_V2_POLARIZING)
+                        else:
+                            _set_state(state, STATE_V2_OVERPROTECTED)
                 else:
                     state.shift_under_max_since = None
                 continue
@@ -1351,7 +1386,8 @@ class Controller:
         return max(0.0, time.monotonic() - float(s.polarizing_since))
 
     def all_protected(self) -> bool:
-        """True when every *participating* active channel is `Protected` for T_SYSTEM_STABLE (§2.2).
+        """True when every *participating* active channel is `Protected` (shift in
+        ``[TARGET_SHIFT_MV, MAX_SHIFT_MV]`` by FSM design) for ``T_SYSTEM_STABLE`` (§2.2).
 
         Active channels still ``Off`` (no path / dry) are excluded. An active channel in
         ``Fault`` blocks the assertion until cleared.

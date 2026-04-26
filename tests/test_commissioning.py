@@ -90,6 +90,81 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     assert data.get("final_shift_mv") == -100.0
 
 
+def test_commissioning_field_mode_single_capture_no_galvanic_keys(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Field mode: one native, no 1b, no native_oc / galvanic_offset in commissioning.json."""
+    root = tmp_path
+    comm_path = root / "commissioning.json"
+    monkeypatch.setattr(cfg, "PROJECT_ROOT", root)
+    monkeypatch.setattr(commissioning, "_COMM_FILE", comm_path)
+    import reference as ref_mod
+
+    monkeypatch.setattr(ref_mod, "_COMM_FILE", comm_path)
+    monkeypatch.setattr(cfg, "COMMISSIONING_FIELD_MODE", True, raising=False)
+
+    monkeypatch.setattr(commissioning, "COMMISSIONING_SETTLE_S", 0)
+    monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_COUNT", 1)
+    monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S", 0.0)
+    monkeypatch.setattr(commissioning, "RAMP_SETTLE_S", 0.0)
+    monkeypatch.setattr(commissioning, "CONFIRM_TICKS", 1)
+    monkeypatch.setattr(commissioning, "TARGET_RAMP_STEP_MA", 0.05)
+    monkeypatch.setattr(cfg, "COMMISSIONING_OC_REPEAT_CUTS", 1)
+
+    monkeypatch.setattr(commissioning, "_pump_control", lambda *a, **k: None)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+    ref = ReferenceElectrode()
+    cap_calls = 0
+
+    def _cap_native(*a, **k) -> tuple[float, str]:
+        nonlocal cap_calls
+        cap_calls += 1
+        return (175.0, "ok")
+
+    monkeypatch.setattr(ReferenceElectrode, "capture_native", _cap_native)
+    monkeypatch.setattr(
+        ReferenceElectrode,
+        "read",
+        lambda self, duties=None, statuses=None, **kwargs: 175.0,
+    )
+    monkeypatch.setattr(
+        commissioning,
+        "_instant_off_ref_mv_and_restore",
+        lambda *a, **k: (275.0, 100.0, 0.0),  # shift = 275 − baseline 175
+    )
+
+    ctrl = SimpleNamespace(
+        all_outputs_off=lambda: None,
+        output_duty_pct=lambda _ch: 0.0,
+        set_output_duty_pct=lambda *_a, **_k: None,
+        set_pwm_carrier_hz=lambda _hz: None,
+        enter_static_gate_off=lambda: None,
+        leave_static_gate_off=lambda: None,
+        update=lambda readings: None,
+        duties=lambda: {i: 40.0 for i in range(cfg.NUM_CHANNELS)},
+        channel_statuses=lambda: {i: "PROTECTING" for i in range(cfg.NUM_CHANNELS)},
+        set_thermal_pause=lambda _active: None,
+        advance_shift_fsm=lambda *a, **k: None,
+    )
+
+    commissioning.run(
+        ref,
+        ctrl,
+        sim_state=sensors.SimSensorState(),
+        verbose=False,
+        anode_placement_prompts=True,
+    )
+
+    assert cap_calls == 1
+    assert comm_path.is_file()
+    data = json.loads(comm_path.read_text())
+    assert data["native_mv"] == 175.0
+    assert data.get("native_oc_anodes_in_mv") is None
+    assert data.get("galvanic_offset_mv") is None
+    assert data.get("final_shift_mv") == 100.0
+
+
 def test_delivered_ma_report_formats_ina_channels() -> None:
     readings = {
         0: {"ok": True, "current": 0.4, "bus_v": 5.0},

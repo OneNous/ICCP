@@ -116,8 +116,12 @@ def run_iccp_forever(args: Namespace) -> int:
                     f"{'  SERVICE' if ref.galvanic_offset_service_recommended else ''}"
                 )
             bls = f"{bl:.1f}" if bl is not None else "—"
+            if ref.native_oc_anodes_in_mv is not None:
+                nat_line = f"true_native(1a)={ref.native_mv:.1f} mV"
+            else:
+                nat_line = f"native_mv={ref.native_mv:.1f} mV (single baseline)"
             print(
-                f"[main] Commissioning loaded — true_native(1a)={ref.native_mv:.1f} mV  "
+                f"[main] Commissioning loaded — {nat_line}  "
                 f"shift_baseline={bls} mV{gline}  target={cfg.TARGET_MA:.3f} mA"
             )
     else:

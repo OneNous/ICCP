@@ -73,7 +73,8 @@ Avoid differential mode unless AIN− is guaranteed to be tied to the intended n
 
 ## Commissioning gotchas
 
-- **Phase 1a (true native)**: remove anodes from the electrolyte. Submerged inert anodes can drive non-trivial galvanic current even with MOSFET gates off, corrupting the baseline.
+- **Bench Phase 1a (true native)**: remove anodes from the electrolyte when **not** using field mode. Submerged inert anodes can drive non-trivial galvanic current even with MOSFET gates off, corrupting a split 1a/1b “true native” story.
+- **Field installs** (`COMMISSIONING_FIELD_MODE` / `ICCP_COMMISSION_FIELD_MODE=1`): one native capture with anodes mounted; shift is measured vs that single open-circuit baseline (no anode removal prompts).
 - **Instant-off sampling**: after cutting PWM, ignore the immediate transient and sample in a short window where IR drop has collapsed and the decay curve is stable. The code implements an inflection finder over a burst/window.
 
 ## PWM floors (operator expectations)
@@ -83,5 +84,5 @@ There are two “floors” worth distinguishing:
 - `PWM_MIN_DUTY`: minimum non-zero gate duty once the controller decides to drive.
 - `DUTY_PROBE`: the REGULATE “probe floor” used to avoid deadlocking at 0% when current is below target.
 
-If you want a 1% minimum behavior, set `DUTY_PROBE = 1.0` (and keep `PWM_MIN_DUTY = 1`). See [`/Users/mhm/Desktop/ICCP/config/settings.py`](/Users/mhm/Desktop/ICCP/config/settings.py).
+Defaults use **0.1%** steps (`PWM_DUTY_QUANTUM`, `DUTY_PROBE`, `PWM_MIN_DUTY`, `PWM_STEP*`). For coarser 1% behavior, set e.g. `DUTY_PROBE = 1.0`, `PWM_MIN_DUTY = 1`, `PWM_DUTY_QUANTUM = 1`. See [config/settings.py](../config/settings.py).
 

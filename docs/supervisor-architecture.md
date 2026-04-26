@@ -10,7 +10,7 @@ The product narrative describes a **fast inner loop** (per-channel current / pat
 
 ## Slow loop (Tier 2)
 
-- **Cadence:** `LOG_INTERVAL_S` (default 60 s), expressed in [`iccp_runtime.py`](../iccp_runtime.py) as `outer_loop_interval = LOG_INTERVAL_S / SAMPLE_INTERVAL_S` control ticks.
+- **Cadence:** `LOG_INTERVAL_S` (default 120 s), expressed in [`iccp_runtime.py`](../iccp_runtime.py) as `outer_loop_interval = LOG_INTERVAL_S / SAMPLE_INTERVAL_S` control ticks.
 - **Reference + instant-off (when enabled):** `commissioning.instant_off_ref_measurement(...)` for depolarization rate and shift at the longer interval.
 - **Target trim:** `Controller.update_potential_target(shift_mv)` — nudges `TARGET_MA` from measured shift (see `tests/test_update_potential_target.py`).
 - **Drift / native re-capture / thermal:** same runtime file: scheduled `run_native_only`, drift alerts vs `NATIVE_DRIFT_TRIGGER_MV`, `set_thermal_pause` from temperature band.

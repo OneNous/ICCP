@@ -14,6 +14,12 @@ def strong_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(control, "classify_path", lambda *a, **k: PATH_STRONG)
 
 
+@pytest.fixture(autouse=True)
+def _pwm_step_tests_disable_duty_quantum(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Step arithmetic tests use fractional steps (e.g. 1.25); disable 0.1% GPIO quantize."""
+    monkeypatch.setattr(cfg, "PWM_DUTY_QUANTUM", 0.0)
+
+
 def _readings_ok(
     *,
     bus_v: float = 5.0,

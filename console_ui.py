@@ -229,7 +229,7 @@ def print_status_table(
         tpw_s = f"{float(tpw):.4f}" if isinstance(tpw, (int, float)) else "—"
         if include_pwm_path_caption:
             pwm_mx = float(getattr(_cfg, "PWM_MAX_DUTY", 80.0))
-            probe = float(getattr(_cfg, "DUTY_PROBE", 3.0))
+            probe = float(getattr(_cfg, "DUTY_PROBE", 0.1))
             vhard = float(getattr(_cfg, "VCELL_HARD_MAX_V", 0.0) or 0.0)
             print(
                 f"  PWM: REGULATE ramps from {probe:.0f}% up; max duty "

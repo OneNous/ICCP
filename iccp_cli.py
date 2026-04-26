@@ -178,7 +178,8 @@ def _print_help() -> None:
                              --native-only runs Phase 1 only (native baseline re-capture).
                              Without --no-anode-prompts, waits for Enter: anodes out (Phase 1),
                              then anodes in (before Phase 2). Disabled for sim, pipes, or
-                             COMMISSIONING_ANODE_PLACEMENT_PROMPTS=0 / ICCP_COMMISSION_NO_ANODE_PROMPTS=1.
+                             COMMISSIONING_ANODE_PLACEMENT_PROMPTS=0 / ICCP_COMMISSION_NO_ANODE_PROMPTS=1,
+                             or field mode (COMMISSIONING_FIELD_MODE / ICCP_COMMISSION_FIELD_MODE=1).
                              If Enter is ignored, pass --no-anode-prompts (reads are from /dev/tty first).
                              With --anode / --anodes / --channels, INA status lines list only those anodes.
                              While waiting for Enter, a read-only INA line every few seconds (outputs off);

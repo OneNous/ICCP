@@ -24,7 +24,9 @@ MMO anodes go to the fin side through a **non-conductive** wicking path (e.g. sp
 
 ## Commissioning — Phase 1 (native) and galvanic
 
-With MMO or graphite in **bulk electrolyte**, appreciable **galvanic** current can flow even with MOSFETs off, corrupting the “native” baseline. For Phase 1, **remove anodes from the electrolyte** (or otherwise guarantee no external anodic current) while capturing native, as required by your bench procedure.
+**Bench (two-phase):** With MMO or graphite in **bulk electrolyte**, appreciable **galvanic** current can flow even with MOSFETs off, corrupting a “true” open-circuit native. The default flow captures Phase 1a with anodes **out**, then Phase 1b with anodes **in** to document offset — see [galvanic-offset-calibration.md](galvanic-offset-calibration.md).
+
+**Field (mounted anodes):** Set `COMMISSIONING_FIELD_MODE = True` (or `ICCP_COMMISSION_FIELD_MODE=1`) so commissioning uses **one** OCP native with anodes already installed; no Enter pauses and no Phase 1b split. The resting galvanic couple is baked into that baseline; the ramp still targets `TARGET_SHIFT_MV` of **additional** cathodic polarization vs that baseline.
 
 ## Operator CLI (canonical)
 

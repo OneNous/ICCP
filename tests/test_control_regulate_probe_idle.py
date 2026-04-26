@@ -22,11 +22,11 @@ def test_regulate_uses_duty_probe_when_i_below_idle_and_below_target(
 ) -> None:
     monkeypatch.setattr(cfg, "TARGET_MA", 0.05)
     monkeypatch.setattr(cfg, "REGULATE_IDLE_OFF_BELOW_MA", 0.05)
-    monkeypatch.setattr(cfg, "DUTY_PROBE", 1.0)
+    monkeypatch.setattr(cfg, "DUTY_PROBE", 0.1)
 
     ctrl = Controller()
     cap = duty_pct_cap_for_vcell(5.0, cfg)
-    want_lo = min(1.0, cap)
+    want_lo = min(float(cfg.DUTY_PROBE), cap)
     for ch in range(int(cfg.NUM_CHANNELS)):
         ctrl._states[ch].status = ChannelState.REGULATE
         ctrl._pwm.set_duty(ch, 0.0)
@@ -41,10 +41,10 @@ def test_regulate_idle_off_still_cuts_output_when_satisfied_in_noise(
     """|I| below REGULATE_IDLE_OFF but I ≥ mA setpoint: hold 0% (open-path / noise guard)."""
     monkeypatch.setattr(cfg, "TARGET_MA", 0.03)
     monkeypatch.setattr(cfg, "REGULATE_IDLE_OFF_BELOW_MA", 0.05)
-    monkeypatch.setattr(cfg, "DUTY_PROBE", 1.0)
+    monkeypatch.setattr(cfg, "DUTY_PROBE", 0.1)
 
     cap = duty_pct_cap_for_vcell(5.0, cfg)
-    want_lo = min(1.0, cap)
+    want_lo = min(float(cfg.DUTY_PROBE), cap)
     ctrl = Controller()
     for ch in range(int(cfg.NUM_CHANNELS)):
         ctrl._states[ch].status = ChannelState.REGULATE

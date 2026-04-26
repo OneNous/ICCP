@@ -239,7 +239,8 @@ Z_COMPUTE_I_A_MIN = 1e-6
 # --- Duty limits per state (% duty cycle) ---
 # Floor in REGULATE: ramp up with PWM_STEP; ceiling is Vcell-capped PWM_MAX
 # (no separate “staging %” caps — current/bus/overcurrent limits are the guards).
-DUTY_PROBE = 1.0
+# 0.1% steps: match PWM_MIN_DUTY, PWM_DUTY_QUANTUM, and soft-PWM (RPi.GPIO 0.0–100.0 float).
+DUTY_PROBE = 0.1
 # REGULATE: hold **0%% PWM** when sensed |I| is below this (mA) and **I ≥ per-channel
 # target** (at/beyond setpoint on sensor noise). Does not apply while I < target — otherwise
 # 0 mA with a small target would deadlock at 0%% and never apply DUTY_PROBE.
@@ -263,7 +264,7 @@ Z_STATS_WINDOW = 16
 FQI_EMA_ALPHA = 0.15
 
 # --- Probe pulse (deprecated: REGULATE uses DUTY_PROBE floor continuously) ---
-PROBE_DUTY_PCT = 1
+PROBE_DUTY_PCT = 0.1
 PROBE_DURATION_S = 2.0
 PROBE_INTERVAL_S = 60.0
 PROBE_MAX_MA = 2.0
@@ -288,15 +289,15 @@ OVERCURRENT_LATCH_TICKS = 1
 #             still dominates); soft-PWM duty resolution and gate losses — verify on scope.
 PWM_FREQUENCY_HZ = 100
 # Base step (% duty per control tick). Used as default when the per-mode keys below are omitted
-# (code uses getattr(..., PWM_STEP)).
-PWM_STEP = 1
+# (code uses getattr(..., PWM_STEP)). Default 0.1% per tick (10× finer than 1% legacy).
+PWM_STEP = 0.1
 # Finer ramp tuning: % duty added or removed per SAMPLE_INTERVAL_S tick in each state/direction.
 # Legacy fallback is PWM_STEP. Asymmetric REGULATE (faster up, slower down) is common; PROTECTING
 # often keeps symmetric small steps. Effective %/s ≈ step / SAMPLE_INTERVAL_S.
-PWM_STEP_UP_REGULATE = 2
-PWM_STEP_DOWN_REGULATE = 1
-PWM_STEP_UP_PROTECTING = 1
-PWM_STEP_DOWN_PROTECTING = 1
+PWM_STEP_UP_REGULATE = 0.2
+PWM_STEP_DOWN_REGULATE = 0.1
+PWM_STEP_UP_PROTECTING = 0.1
+PWM_STEP_DOWN_PROTECTING = 0.1
 # Per-anode ramp overrides (0-based channel index). Omit a key to use that direction’s global
 # PWM_STEP_* value above. Lets one channel ramp faster or slower than the others independently.
 # Example: CHANNEL_PWM_STEP_UP_REGULATE = {0: 2.0, 2: 0.5}  → Anode 1 faster up, Anode 3 slower up.
@@ -304,8 +305,12 @@ CHANNEL_PWM_STEP_UP_REGULATE: dict = {}
 CHANNEL_PWM_STEP_DOWN_REGULATE: dict = {}
 CHANNEL_PWM_STEP_UP_PROTECTING: dict = {}
 CHANNEL_PWM_STEP_DOWN_PROTECTING: dict = {}
-PWM_MIN_DUTY = 1
+# Minimum non-zero command sent to a gate; use with DUTY_QUANTUM (below).
+PWM_MIN_DUTY = 0.1
 PWM_MAX_DUTY = 80
+# Round duty to this many %-points before RPi.GPIO (avoids float noise; 0.1 = tenths of a %).
+# Set 0.01 for hundredths; hardware soft-PWM still has finite time resolution at very low %.
+PWM_DUTY_QUANTUM = 0.1
 
 # --- GPIO (BCM) ---
 # Aligned with INA219_ADDRESSES: one gate GPIO per row (idx 0 = “Anode 1” in UI = first address).
@@ -355,7 +360,9 @@ MAX_BUS_V = 6.0
 
 # --- Timing ---
 SAMPLE_INTERVAL_S = 0.5
-LOG_INTERVAL_S = 60
+# Also drives CSV flush cadence in DataLogger. Instant-off (decay) outer loop: same interval
+# when ``OUTER_LOOP_INSTANT_OFF`` and ``temp_in_band`` (see iccp_runtime ``outer_loop_interval``).
+LOG_INTERVAL_S = 120
 # When True, a missing/unreadable DS18B20 (temp_f None) triggers thermal pause (outputs off).
 # Default False preserves legacy behavior: do not block CP when the sensor is absent.
 # Set env COILSHIELD_THERMAL_PAUSE_ON_MISSING_TEMP=1 to fail-safe on missing temp.
@@ -367,8 +374,8 @@ OUTER_LOOP_INSTANT_OFF = True
 # Single cut + no repolarize soak keeps each LOG_INTERVAL tick short (commissioning uses
 # COMMISSIONING_OC_REPEAT_CUTS / COMMISSIONING_OC_REPOLARIZE_S for median measurements).
 # Approximate protection interruption: ~OUTER_LOOP_OC_REPEAT_CUTS instant-off cut(s) per
-# LOG_INTERVAL_S tick (e.g. 1 s per 60 s ≈1.7% of wall time) — acceptable for many cells;
-# tighten LOG_INTERVAL or disable instant-off for testing.
+# LOG_INTERVAL_S tick (e.g. ~1 s OC per 120 s) — adjust ``LOG_INTERVAL_S`` or disable
+# ``OUTER_LOOP_INSTANT_OFF`` for testing.
 OUTER_LOOP_OC_REPEAT_CUTS = 1
 OUTER_LOOP_OC_REPOLARIZE_S = 0.0
 
@@ -469,12 +476,22 @@ COMMISSIONING_PHASE1_OFF_VERIFY = True
 COMMISSIONING_PHASE1_STATIC_GATE_LOW = True
 # Pauses: confirm anodes **removed** before open-circuit native (Phase 1a), then **installed**
 # for Phase 1b (OCP, MOSFETs off, same T_RELAX as 1a), then Phase 2 ramp. Gated in code: off in
-# `COILSHIELD_SIM=1`, when stdin is not a TTY, or
+# `COILSHIELD_SIM=1`, when stdin is not a TTY, when ``COMMISSIONING_FIELD_MODE`` is True, or
 # `iccp commission --no-anode-prompts` / env `ICCP_COMMISSION_NO_ANODE_PROMPTS=1`.
+# The ``after_phase1`` pause (install anodes before 1b) only runs when Phase 1b is enabled; see
+# ``commissioning._galvanic_1b_wanted()``.
 COMMISSIONING_ANODE_PLACEMENT_PROMPTS: bool = True
+# Field / production coil: anodes stay mounted on fins — no bench “remove for 1a” step.
+# When True: no anode placement Enter pauses, no Phase 1b second capture; one OCP native
+# (MOSFETs off, same settle + ``capture_native``) is both stored ``native_mv`` and the shift
+# baseline (galvanic couple at rest is baked in). Ramp still targets TARGET_SHIFT_MV additional
+# polarization vs that baseline. Read by ``commissioning._commissioning_field_mode()``; optional
+# env override: ``ICCP_COMMISSION_FIELD_MODE=1|0``.
+COMMISSIONING_FIELD_MODE: bool = False
 # After Phase 1a, run Phase 1b: second ``capture_native`` with anodes in the bath, gates off.
 # Shift / instant-off use the 1b scalar as baseline when present (see ``baseline_mv_for_shift``).
-# Set False or `ICCP_SKIP_GALVANIC_1B=1` for legacy single-baseline installs.
+# Set False or `ICCP_SKIP_GALVANIC_1B=1` for legacy single-baseline installs. Implied False when
+# ``COMMISSIONING_FIELD_MODE`` is True (single native only).
 COMMISSIONING_GALVANIC_1B_ENABLED: bool = True
 # Re-commission: if new ``galvanic_offset_mv`` < this fraction of ``galvanic_offset_baseline_mv``
 # (first install), persist ``galvanic_offset_service_recommended`` and print a warning.
@@ -534,7 +551,8 @@ NATIVE_DRIFT_TRIGGER_MV: float = 50.0      # drift warning only (§3.4)
 NATIVE_BENCH_TOL_MV: float = 5.0            # DMM vs controller [interim]
 # FSM timing (§2, §4.4, §6). Per-channel / system timers in control.py.
 # T_POL_STABLE: bench-friendly default; increase for noisier field water (e.g. 300 s).
-T_POL_STABLE: float = 30.0                 # s at shift ≥ target before Protected [interim]
+# s with TARGET_SHIFT_MV ≤ shift ≤ MAX_SHIFT_MV before Polarizing → Protected
+T_POL_STABLE: float = 30.0
 T_SLIP: float = 60.0                        # s below hysteresis before leaving Protected
 # Must exceed worst-case Phase 2 ramp wall time (steps × COMMISSIONING_RAMP_SETTLE_S) or
 # CANNOT_POLARIZE can fire before ramp reaches MAX_MA.
