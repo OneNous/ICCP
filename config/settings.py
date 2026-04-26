@@ -239,7 +239,7 @@ Z_COMPUTE_I_A_MIN = 1e-6
 # --- Duty limits per state (% duty cycle) ---
 # Floor in REGULATE: ramp up with PWM_STEP; ceiling is Vcell-capped PWM_MAX
 # (no separate “staging %” caps — current/bus/overcurrent limits are the guards).
-DUTY_PROBE = 3.0
+DUTY_PROBE = 1.0
 # REGULATE: hold **0%% PWM** when sensed |I| is below this (mA) and **I ≥ per-channel
 # target** (at/beyond setpoint on sensor noise). Does not apply while I < target — otherwise
 # 0 mA with a small target would deadlock at 0%% and never apply DUTY_PROBE.
@@ -263,7 +263,7 @@ Z_STATS_WINDOW = 16
 FQI_EMA_ALPHA = 0.15
 
 # --- Probe pulse (deprecated: REGULATE uses DUTY_PROBE floor continuously) ---
-PROBE_DUTY_PCT = 3
+PROBE_DUTY_PCT = 1
 PROBE_DURATION_S = 2.0
 PROBE_INTERVAL_S = 60.0
 PROBE_MAX_MA = 2.0

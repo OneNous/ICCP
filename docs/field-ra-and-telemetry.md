@@ -12,6 +12,8 @@ This page exists for **clarity** and a **durable anchor** when operators or revi
 
 **Shift / per-channel FSM:** Polarization *shift* is a **single** scalar from the shared reference (see [iccp-requirements.md](iccp-requirements.md) §3.1). `state_v2` in telemetry is per channel for supervision, not a separate ref potential for each anode.
 
+For bench wiring, measurement sign conventions, and installation notes (bond point outside electrolyte), see [coilshield-field-session-notes.md](coilshield-field-session-notes.md).
+
 ## Two different quantities
 
 | | **Field / design \(R_a\)** | **Logged `chN_impedance_ohm` (this firmware)** |

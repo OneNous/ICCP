@@ -55,7 +55,7 @@ def ina219_read_failure_expected_idle(
     fsm_state: str,
     current_ma: float,
     bus_v: float,
-    duty_idle_max: float = 0.06,
+    duty_idle_max: float = 0.0,
 ) -> bool:
     """
     True when an INA219 read failed but the channel is not driving CP and the

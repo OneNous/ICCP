@@ -451,12 +451,13 @@ class Controller:
     def _any_drive_intent(self, readings: dict[int, dict]) -> bool:
         """True if any channel is regulating, driven, or reporting wet-scale current."""
         wet_ma = float(getattr(cfg, "CHANNEL_WET_THRESHOLD_MA", 0.15))
+        drive_floor = float(getattr(cfg, "PWM_MIN_DUTY", 1.0))
         for ch in range(cfg.NUM_CHANNELS):
             st = self._states[ch].status
             if st in (ChannelState.REGULATE, ChannelState.PROTECTING):
                 return True
             d = self._pwm.duty(0) if _shared_return_pwm() else self._pwm.duty(ch)
-            if d >= 0.06:
+            if d >= drive_floor:
                 return True
             r = readings.get(ch, {})
             if r.get("ok") and float(r.get("current", 0) or 0) > wet_ma:
@@ -1208,7 +1209,7 @@ class Controller:
             i_ma = float(r.get("current", 0.0) or 0.0) if r_ok else 0.0
             duty = self._pwm.duty(0) if _shared_return_pwm() else self._pwm.duty(ch)
             probe_ma = float(getattr(cfg, "CHANNEL_DRY_MA", 0.1))
-            driving = duty >= 0.06 and r_ok
+            driving = duty >= float(getattr(cfg, "PWM_MIN_DUTY", 1.0)) and r_ok
 
             # --- Transitions per state_v2 ---
             if state.state_v2 == STATE_V2_OFF:
