@@ -549,6 +549,14 @@ NATIVE_SLOPE_MV_PER_MIN: float = 2.0
 NATIVE_RECAPTURE_S: float = 24 * 3600.0     # daily scheduled re-capture (§3.4)
 NATIVE_DRIFT_TRIGGER_MV: float = 50.0      # drift warning only (§3.4)
 NATIVE_BENCH_TOL_MV: float = 5.0            # DMM vs controller [interim]
+# After `iccp start` / main: hold 0%% drive (no CP) for this many seconds so the reference
+# electrode can depolarize from a **prior** run before the loop uses shift / potential targets.
+# Aligns in spirit with ``T_RELAX``/OCP settle. 0 = skip. Default overridden by
+# ``ICCP_REFERENCE_STARTUP_STABILIZE_S`` (e.g. ``0`` to disable, ``120`` for two minutes).
+_rss_env = (os.environ.get("ICCP_REFERENCE_STARTUP_STABILIZE_S") or "").strip()
+REFERENCE_STARTUP_STABILIZE_S: float = (
+    max(0.0, float(_rss_env)) if _rss_env else 60.0
+)
 # FSM timing (§2, §4.4, §6). Per-channel / system timers in control.py.
 # T_POL_STABLE: bench-friendly default; increase for noisier field water (e.g. 300 s).
 # s with TARGET_SHIFT_MV ≤ shift ≤ MAX_SHIFT_MV before Polarizing → Protected

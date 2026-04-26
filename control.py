@@ -400,6 +400,9 @@ class Controller:
         self._fault_latched = False
         self._faults: list[str] = []
         self._thermal_pause: bool = False
+        # True during optional post-start window: same outputs-off path as thermal pause, but for
+        # ref-electrode OCP depolarization (not temperature). See ``REFERENCE_STARTUP_STABILIZE_S``.
+        self._reference_startup_soak: bool = False
         # System-level all_protected (§2.2): all channels Protected for T_SYSTEM_STABLE.
         self._boot_wall_time: float = time.time()
         self._all_protected_streak_mono: float | None = None
@@ -409,6 +412,10 @@ class Controller:
     def set_thermal_pause(self, active: bool) -> None:
         """When True, `update()` keeps all PWM off but still evaluates read errors and FAULT recovery."""
         self._thermal_pause = bool(active)
+
+    def set_reference_startup_soak(self, active: bool) -> None:
+        """When True, `update()` holds all channels at 0%% (ref startup stabilize)."""
+        self._reference_startup_soak = bool(active)
 
     def all_outputs_off(self) -> None:
         """Drive every anode channel to 0% PWM; de-energize anode supply relays if configured."""
@@ -585,7 +592,7 @@ class Controller:
         self._check_clear_fault()
         self._check_clear_fault_channel()
 
-        if self._thermal_pause:
+        if self._thermal_pause or self._reference_startup_soak:
             self.all_outputs_off()
             for ch, state in enumerate(self._states):
                 r = readings.get(ch, {})

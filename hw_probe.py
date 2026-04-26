@@ -863,7 +863,8 @@ def run_pwm_test(
             except OSError as e:
                 print(f"  [!] init 0x{INA219_ADDRESSES[ch]:02X}: {e}")
 
-    duty_steps = [0, 10, 25, 50, 75]
+    # Include 0.1% to match production DUTY_PROBE / PWM_MIN_DUTY / PWM_DUTY_QUANTUM (0.1%).
+    duty_steps = [0, 0.1, 1, 10, 25, 50, 75]
     if ina_ok:
         ina_note = (
             "  After each step, INA219 (this anode) reports shunt mA, Vbus, "
@@ -951,7 +952,7 @@ def run_pwm_test(
                     ina_str = "   INA: (no address for this index)"
 
                 print(
-                    f"  Duty {duty:3d}%  →  gate ≈ {gate_v:.2f} V   anode rail avg ≈ {anode_v:.2f} V (model)"
+                    f"  Duty {float(duty):>5.1f}%  →  gate ≈ {gate_v:.2f} V   anode rail avg ≈ {anode_v:.2f} V (model)"
                     f"{ina_str}"
                 )
                 pause("           Measure now, then press Enter ...")

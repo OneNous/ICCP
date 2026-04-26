@@ -7,6 +7,7 @@ optional diagnostics live in one module.
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import time
@@ -142,6 +143,54 @@ def run_iccp_forever(args: Namespace) -> int:
     global _last_runtime_diag_ts, _last_deep_snapshot_ts
     global _last_native_recapture_attempt, _last_drift_alert_ts
 
+    def _run_reference_startup_stabilize(s: float) -> None:
+        """
+        Hold 0% drive (no CP) while the reference electrode relaxes toward OCP so shift is not
+        dominated by decay from a **previous** run. Same PWM-off path as thermal pause, plus
+        :meth:`Controller.set_reference_startup_soak` for clarity in future diagnostics.
+        """
+        if s <= 0:
+            return
+        tick = max(0.05, float(getattr(cfg, "SAMPLE_INTERVAL_S", 1.0)))
+        print(
+            f"[main] Reference startup stabilize: {s:.0f}s (0% drive) — depolarize ref after prior run. "
+            "Set ICCP_REFERENCE_STARTUP_STABILIZE_S=0 to skip."
+        )
+        t_end = time.monotonic() + s
+        last_log = time.monotonic()
+        ctrl.set_reference_startup_soak(True)
+        try:
+            while time.monotonic() < t_end:
+                now = time.monotonic()
+                if now - last_log >= 10.0:
+                    last_log = now
+                    rem = max(0.0, t_end - now)
+                    print(
+                        f"[main] Reference startup stabilize: {rem:.0f}s remaining"
+                    )
+                temp_f = temp_mod.read_fahrenheit()
+                temp_in_band = temp_mod.in_operating_range(temp_f)
+                ctrl.set_thermal_pause(not temp_in_band)
+                if sim:
+                    r = sensors.read_all_sim(sim_state)  # type: ignore[arg-type]
+                else:
+                    r = sensors.read_all_real()
+                ctrl.update(r)
+                d = ctrl.duties()
+                st = ctrl.channel_statuses()
+                ref.read_raw_and_shift(duties=d, statuses=st, temp_f=temp_f)
+                rem = t_end - time.monotonic()
+                if rem > 0:
+                    time.sleep(min(tick, rem))
+        finally:
+            ctrl.set_reference_startup_soak(False)
+        print("[main] Reference startup stabilize — done (entering main loop).")
+
+    _rss = max(0.0, float(getattr(cfg, "REFERENCE_STARTUP_STABILIZE_S", 0.0)))
+    if sim and not (os.environ.get("ICCP_REFERENCE_STARTUP_STABILIZE_S", "") or "").strip():
+        _rss = 0.0
+    _run_reference_startup_stabilize(_rss)
+
     def _bootstrap_latest() -> None:
         """One telemetry write so dashboards are not stuck on a pre-reboot latest.json."""
         try:
@@ -217,6 +266,23 @@ def run_iccp_forever(args: Namespace) -> int:
                 pass
 
     _bootstrap_latest()
+
+    t_boot = temp_mod.read_fahrenheit()
+    band_boot = temp_mod.in_operating_range(t_boot)
+    if t_boot is not None:
+        print(
+            f"[main] Temperature: {t_boot:.1f}°F  "
+            f"({'in operating band' if band_boot else 'out of band — outputs held until in band'})  "
+            f"[{temp_mod.TEMP_MIN_F:.0f}–{temp_mod.TEMP_MAX_F:.0f}°F]"
+        )
+    else:
+        miss = "thermal pause" if bool(
+            getattr(cfg, "THERMAL_PAUSE_WHEN_SENSOR_MISSING", False)
+        ) else "legacy: run without temp gate"
+        print(
+            f"[main] Temperature: (no DS18B20 reading)  ({miss})  "
+            f"band [{temp_mod.TEMP_MIN_F:.0f}–{temp_mod.TEMP_MAX_F:.0f}°F]"
+        )
 
     if args.verbose:
         print(
