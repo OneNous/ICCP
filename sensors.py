@@ -55,14 +55,15 @@ def ina219_read_failure_expected_idle(
     fsm_state: str,
     current_ma: float,
     bus_v: float,
-    duty_idle_max: float = 0.0,
+    duty_idle_max: float | None = None,
 ) -> bool:
     """
     True when an INA219 read failed but the channel is not driving CP and the
     error looks like a transient bus glitch (not overflow / addressing).
 
     Used so idle stacks do not log ERR / READ ERROR for errno-5 noise while PWM
-    is at 0% and the FSM is not in a closed conducting state.
+    is at 0% (or the session start ``DUTY_PROBE`` floor) and the FSM is not in
+    a closed conducting state.
     """
     if ok:
         return False
@@ -73,7 +74,12 @@ def ina219_read_failure_expected_idle(
         return False
     if not any(m in err_u for m in _I2C_TRANSIENT_ERR_MARKERS):
         return False
-    if float(duty_pct) > float(duty_idle_max):
+    if duty_idle_max is None:
+        import config.settings as _cfg
+
+        im = float(getattr(_cfg, "INA219_BENIGN_IDLE_DUTY_MAX_PCT", 0.01) or 0.0)
+        duty_idle_max = im if im > 0.0 else 0.0
+    if float(duty_pct) > float(duty_idle_max) + 1e-9:
         return False
     from control import ChannelState  # deferred: top-level import would cycle (control imports sensors first)
 

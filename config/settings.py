@@ -175,6 +175,10 @@ INA219_BUS_LEVEL_ERRNOS: tuple[int, ...] = (5, 121, 110)
 # How many channels must fail with bus-level errors in a single tick before the whole
 # bank drops to 0% PWM. Default 2 avoids a single-INA219 wiring nack tripping the system.
 INA219_FAILSAFE_MIN_BUS_CHANNELS: int = 2
+# Max duty (%) still treated as idle for errno-5/121 I²C transient suppression
+# (:func:`sensors.ina219_read_failure_expected_idle`). Keep in line with :data:`DUTY_PROBE`
+# (session start floor) so a 0.01% default command is not a false “drive on” for diagnostics.
+INA219_BENIGN_IDLE_DUTY_MAX_PCT: float = 0.01
 
 # Dedicated INA219 for reference electrode (only if REF_ADC_BACKEND = "ina219").
 # On the SAME bus as anodes: must not use any INA219_ADDRESSES. Default 0x42 (strap on module);
@@ -240,6 +244,8 @@ Z_COMPUTE_I_A_MIN = 1e-6
 # Floor in REGULATE: ramp up with PWM_STEP; ceiling is Vcell-capped PWM_MAX
 # (no separate “staging %” caps — current/bus/overcurrent limits are the guards).
 # 0.01% steps: match PWM_MIN_DUTY, PWM_DUTY_QUANTUM, and soft-PWM (RPi.GPIO 0.0–100.0 float).
+# Also the default % when enabling soft-PWM (PWMBank init, leave_static_gate_off,
+# iccp_runtime after a 0% ref soak) so CP sessions start at the same quantum.
 DUTY_PROBE = 0.01
 # REGULATE: hold **0%% PWM** when sensed |I| is below this (mA) and **I ≥ per-channel
 # target** (at/beyond setpoint on sensor noise). Does not apply while I < target — otherwise
@@ -288,17 +294,17 @@ OVERCURRENT_LATCH_TICKS = 1
 #   ≥20 kHz — inaudible; energy pushed above much ADC settling bandwidth (layout
 #             still dominates); soft-PWM duty resolution and gate losses — verify on scope.
 PWM_FREQUENCY_HZ = 100
-# Base step (% duty per control tick). Used as default when the per-mode keys below are omitted
-# (code uses getattr(..., PWM_STEP)). Default 0.1% per tick (ramp); actual gate duty is
-# quantized to PWM_DUTY_QUANTUM (default 0.01% = hundredths of a %).
-PWM_STEP = 0.1
-# Finer ramp tuning: % duty added or removed per SAMPLE_INTERVAL_S tick in each state/direction.
-# Legacy fallback is PWM_STEP. Asymmetric REGULATE (faster up, slower down) is common; PROTECTING
-# often keeps symmetric small steps. Effective %/s ≈ step / SAMPLE_INTERVAL_S.
-PWM_STEP_UP_REGULATE = 0.2
-PWM_STEP_DOWN_REGULATE = 0.1
-PWM_STEP_UP_PROTECTING = 0.1
-PWM_STEP_DOWN_PROTECTING = 0.1
+# Base step (% duty per control tick). Use multiples of ``PWM_DUTY_QUANTUM`` (0.01%) so each tick
+# moves a meaningful hardware step. Used when the per-mode ``PWM_STEP_*_`` keys are omitted
+# (code: ``getattr(..., PWM_STEP)``).
+PWM_STEP = 0.01
+# Per-tick % duty: match quantum for fine servos. REGULATE: slightly faster up than down; PROTECTING
+# one quantum each way. Effective %/s ≈ step / SAMPLE_INTERVAL_S. Raise to 0.05/0.1+ if too slow
+# in your cell (e.g. high-Z / bench water).
+PWM_STEP_UP_REGULATE = 0.02
+PWM_STEP_DOWN_REGULATE = 0.01
+PWM_STEP_UP_PROTECTING = 0.01
+PWM_STEP_DOWN_PROTECTING = 0.01
 # Per-anode ramp overrides (0-based channel index). Omit a key to use that direction’s global
 # PWM_STEP_* value above. Lets one channel ramp faster or slower than the others independently.
 # Example: CHANNEL_PWM_STEP_UP_REGULATE = {0: 2.0, 2: 0.5}  → Anode 1 faster up, Anode 3 slower up.
@@ -427,11 +433,13 @@ TARGET_SHIFT_MV = 100
 # Upper band for the same “total from 1a” story: effective max additional shift from 1b
 # is ``MAX_SHIFT_MV − galvanic_offset_mv`` when offset is known.
 MAX_SHIFT_MV = 200
-TARGET_MA_STEP = 0.02
-# Outer loop (``update_potential_target``): legacy behavior only nudged TARGET_MA when shift
-# was **outside** [0.8×TARGET_SHIFT_MV, MAX_SHIFT_MV] — a wide dead band where shift could
-# read "OK" in the UI while TARGET_MA and duty never moved. When True, still nudge **toward**
-# TARGET_SHIFT_MV while shift stays in that window (no nudge if |shift−center| < tol).
+# mA: outer-loop nudge (``update_potential_target``). Match fine resolution with inner duty steps.
+TARGET_MA_STEP = 0.01
+# Min wall time (s) between live-``ref_shift`` TARGET_MA nudges in the main loop. ``0`` = no
+# limit (aggressive, tests use this). LOG_INTERVAL instant-off nudges use ``force`` and ignore this.
+OUTER_LOOP_POTENTIAL_MIN_S: float = 5.0
+# Outer loop (``update_potential_target``). When True, nudge **toward** the effective
+# mV target while shift stays in the in-band window (|shift−center| > tol from above).
 OUTER_LOOP_TRIM_TO_SHIFT_CENTER = True
 OUTER_LOOP_SHIFT_TRIM_TOL_MV = 3.0
 # Optional Ag/AgCl linear trim vs pan temperature (°F only): raw mV += (temp_f − anchor)×coef.

@@ -24,8 +24,8 @@ Design principles:
   - Fault auto-recovery: channel retries after FAULT_RETRY_INTERVAL_S.
   - Incremental PWM only — no PID. Slow steps limit current spikes on sensitive coils.
   - Gate duty is quantized to ``PWM_DUTY_QUANTUM`` in ``_quantize_duty_for_gpio`` (default **0.01%**
-    in ``config.settings``; ``0`` disables rounding). ``PWM_STEP*`` is ramp size per tick, not the
-    same as quantum.
+    in ``config.settings``; ``0`` disables rounding). ``PWM_STEP*`` is ramp % per tick (defaults
+    are multiples of that quantum so the inner loop can use the full hardware resolution).
   - Optional high-side anode relays (`ANODE_RELAY_GPIO_PINS`): de-energize on
     :meth:`Controller.all_outputs_off` for true +5V disconnect when wired.
 """
@@ -90,6 +90,19 @@ def clamp(x: float, lo: float, hi: float) -> float:
 
 def _shared_return_pwm() -> bool:
     return bool(getattr(cfg, "SHARED_RETURN_PWM", False))
+
+
+def _session_start_duty_pct() -> float:
+    """
+    Duty to apply when a PWM session begins (``PWMBank`` init, ``leave_static_gate_off``,
+    :meth:`Controller.seed_session_start_duty` after 0% soak windows). Matches ``DUTY_PROBE`` /
+    ``PWM_MIN_DUTY`` (default 0.01% quantum).
+    """
+    p = float(getattr(cfg, "DUTY_PROBE", 0.01) or 0.0)
+    if p <= 0.0:
+        p = float(getattr(cfg, "PWM_MIN_DUTY", 0.01) or 0.01)
+    p = min(p, float(getattr(cfg, "PWM_MAX_DUTY", 100.0)))
+    return max(0.0, p)
 
 
 def pwm_ramp_step(ch: int, *, regulating: bool, increasing: bool) -> float:
@@ -215,6 +228,9 @@ class PWMBank:
                 p = GPIO.PWM(pin, self._pwm_carrier_hz)
                 p.start(0.0)
                 self._pwm.append(p)
+        s0 = _session_start_duty_pct()
+        if s0 > 0.0:
+            self.set_duty_unified(s0)
 
     @property
     def static_gate_off_active(self) -> bool:
@@ -245,7 +261,7 @@ class PWMBank:
         self._pwm = []
 
     def leave_static_gate_off(self) -> None:
-        """Recreate soft-PWM objects at ``_pwm_carrier_hz`` with 0%% duty. No-op in sim or if idle."""
+        """Recreate soft-PWM at ``_pwm_carrier_hz`` with session start duty (``DUTY_PROBE``). No-op in sim or if idle."""
         if _SIM or not self._static_mode:
             return
         self._static_mode = False
@@ -255,8 +271,12 @@ class PWMBank:
             p = GPIO.PWM(pin, self._pwm_carrier_hz)
             p.start(0.0)
             self._pwm.append(p)
-        for ch in range(cfg.NUM_CHANNELS):
-            self._duties[ch] = 0.0
+        s0 = _session_start_duty_pct()
+        if s0 > 0.0:
+            self.set_duty_unified(s0)
+        else:
+            for ch in range(cfg.NUM_CHANNELS):
+                self._duties[ch] = 0.0
 
     def set_duty(self, ch: int, duty: float) -> None:
         duty = float(duty)
@@ -411,6 +431,8 @@ class Controller:
         self._all_protected_streak_mono: float | None = None
         self._first_all_protected_wall: float | None = None
         self._anode_relay_gpio_ready: bool = False
+        # Throttle for :meth:`update_potential_target` (live ref shift) vs ``force=True`` (LOG+instant off).
+        self._last_outer_potential_nudge_s: float | None = None
 
     def set_thermal_pause(self, active: bool) -> None:
         """When True, `update()` keeps all PWM off but still evaluates read errors and FAULT recovery."""
@@ -419,6 +441,13 @@ class Controller:
     def set_reference_startup_soak(self, active: bool) -> None:
         """When True, `update()` holds all channels at 0%% (ref startup stabilize)."""
         self._reference_startup_soak = bool(active)
+
+    def seed_session_start_duty(self) -> None:
+        """Set all outputs to the session start floor (``DUTY_PROBE``) after 0%% windows (e.g. ref soak)."""
+        d = _session_start_duty_pct()
+        if d <= 0.0:
+            return
+        self._pwm.set_duty_unified(d)
 
     def all_outputs_off(self) -> None:
         """Drive every anode channel to 0% PWM; de-energize anode supply relays if configured."""
@@ -477,15 +506,18 @@ class Controller:
         self._pwm.leave_static_gate_off()
 
     def _any_drive_intent(self, readings: dict[int, dict]) -> bool:
-        """True if any channel is regulating, driven, or reporting wet-scale current."""
+        """True if any channel is regulating, has ramped above the probe floor, or shows wet I."""
         wet_ma = float(getattr(cfg, "CHANNEL_WET_THRESHOLD_MA", 0.15))
-        drive_floor = float(getattr(cfg, "PWM_MIN_DUTY", 0.01))
+        probe_session = min(
+            _session_start_duty_pct(),
+            float(getattr(cfg, "PWM_MAX_DUTY", 100.0)),
+        )
         for ch in range(cfg.NUM_CHANNELS):
             st = self._states[ch].status
             if st in (ChannelState.REGULATE, ChannelState.PROTECTING):
                 return True
             d = self._pwm.duty(0) if _shared_return_pwm() else self._pwm.duty(ch)
-            if d >= drive_floor:
+            if d > probe_session + 1e-9:
                 return True
             r = readings.get(ch, {})
             if r.get("ok") and float(r.get("current", 0) or 0) > wet_ma:
@@ -962,25 +994,45 @@ class Controller:
         """True if any channel is in ``Overprotected`` (shift FSM is already backing off duty)."""
         return any(s.state_v2 == STATE_V2_OVERPROTECTED for s in self._states)
 
+    def _can_outer_potential_nudge_now(self, force: bool) -> bool:
+        if force:
+            return True
+        min_s = float(getattr(cfg, "OUTER_LOOP_POTENTIAL_MIN_S", 0.0) or 0.0)
+        if min_s <= 0.0:
+            return True
+        last = self._last_outer_potential_nudge_s
+        if last is None:
+            return True
+        return (time.monotonic() - last) >= min_s
+
+    def _mark_outer_potential_nudge(self) -> None:
+        self._last_outer_potential_nudge_s = time.monotonic()
+
     def update_potential_target(
         self,
         shift_mv: float | None,
         *,
         shift_target_mv: float | None = None,
         shift_max_mv: float | None = None,
+        force: bool = False,
     ) -> None:
         """
         Outer loop: nudge TARGET_MA to keep polarization in the safe window.
-        ``shift_mv`` should be **instant-off ref − baseline_mv_for_shift** (IR-free) when
-        the runtime uses ``OUTER_LOOP_INSTANT_OFF``; legacy callers may pass live
-        on-potential shift. **Positive** shift means the mV reading **increased** under CP
+        **Positive** shift means the mV reading **increased** under CP
         vs OCP (industry: ref on DVM +, structure on DVM −).
-        Call once per LOG_INTERVAL_S tick, not every SAMPLE_INTERVAL_S.
+
+        ``shift_mv`` may be **live** (on-PWM) or **instant-off** (IR-free). The runtime calls this
+        with live shift every :data:`~config.SAMPLE_INTERVAL_S` when in temperature band, subject
+        to :data:`~config.OUTER_LOOP_POTENTIAL_MIN_S`, and on each :data:`~config.LOG_INTERVAL_S` tick
+        with instant-off and ``force=True`` (bypasses the rate limit).
+
         No-ops when any channel is Overprotected (shift FSM reduces duty; avoid fighting it).
 
-        When ``OUTER_LOOP_TRIM_TO_SHIFT_CENTER`` is True, also nudges while shift is in the
-        OK band (between ``0.8×`` effective target and effective max) toward the effective
-        target (see ``OUTER_LOOP_SHIFT_TRIM_TOL_MV``), so TARGET_MA is not frozen for long stretches.
+        **Below mV target:** nudges :data:`config.settings.TARGET_MA` up when
+        ``shift < effective target`` (same as ``UNDER`` in :class:`~reference.ReferenceElectrode`).
+        **Above mV over-max:** nudges down when over band. **Trim:** with
+        ``OUTER_LOOP_TRIM_TO_SHIFT_CENTER`` True, nudges down from the high side of the
+        in-band range when ``shift > center + OUTER_LOOP_SHIFT_TRIM_TOL_MV`` (e.g. toward center).
 
         ``shift_target_mv`` / ``shift_max_mv`` default to :obj:`config.settings.TARGET_SHIFT_MV` /
         ``MAX_SHIFT_MV``. When Phase 1b (galvanic) is commissioned, the reference layer should pass
@@ -998,21 +1050,25 @@ class Controller:
             else float(cfg.TARGET_SHIFT_MV)
         )
         hi = float(shift_max_mv) if shift_max_mv is not None else float(cfg.MAX_SHIFT_MV)
-        lo = center * 0.8
         trim_tol = float(getattr(cfg, "OUTER_LOOP_SHIFT_TRIM_TOL_MV", 3.0))
         step = float(cfg.TARGET_MA_STEP)
         max_target = float(cfg.MAX_MA) * 0.8
+        nudge_ok = self._can_outer_potential_nudge_now(force)
 
-        if shift_mv < lo:
+        # Use the same "below setpoint" test as :meth:`ReferenceElectrode.protection_status` (UNDER):
+        # increase mA setpoint when shift is below the effective mV target — not 0.8×target, which
+        # left a dead band where the UI was UNDER but OUTER_LOOP_TRIM_TO_SHIFT_CENTER=False froze
+        # TARGET_MA. Optional trim nudges down from the high side of the [center, hi] window.
+        if shift_mv < float(center) - 1e-6 and nudge_ok:
             cfg.TARGET_MA = round(min(cfg.TARGET_MA + step, max_target), 3)
-        elif shift_mv > hi:
+            self._mark_outer_potential_nudge()
+        elif shift_mv > float(hi) + 1e-6 and nudge_ok:
             cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, 0.05), 3)
-        elif bool(getattr(cfg, "OUTER_LOOP_TRIM_TO_SHIFT_CENTER", True)):
-            # In-band: steer current setpoint so polarization tends toward the effective target.
-            if shift_mv < center - trim_tol:
-                cfg.TARGET_MA = round(min(cfg.TARGET_MA + step, max_target), 3)
-            elif shift_mv > center + trim_tol:
+            self._mark_outer_potential_nudge()
+        elif bool(getattr(cfg, "OUTER_LOOP_TRIM_TO_SHIFT_CENTER", True)) and nudge_ok:
+            if shift_mv > float(center) + float(trim_tol):
                 cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, 0.05), 3)
+                self._mark_outer_potential_nudge()
 
     def duties(self) -> dict[int, float]:
         return {i: self._pwm.duty(i) for i in range(cfg.NUM_CHANNELS)}

@@ -17,17 +17,23 @@ readings: per-tick telemetry including chN_impedance_ohm, chN_cell_voltage_v,
 
 cooling_cycles: one row per completed ICCP temperature band segment (same window as
   temp.in_operating_range): duration_s, avg_temp_f, chN_protect_s (PROTECTING dwell
-  within that segment). Correlates wet dwell with coil cooling cycles.
+  within that segment; see feed_cooling_cycle / legacy ch_status). Correlates wet dwell
+  with coil cooling cycles.
   latest.json reference keys (every tick): ref_raw_mv, ref_ads_sense, ref_shift_mv
   (instant-off mV − OCP baseline; + when protected), ref_status, ref_hw_ok,
   ref_hw_message, ref_hint, ref_baseline_set, ref_depol_rate_mv_s (SQLite/CSV also carry
   raw/hw_ok/hint; hw_message, baseline_set, depol rate are CSV + JSON).
 
-wet_sessions: one row per PROTECTING episode (open until exit PROTECTING/FAULT).
-  Session opens on any transition into PROTECTING.
+wet_sessions: one row per **spec-v2 “protection”** episode — legacy path PROTECTING **or**
+  state_v2 in {Polarizing, Protected, Overprotected} (path FSM may still read REGULATE
+  while shift FSM is Protected). Closes on leaving that combined condition.
 
-daily_totals: per-calendar-day chN_ma_s (mA·s), chN_wet_s (seconds PROTECTING),
+daily_totals: per-calendar-day chN_ma_s (mA·s), chN_wet_s (seconds in that same condition),
   chN_energy_j (∫ V·I dt in joules while readings are valid).
+
+readings.chN_state for SQLite/CSV: stores ``PROTECTING`` when the combined condition is
+  true (so /api/stats and dashboard “protecting” queries match on-coil time under v2 FSM).
+  latest.json per-channel ``state`` remains the **legacy** path FSM string (REGULATE/…).
 
 Per-channel derived telemetry (latest.json + CSV; see also readings.cross_*):
   σ_proxy = 1/Z, smoothed FQI ≈ EMA(I/V), z_std_ohm, z_rate_ohm_s, dV_dI_ohm,
@@ -123,6 +129,22 @@ def _coefficient_of_variation(values: list[float]) -> float | None:
     if abs(m) < 1e-9:
         return None
     return round(statistics.pstdev(values) / abs(m), 6)
+
+
+# control.py state_v2 — when legacy path is still REGULATE, shift FSM may already be here.
+_STATS_PROTECTION_V2: frozenset[str] = frozenset(
+    ("Polarizing", "Protected", "Overprotected")
+)
+
+
+def _stats_protecting_for_history(legacy_state: str, state_v2: str) -> bool:
+    """
+    True for wet_sessions, daily mA·s, and readings.chN_state=PROTECTING. Matches on-coil
+    protection time under the v2 shift FSM, not only legacy PROTECTING.
+    """
+    if legacy_state == "PROTECTING":
+        return True
+    return state_v2 in _STATS_PROTECTION_V2
 
 
 def _effective_channel_targets_mas(
@@ -231,7 +253,10 @@ class DataLogger:
         self._purge_old_rows()
         self._insert_count = 0
 
-        self._prev_fsm: dict[int, str] = {i: "OPEN" for i in range(cfg.NUM_CHANNELS)}
+        # Previous tick: combined “stats protection” (legacy PROTECTING or v2 Polarizing+).
+        self._prev_stats_prot: dict[int, bool] = {
+            i: False for i in range(cfg.NUM_CHANNELS)
+        }
         self._wet_active: dict[int, dict] = {}
         self._prev_z_ohm: dict[int, float | None] = {
             i: None for i in range(cfg.NUM_CHANNELS)
@@ -733,8 +758,10 @@ class DataLogger:
             t_in_state_for_ch = (channel_t_in_state_s or {}).get(i)
             t_in_pol_for_ch = (channel_t_in_polarizing_s or {}).get(i)
             shift_mv_for_ch = ref_shift_mv  # §3.1 shared reference / shared shift
+            stats_prot = _stats_protecting_for_history(state, state_v2_for_ch)
             channels[i] = {
                 "state": state,
+                "_stats_protecting": stats_prot,
                 "ma": ma,
                 "duty": duty,
                 "bus_v": bus_v,
@@ -796,7 +823,7 @@ class DataLogger:
             round(sum(active_v) / len(active_v), 3) if active_v else 0.0
         )
         wet_channels = sum(
-            1 for d in channels.values() if d["state"] == "PROTECTING"
+            1 for d in channels.values() if d.get("_stats_protecting")
         )
 
         mas_ok = [
@@ -904,8 +931,9 @@ class DataLogger:
         )
         payload["ref_depol_rate_mv_s"] = ref_depol_rate_mv_s
         payload["temp_f"] = temp_f
-        # Spec v2 system fields (docs/iccp-requirements.md §9.2). Dual-written alongside
-        # `wet` / `wet_channels`, which remain legacy and still derive from the path FSM.
+        # Spec v2 system fields (docs/iccp-requirements.md §9.2). `wet` remains any_wet
+        # (path). `wet_channels` counts combined stats-protection (legacy PROTECTING or
+        # v2 Polarizing / Protected / Overprotected).
         payload["all_protected"] = bool(all_protected) if all_protected is not None else False
         payload["any_active"] = bool(any_active) if any_active is not None else wet
         payload["any_overprotected"] = (
@@ -971,7 +999,9 @@ class DataLogger:
         for i in range(cfg.NUM_CHANNELS):
             ch = channels[i]
             n = i + 1
-            row[f"ch{n}_state"] = ch["state"]
+            row[f"ch{n}_state"] = (
+                "PROTECTING" if ch.get("_stats_protecting") else ch["state"]
+            )
             row[f"ch{n}_ma"] = ch["ma"]
             row[f"ch{n}_duty"] = ch["duty"]
             row[f"ch{n}_bus_v"] = ch["bus_v"]
@@ -1033,7 +1063,7 @@ class DataLogger:
             self._flush_csv(sync=True)
 
         for i in range(cfg.NUM_CHANNELS):
-            self._prev_fsm[i] = channels[i]["state"]
+            self._prev_stats_prot[i] = bool(channels[i].get("_stats_protecting"))
 
         return {
             "channels": public_channels,
@@ -1048,15 +1078,15 @@ class DataLogger:
         channels: dict[int, dict],
         dt_s: float,
     ) -> None:
-        """Close wet session before this tick's mA is applied if we left PROTECTING."""
+        """Close wet session if we left combined protection (see _stats_protecting_for_history)."""
         with self._db_lock:
             for ch in range(cfg.NUM_CHANNELS):
-                prev = self._prev_fsm[ch]
-                st = channels[ch]["state"]
+                prev = self._prev_stats_prot[ch]
+                st = bool(channels[ch].get("_stats_protecting"))
                 ma = channels[ch]["ma"]
                 z = channels[ch]["impedance_ohm"]
 
-                if prev == "PROTECTING" and st != "PROTECTING":
+                if prev and (not st):
                     if ch not in self._wet_active:
                         continue
                     a = self._wet_active.pop(ch)
@@ -1087,7 +1117,7 @@ class DataLogger:
                     )
                     continue
 
-                if st == "PROTECTING" and prev != "PROTECTING":
+                if st and (not prev):
                     cur = self._db.execute(
                         "INSERT INTO wet_sessions (channel, started_at) VALUES (?, ?)",
                         (ch + 1, ts_unix),
@@ -1116,7 +1146,7 @@ class DataLogger:
         dt_s: float,
     ) -> None:
         for i in range(cfg.NUM_CHANNELS):
-            if channels[i]["state"] == "PROTECTING":
+            if channels[i].get("_stats_protecting"):
                 self._daily_totals[i]["ma_s"] += channels[i]["ma"] * dt_s
                 self._daily_totals[i]["wet_s"] += dt_s
 
@@ -1163,9 +1193,12 @@ class DataLogger:
         for i in range(cfg.NUM_CHANNELS):
             d = channels[i]
             zd = d["z_delta_ohm"]
+            state_sql = (
+                "PROTECTING" if d.get("_stats_protecting") else d["state"]
+            )
             ch_values.extend(
                 [
-                    d["state"],
+                    state_sql,
                     d["ma"],
                     d["duty"],
                     d["bus_v"],

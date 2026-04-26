@@ -863,8 +863,8 @@ def run_pwm_test(
             except OSError as e:
                 print(f"  [!] init 0x{INA219_ADDRESSES[ch]:02X}: {e}")
 
-    # Include 0.01% to match production DUTY_PROBE / PWM_MIN_DUTY / PWM_DUTY_QUANTUM (0.01%).
-    duty_steps = [0, 0.01, 0.1, 1, 10, 25, 50, 75]
+    # First driven step 0.01% (matches DUTY_PROBE / PWM_MIN_DUTY; baseline is GPIO LOW + pwm.start(0))
+    duty_steps = [0.01, 0.1, 1, 10, 25, 50, 75]
     if ina_ok:
         ina_note = (
             "  After each step, INA219 (this anode) reports shunt mA, Vbus, "

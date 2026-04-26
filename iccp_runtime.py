@@ -155,7 +155,8 @@ def run_iccp_forever(args: Namespace) -> int:
         tick = max(0.05, float(getattr(cfg, "SAMPLE_INTERVAL_S", 1.0)))
         print(
             f"[main] Reference startup stabilize: {s:.0f}s (0% drive) — depolarize ref after prior run. "
-            "Set ICCP_REFERENCE_STARTUP_STABILIZE_S=0 to skip."
+            "Set ICCP_REFERENCE_STARTUP_STABILIZE_S=0 to skip.",
+            flush=True,
         )
         t_end = time.monotonic() + s
         last_log = time.monotonic()
@@ -167,7 +168,8 @@ def run_iccp_forever(args: Namespace) -> int:
                     last_log = now
                     rem = max(0.0, t_end - now)
                     print(
-                        f"[main] Reference startup stabilize: {rem:.0f}s remaining"
+                        f"[main] Reference startup stabilize: {rem:.0f}s remaining",
+                        flush=True,
                     )
                 temp_f = temp_mod.read_fahrenheit()
                 temp_in_band = temp_mod.in_operating_range(temp_f)
@@ -185,12 +187,33 @@ def run_iccp_forever(args: Namespace) -> int:
                     time.sleep(min(tick, rem))
         finally:
             ctrl.set_reference_startup_soak(False)
-        print("[main] Reference startup stabilize — done (entering main loop).")
+        print("[main] Reference startup stabilize — done (entering main loop).", flush=True)
+
+    t_boot = temp_mod.read_fahrenheit()
+    band_boot = temp_mod.in_operating_range(t_boot)
+    if t_boot is not None:
+        print(
+            f"[main] Temperature: {t_boot:.1f}°F  "
+            f"({'in operating band' if band_boot else 'out of band — outputs held until in band'})  "
+            f"[{temp_mod.TEMP_MIN_F:.0f}–{temp_mod.TEMP_MAX_F:.0f}°F]",
+            flush=True,
+        )
+    else:
+        miss = "thermal pause" if bool(
+            getattr(cfg, "THERMAL_PAUSE_WHEN_SENSOR_MISSING", False)
+        ) else "legacy: run without temp gate"
+        print(
+            f"[main] Temperature: (no DS18B20 reading)  ({miss})  "
+            f"band [{temp_mod.TEMP_MIN_F:.0f}–{temp_mod.TEMP_MAX_F:.0f}°F]",
+            flush=True,
+        )
 
     _rss = max(0.0, float(getattr(cfg, "REFERENCE_STARTUP_STABILIZE_S", 0.0)))
     if sim and not (os.environ.get("ICCP_REFERENCE_STARTUP_STABILIZE_S", "") or "").strip():
         _rss = 0.0
     _run_reference_startup_stabilize(_rss)
+    # After a 0% depolarize window (or a cold start), use DUTY_PROBE (default 0.01%) for CP session start.
+    ctrl.seed_session_start_duty()
 
     def _bootstrap_latest() -> None:
         """One telemetry write so dashboards are not stuck on a pre-reboot latest.json."""
@@ -245,7 +268,13 @@ def run_iccp_forever(args: Namespace) -> int:
                 ref_hw_message=ref_hw_message(),
                 ref_baseline_set=ref.native_mv is not None,
                 ref_ads_sense=ref_ads_sense_label(),
-                runtime_alerts=["Startup: first telemetry snapshot after init"],
+                runtime_alerts=[
+                    (
+                        f"Startup: first telemetry; pan temp {t0:.1f}°F"
+                        if t0 is not None
+                        else "Startup: first telemetry (pan temp N/A)"
+                    )
+                ],
                 channel_targets={
                     i: ctrl.channel_target_ma(i) for i in range(cfg.NUM_CHANNELS)
                 },
@@ -268,28 +297,22 @@ def run_iccp_forever(args: Namespace) -> int:
 
     _bootstrap_latest()
 
-    t_boot = temp_mod.read_fahrenheit()
-    band_boot = temp_mod.in_operating_range(t_boot)
-    if t_boot is not None:
-        print(
-            f"[main] Temperature: {t_boot:.1f}°F  "
-            f"({'in operating band' if band_boot else 'out of band — outputs held until in band'})  "
-            f"[{temp_mod.TEMP_MIN_F:.0f}–{temp_mod.TEMP_MAX_F:.0f}°F]"
-        )
-    else:
-        miss = "thermal pause" if bool(
-            getattr(cfg, "THERMAL_PAUSE_WHEN_SENSOR_MISSING", False)
-        ) else "legacy: run without temp gate"
-        print(
-            f"[main] Temperature: (no DS18B20 reading)  ({miss})  "
-            f"band [{temp_mod.TEMP_MIN_F:.0f}–{temp_mod.TEMP_MAX_F:.0f}°F]"
-        )
-
     if args.verbose:
+        _n = float(getattr(cfg, "OUTER_LOOP_POTENTIAL_MIN_S", 5.0) or 0.0)
+        nudge_s = (
+            f"outer TARGET_MA: live shift nudged each tick if ≥{_n:.0f}s since last; "
+            f"instant-off nudge at LOG (every {int(cfg.LOG_INTERVAL_S)}s) bypasses. "
+        )
+        if _n <= 0.0:
+            nudge_s = (
+                "outer TARGET_MA: each sample from live ref shift (throttle 0) + LOG tick. "
+            )
         print(
             f"[main] Verbose: one line every {float(cfg.SAMPLE_INTERVAL_S):g}s; "
             f"full channel table every {int(cfg.LOG_INTERVAL_S)}s (LOG_INTERVAL_S). "
-            "dI=I_target−I_mA · Vc≈Bus×PWM%."
+            f"{nudge_s}"
+            "dI=I_target−I_mA · Vc≈Bus×PWM%.",
+            flush=True,
         )
 
     try:
@@ -385,6 +408,7 @@ def run_iccp_forever(args: Namespace) -> int:
                                 io_shift,
                                 shift_target_mv=_eff_shift_t,
                                 shift_max_mv=_eff_shift_m,
+                                force=True,
                             )
                         except Exception as exc:
                             print(
@@ -396,15 +420,24 @@ def run_iccp_forever(args: Namespace) -> int:
                                 ref_shift,
                                 shift_target_mv=_eff_shift_t,
                                 shift_max_mv=_eff_shift_m,
+                                force=True,
                             )
                     else:
                         ctrl.update_potential_target(
                             ref_shift,
                             shift_target_mv=_eff_shift_t,
                             shift_max_mv=_eff_shift_m,
+                            force=True,
                         )
                     outer_loop_counter = 0
                     ref_log_tick = True
+                elif ref_shift is not None:
+                    # Live shift: nudge TARGET_MA toward the mV band (rate-limited; LOG uses force).
+                    ctrl.update_potential_target(
+                        ref_shift,
+                        shift_target_mv=_eff_shift_t,
+                        shift_max_mv=_eff_shift_m,
+                    )
 
             ref_band = (
                 ref.protection_status(ref_shift)
@@ -640,7 +673,7 @@ def run_iccp_forever(args: Namespace) -> int:
                         ref_shift,
                         ref_band,
                         temp_f,
-                        v_dt,
+                        duties,
                         sim_line=sim_line,
                         channels=cfg.active_channel_indices_list(),
                     )

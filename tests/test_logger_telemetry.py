@@ -272,6 +272,64 @@ def test_cooling_cycle_row_on_band_exit(
         conn.close()
 
 
+def test_wet_session_counts_spec_v2_protected_when_legacy_regulate(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Path FSM may read REGULATE while shift FSM is Protected — history must still accrue."""
+    monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "SQLITE_PURGE_EVERY_N_INSERTS", 999_999_999)
+
+    from logger import DataLogger
+
+    readings = _sample_readings()
+    duties = {i: 5.0 for i in range(cfg.NUM_CHANNELS)}
+
+    log = DataLogger()
+    log.record(
+        readings,
+        True,
+        [],
+        duties,
+        False,
+        {i: "REGULATE" for i in range(cfg.NUM_CHANNELS)},
+        state_v2={i: "Off" for i in range(cfg.NUM_CHANNELS)},
+        ref_raw_mv=1.0,
+        ref_hw_ok=True,
+    )
+    log.record(
+        readings,
+        True,
+        [],
+        duties,
+        False,
+        {i: "REGULATE" for i in range(cfg.NUM_CHANNELS)},
+        state_v2={i: "Protected" for i in range(cfg.NUM_CHANNELS)},
+        ref_raw_mv=1.0,
+        ref_hw_ok=True,
+    )
+    log.record(
+        readings,
+        True,
+        [],
+        duties,
+        False,
+        {i: "REGULATE" for i in range(cfg.NUM_CHANNELS)},
+        state_v2={i: "Off" for i in range(cfg.NUM_CHANNELS)},
+        ref_raw_mv=1.0,
+        ref_hw_ok=True,
+    )
+    log.close()
+
+    conn = sqlite3.connect(str(tmp_path / cfg.SQLITE_DB_NAME))
+    try:
+        n_sess = conn.execute(
+            "SELECT COUNT(*) FROM wet_sessions WHERE ended_at IS NOT NULL"
+        ).fetchone()[0]
+        assert n_sess == cfg.NUM_CHANNELS
+    finally:
+        conn.close()
+
+
 def test_fault_log_signature_dedupe(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
     monkeypatch.setattr(cfg, "SQLITE_PURGE_EVERY_N_INSERTS", 999_999_999)

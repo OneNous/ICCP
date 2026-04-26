@@ -104,9 +104,9 @@ def print_status_table(
     readings: dict,
     faults: list,
     duties: dict,
-    latched: bool,
+    _latched: bool,
     ch_status: dict[int, str],
-    any_wet: bool,
+    _any_wet: bool,
     ref_raw_mv: float,
     ref_shift: float | None,
     ref_band: str,
@@ -247,8 +247,7 @@ def print_status_table(
                 "Prot=1 only in PROTECTING."
             )
         print(
-            f"  AnyWet={int(any_wet)}  Latch={int(latched)}  "
-            f"ΣP={tpw_s} W  "
+            f"  ΣP={tpw_s} W  "
             f"Faults: {'; '.join(faults) or '—'}"
         )
     except BrokenPipeError:
@@ -258,14 +257,14 @@ def print_status_table(
 def print_verbose_tick_line(
     readings: dict,
     faults: list,
-    latched: bool,
+    _latched: bool,
     ch_status: dict[int, str],
-    any_wet: bool,
+    _any_wet: bool,
     ref_raw_mv: float,
     ref_shift: float | None,
     ref_band: str,
     temp_f: float | None,
-    tick_dt_s: float | None,
+    duties: dict[int, float],
     sim_line: str = "",
     *,
     channels: list[int] | None = None,
@@ -286,10 +285,9 @@ def print_verbose_tick_line(
     band_s = ref_band if ref_shift is not None else "—"
     t_s = f"{temp_f:.0f}°F" if temp_f is not None else "—"
     f_s = "; ".join(faults) if faults else "—"
-    dt = (
-        f" Δt={float(tick_dt_s):.2f}s"
-        if tick_dt_s is not None and tick_dt_s >= 0
-        else ""
+    duty_s = " ".join(
+        f"{anode_label(ch)}={float(duties.get(ch, 0.0)):.2f}%"
+        for ch in chs
     )
     st_s = " ".join(
         f"{anode_label(i)}={ch_status.get(i, '?')[:4]}"
@@ -297,9 +295,9 @@ def print_verbose_tick_line(
     )
     rleg = ref_raw_legend()
     print(
-        f"{wall_clock_s()}  [tick]{dt}  {st_s}  |  {ina}  |  "
+        f"{wall_clock_s()}  [tick]  {duty_s}  {st_s}  |  {ina}  |  "
         f"{rleg} {ref_raw_mv:.0f} mV sh {shift_s} {band_s}  |  T {t_s}  |  "
-        f"Wet={int(any_wet)}  Latch={int(latched)}  F: {f_s}"
+        f"F: {f_s}"
     )
 
 

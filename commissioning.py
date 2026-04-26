@@ -1114,6 +1114,9 @@ def run(
         if verbose:
             commission_log_main(msg)
 
+    # Phase 1 OCP and static gate expect true 0% command; init may be at DUTY_PROBE from PWMBank.
+    controller.all_outputs_off()
+
     if verbose:
         print()
         if _commissioning_field_mode():
@@ -1452,6 +1455,8 @@ def run_native_only(
     def log(msg: str) -> None:
         if verbose:
             commission_log_main(msg)
+
+    controller.all_outputs_off()
 
     if verbose:
         print()
