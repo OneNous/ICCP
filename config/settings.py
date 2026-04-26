@@ -239,8 +239,8 @@ Z_COMPUTE_I_A_MIN = 1e-6
 # --- Duty limits per state (% duty cycle) ---
 # Floor in REGULATE: ramp up with PWM_STEP; ceiling is Vcell-capped PWM_MAX
 # (no separate “staging %” caps — current/bus/overcurrent limits are the guards).
-# 0.1% steps: match PWM_MIN_DUTY, PWM_DUTY_QUANTUM, and soft-PWM (RPi.GPIO 0.0–100.0 float).
-DUTY_PROBE = 0.1
+# 0.01% steps: match PWM_MIN_DUTY, PWM_DUTY_QUANTUM, and soft-PWM (RPi.GPIO 0.0–100.0 float).
+DUTY_PROBE = 0.01
 # REGULATE: hold **0%% PWM** when sensed |I| is below this (mA) and **I ≥ per-channel
 # target** (at/beyond setpoint on sensor noise). Does not apply while I < target — otherwise
 # 0 mA with a small target would deadlock at 0%% and never apply DUTY_PROBE.
@@ -264,7 +264,7 @@ Z_STATS_WINDOW = 16
 FQI_EMA_ALPHA = 0.15
 
 # --- Probe pulse (deprecated: REGULATE uses DUTY_PROBE floor continuously) ---
-PROBE_DUTY_PCT = 0.1
+PROBE_DUTY_PCT = 0.01
 PROBE_DURATION_S = 2.0
 PROBE_INTERVAL_S = 60.0
 PROBE_MAX_MA = 2.0
@@ -289,7 +289,8 @@ OVERCURRENT_LATCH_TICKS = 1
 #             still dominates); soft-PWM duty resolution and gate losses — verify on scope.
 PWM_FREQUENCY_HZ = 100
 # Base step (% duty per control tick). Used as default when the per-mode keys below are omitted
-# (code uses getattr(..., PWM_STEP)). Default 0.1% per tick (10× finer than 1% legacy).
+# (code uses getattr(..., PWM_STEP)). Default 0.1% per tick (ramp); actual gate duty is
+# quantized to PWM_DUTY_QUANTUM (default 0.01% = hundredths of a %).
 PWM_STEP = 0.1
 # Finer ramp tuning: % duty added or removed per SAMPLE_INTERVAL_S tick in each state/direction.
 # Legacy fallback is PWM_STEP. Asymmetric REGULATE (faster up, slower down) is common; PROTECTING
@@ -305,12 +306,12 @@ CHANNEL_PWM_STEP_UP_REGULATE: dict = {}
 CHANNEL_PWM_STEP_DOWN_REGULATE: dict = {}
 CHANNEL_PWM_STEP_UP_PROTECTING: dict = {}
 CHANNEL_PWM_STEP_DOWN_PROTECTING: dict = {}
-# Minimum non-zero command sent to a gate; use with DUTY_QUANTUM (below).
-PWM_MIN_DUTY = 0.1
+# Minimum non-zero command sent to a gate; use with PWM_DUTY_QUANTUM (below).
+PWM_MIN_DUTY = 0.01
 PWM_MAX_DUTY = 80
-# Round duty to this many %-points before RPi.GPIO (avoids float noise; 0.1 = tenths of a %).
-# Set 0.01 for hundredths; hardware soft-PWM still has finite time resolution at very low %.
-PWM_DUTY_QUANTUM = 0.1
+# Round duty to this many percentage points before RPi.GPIO (avoids float noise).
+# 0.01 = hundredths of a % (10× finer than 0.1). Set 0 to disable extra rounding.
+PWM_DUTY_QUANTUM = 0.01
 
 # --- GPIO (BCM) ---
 # Aligned with INA219_ADDRESSES: one gate GPIO per row (idx 0 = “Anode 1” in UI = first address).

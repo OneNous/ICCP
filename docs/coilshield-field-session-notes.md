@@ -84,5 +84,5 @@ There are two “floors” worth distinguishing:
 - `PWM_MIN_DUTY`: minimum non-zero gate duty once the controller decides to drive.
 - `DUTY_PROBE`: the REGULATE “probe floor” used to avoid deadlocking at 0% when current is below target.
 
-Defaults use **0.1%** steps (`PWM_DUTY_QUANTUM`, `DUTY_PROBE`, `PWM_MIN_DUTY`, `PWM_STEP*`). For coarser 1% behavior, set e.g. `DUTY_PROBE = 1.0`, `PWM_MIN_DUTY = 1`, `PWM_DUTY_QUANTUM = 1`. See [config/settings.py](../config/settings.py).
+**Gate resolution:** `PWM_DUTY_QUANTUM`, `DUTY_PROBE`, and `PWM_MIN_DUTY` default to **0.01%** (hundredths of a percent). **Ramp** steps per tick are still the `PWM_STEP*` family (default **0.1%** per tick unless overridden). For coarser hardware steps only, e.g. `DUTY_PROBE = 0.1`, `PWM_MIN_DUTY = 0.1`, `PWM_DUTY_QUANTUM = 0.1`; for 1%-scale behavior, `1.0` on those. See [config/settings.py](../config/settings.py).
 

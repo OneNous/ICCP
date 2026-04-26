@@ -50,6 +50,7 @@ def run_iccp_forever(args: Namespace) -> int:
         print_sim_schedule,
         print_status_table,
         print_verbose_tick_line,
+        wall_clock_s,
     )
 
     sim = sensors.SIM_MODE
@@ -653,11 +654,9 @@ def run_iccp_forever(args: Namespace) -> int:
                 band_disp = ref_band if ref_shift is not None else "—"
                 rleg = ref_raw_legend()
                 print(
-                    time.strftime("%H:%M:%S"),
-                    "FAULTS:",
-                    "; ".join(faults),
-                    f"latched={fault_latched}",
-                    f"| {rleg}={ref_raw_mv:.1f} mV shift={shift_str} band={band_disp}",
+                    f"{wall_clock_s()}  FAULTS: "
+                    f"{'; '.join(faults)}  latched={fault_latched}  "
+                    f"| {rleg}={ref_raw_mv:.1f} mV shift={shift_str} band={band_disp}"
                 )
 
             time.sleep(cfg.SAMPLE_INTERVAL_S)

@@ -23,6 +23,9 @@ Design principles:
   - FAULT is orthogonal (over/under-voltage, overcurrent, read errors).
   - Fault auto-recovery: channel retries after FAULT_RETRY_INTERVAL_S.
   - Incremental PWM only — no PID. Slow steps limit current spikes on sensitive coils.
+  - Gate duty is quantized to ``PWM_DUTY_QUANTUM`` in ``_quantize_duty_for_gpio`` (default **0.01%**
+    in ``config.settings``; ``0`` disables rounding). ``PWM_STEP*`` is ramp size per tick, not the
+    same as quantum.
   - Optional high-side anode relays (`ANODE_RELAY_GPIO_PINS`): de-energize on
     :meth:`Controller.all_outputs_off` for true +5V disconnect when wired.
 """
@@ -136,8 +139,8 @@ def duty_pct_cap_for_vcell(bus_v: float, cfg) -> float:
 
 
 def _quantize_duty_for_gpio(duty: float) -> float:
-    """Match ``PWM_DUTY_QUANTUM`` (e.g. 0.1 for 0.1% steps). ``0`` disables extra rounding."""
-    q = float(getattr(cfg, "PWM_DUTY_QUANTUM", 0.1) or 0.0)
+    """Match ``PWM_DUTY_QUANTUM`` (e.g. 0.01 for 0.01% steps). ``0`` disables extra rounding."""
+    q = float(getattr(cfg, "PWM_DUTY_QUANTUM", 0.01) or 0.0)
     d = max(0.0, min(100.0, float(duty)))
     if q > 0.0:
         d = round(d / q) * q
@@ -476,7 +479,7 @@ class Controller:
     def _any_drive_intent(self, readings: dict[int, dict]) -> bool:
         """True if any channel is regulating, driven, or reporting wet-scale current."""
         wet_ma = float(getattr(cfg, "CHANNEL_WET_THRESHOLD_MA", 0.15))
-        drive_floor = float(getattr(cfg, "PWM_MIN_DUTY", 0.1))
+        drive_floor = float(getattr(cfg, "PWM_MIN_DUTY", 0.01))
         for ch in range(cfg.NUM_CHANNELS):
             st = self._states[ch].status
             if st in (ChannelState.REGULATE, ChannelState.PROTECTING):
@@ -1240,7 +1243,7 @@ class Controller:
             i_ma = float(r.get("current", 0.0) or 0.0) if r_ok else 0.0
             duty = self._pwm.duty(0) if _shared_return_pwm() else self._pwm.duty(ch)
             probe_ma = float(getattr(cfg, "CHANNEL_DRY_MA", 0.1))
-            driving = duty >= float(getattr(cfg, "PWM_MIN_DUTY", 0.1)) and r_ok
+            driving = duty >= float(getattr(cfg, "PWM_MIN_DUTY", 0.01)) and r_ok
 
             # --- Transitions per state_v2 ---
             if state.state_v2 == STATE_V2_OFF:

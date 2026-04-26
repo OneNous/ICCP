@@ -18,9 +18,10 @@ def test_protection_status_known_bands(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "MAX_SHIFT_MV", 200)
     ref = ReferenceElectrode()
     assert ref.protection_status(None) == "UNKNOWN"
-    assert ref.protection_status(50.0) == "UNDER"  # < 0.8 * 100
+    assert ref.protection_status(50.0) == "UNDER"  # < TARGET_SHIFT_MV
     assert ref.protection_status(79.0) == "UNDER"
-    assert ref.protection_status(80.0) == "OK"
+    assert ref.protection_status(80.0) == "UNDER"
+    assert ref.protection_status(99.9) == "UNDER"
     assert ref.protection_status(100.0) == "OK"  # exactly TARGET_SHIFT_MV
     assert ref.protection_status(200.0) == "OK"
     assert ref.protection_status(200.1) == "OVER"

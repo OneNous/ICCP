@@ -645,7 +645,7 @@ class DataLogger:
             else:
                 ma = 0.0
                 bus_v = 0.0
-            duty = round(float(duties.get(i, 0.0)), 1)
+            duty = round(float(duties.get(i, 0.0)), 2)
             state = (ch_status or {}).get(i, "UNKNOWN")
             benign_idle = (not ok) and ina219_read_failure_expected_idle(
                 ok=False,
@@ -705,7 +705,7 @@ class DataLogger:
                     di_a = (ma - pm) / 1000.0
                     if abs(di_a) >= 1e-7:
                         dvd_i_ohm = round((bus_v - pb) / di_a, 4)
-                    if pd is not None and abs(duty - pd) >= 0.08:
+                    if pd is not None and abs(duty - pd) >= 0.01:
                         eff_ma_pct = round((ma - pm) / (duty - pd), 6)
                 self._prev_bus_v_elec[i] = bus_v
                 self._prev_ma_elec[i] = ma

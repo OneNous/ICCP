@@ -21,11 +21,14 @@ override with ``--log-dir`` or env. If the feed is stale while the controller ru
 Direct execution (``python3 dashboard.py``) is not supported — it prints a redirect and
 exits. The module stays importable so ``iccp dashboard`` can drive it.
 
+**UI:** Dark theme tracks v77 *marketing* ``global.css`` (``#05070a`` background, sky accent).
+Vendored **Geist** variable fonts are served from ``/static/fonts/`` (``static/`` next to
+this file) for offline / Pi use — no font CDN. HTML/CSS lives in this module; avoid duplicating
+feed-health copy between Overview and Health (diagnostics are under a ``<details>`` block).
+
 HTTP: /api/live (Cache-Control: no-store; feed_age_s, json_payload_age_s, feed_stale_threshold_s, feed_trust_channel_metrics, feed_stale_reasons, target_ma_avg_live), /api/diagnostic, /api/history (avg_target_ma for mA charts), /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
 
 SQL column names for `readings` / `wet_sessions` / `daily_totals` MUST stay in sync with logger.py _init_schema.
-
-Colors aligned with v77 coilshield-product-export.css .csp-exp — update both if brand shifts.
 
 Install Flask if needed:
     pip install flask --break-system-packages
@@ -69,7 +72,12 @@ from telemetry_queries import (
     history_payload as _telemetry_history_payload,
 )
 
-app = Flask(__name__)
+_DASHBOARD_DIR = Path(__file__).resolve().parent
+app = Flask(
+    __name__,
+    static_folder=str(_DASHBOARD_DIR / "static"),
+    static_url_path="/static",
+)
 
 # /api/history: cap window so bad params cannot load unbounded rows into memory.
 _HISTORY_MINUTES_DEFAULT = _HISTORY_MINUTES_DEFAULT
@@ -417,44 +425,67 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <title>CoilShield ICCP</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <style>
-  /* v77 .csp-exp tokens — light CoilShield surface */
+  /* v77 main-site dark; Geist in /static/fonts (vend from npm `geist` 1.3.1) */
+  @font-face {
+    font-family: "Geist";
+    src: url("/static/fonts/Geist-Variable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "Geist Mono";
+    src: url("/static/fonts/GeistMono-Variable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+  }
   :root {
-    --csp-bg: #e4edf1;
-    --csp-surface: #ffffff;
-    --csp-text: #2b2b2b;
-    --csp-text-muted: #5c5c5c;
-    --csp-border: rgba(43, 43, 43, 0.18);
+    --csp-bg: #05070a;
+    --csp-surface: #0c0f16;
+    --csp-surface-elevated: #111827;
+    --csp-surface-strong: #1e293b;
+    --csp-text: #e4e4e7;
+    --csp-text-muted: #a1a1aa;
+    --csp-text-subtle: #71717a;
+    --csp-border: rgba(255, 255, 255, 0.1);
+    --csp-border-strong: rgba(255, 255, 255, 0.16);
     --csp-accent: #7dd3fc;
-    --csp-btn-dark: #2b2b2b;
-    --csp-btn-dark-text: #f5f5f5;
+    --csp-accent-strong: #38bdf8;
+    --csp-link: #38bdf8;
+    --csp-btn-dark: #0f172a;
+    --csp-btn-dark-text: #f1f5f9;
     --csp-radius: 0.4rem;
-    --green: #15803d;
-    --green-bg: #dcfce7;
-    --amber: #b45309;
-    --amber-bg: #fef3c7;
-    --blue: #1d4ed8;
-    --blue-bg: #dbeafe;
-    --red: #b91c1c;
-    --red-bg: #fee2e2;
-    --gray-text: #475569;
-    --gray-bg: #f1f5f9;
-    --ch0: #0369a1;
-    --ch1: #0f766e;
-    --ch2: #c2410c;
-    --ch3: #b91c1c;
-    --ch4: #6d28d9;
+    --green: #4ade80;
+    --green-bg: rgba(34, 197, 94, 0.12);
+    --amber: #fbbf24;
+    --amber-bg: rgba(234, 179, 8, 0.12);
+    --blue: #60a5fa;
+    --blue-bg: rgba(59, 130, 246, 0.12);
+    --red: #f87171;
+    --red-bg: rgba(248, 113, 113, 0.12);
+    --gray-text: #94a3b8;
+    --gray-bg: #1e293b;
+    --ch0: #38bdf8;
+    --ch1: #34d399;
+    --ch2: #fbbf24;
+    --ch3: #f87171;
+    --ch4: #a78bfa;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { color-scheme: dark; }
   body {
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    font-family: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
     background: var(--csp-bg);
     color: var(--csp-text);
     font-size: 14px;
   }
+  code, .telemetry-paths-line code { font-family: "Geist Mono", ui-monospace, monospace; }
 
   header {
-    background: var(--csp-btn-dark);
-    color: var(--csp-btn-dark-text);
+    background: var(--csp-surface-strong);
+    color: var(--csp-text);
+    border-bottom: 1px solid var(--csp-border);
     padding: 14px 20px;
     display: flex;
     flex-wrap: wrap;
@@ -509,17 +540,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     flex-wrap: wrap;
     gap: 6px 14px;
     align-items: center;
-    box-shadow: 0 1px 0 rgba(43,43,43,0.06);
+    box-shadow: 0 1px 0 rgba(0,0,0,0.35);
   }
   .dash-nav a {
     font-size: 12px;
     font-weight: 600;
-    color: #0369a1;
+    color: var(--csp-link);
     text-decoration: none;
     padding: 4px 2px;
     border-radius: 4px;
   }
-  .dash-nav a:hover { text-decoration: underline; }
+  .dash-nav a:hover { text-decoration: underline; color: var(--csp-accent); }
   .dash-nav a:focus-visible {
     outline: 2px solid var(--csp-accent);
     outline-offset: 2px;
@@ -542,11 +573,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-top: 4px;
   }
   .kpi-tile {
-    background: var(--gray-bg);
+    background: var(--csp-surface-elevated);
     border: 1px solid var(--csp-border);
     border-radius: var(--csp-radius);
     padding: 14px 16px;
-    box-shadow: 0 1px 2px rgba(43,43,43,0.04);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25);
   }
   .kpi-tile h3 {
     font-size: 11px;
@@ -569,18 +600,68 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     line-height: 1.35;
   }
 
-  .feed-contract-section { margin-top: 4px; }
+  .feed-status-wrap {
+    margin-top: 16px;
+    background: var(--csp-surface-elevated);
+    border: 1px solid var(--csp-border);
+    border-radius: var(--csp-radius);
+    padding: 0;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    overflow: hidden;
+  }
+  .feed-status-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 16px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--csp-border);
+  }
+  .feed-line {
+    font-size: 13px;
+    color: var(--csp-text-muted);
+    flex: 1;
+    min-width: 0;
+    line-height: 1.4;
+  }
+  .feed-diag-details {
+    padding: 0;
+  }
+  .feed-diag-details > summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 10px 16px;
+    color: var(--csp-accent-strong);
+    user-select: none;
+  }
+  .feed-diag-details > summary::-webkit-details-marker { display: none; }
+  .feed-diag-details > summary::before { content: "▸ "; opacity: 0.7; }
+  .feed-diag-details[open] > summary::before { content: "▾ "; }
+  .feed-diag-body {
+    padding: 0 16px 16px;
+    border-top: 1px solid var(--csp-border);
+  }
   .feed-contract-bar {
     display: flex;
     flex-wrap: wrap;
     gap: 16px 20px;
     align-items: flex-start;
-    background: var(--csp-surface);
-    border: 1px solid var(--csp-border);
-    border-radius: var(--csp-radius);
-    padding: 16px 18px;
-    box-shadow: 0 1px 2px rgba(43,43,43,0.04);
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 12px 0 0;
+    box-shadow: none;
   }
+  .telemetry-diag {
+    font-size: 12px;
+    color: var(--csp-text-muted);
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--csp-border);
+  }
+  .telemetry-diag p { margin: 6px 0; }
   .feed-pill {
     font-size: 13px;
     font-weight: 700;
@@ -632,13 +713,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border: 1px solid var(--csp-border);
     border-radius: var(--csp-radius);
     padding: 12px 14px;
-    background: var(--gray-bg);
+    background: var(--csp-surface-elevated);
   }
   .health-card h3 {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: #075985;
+    color: var(--csp-accent-strong);
     margin-bottom: 6px;
   }
   .health-card p {
@@ -683,9 +764,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .alert-stale code { font-size: 12px; word-break: break-all; }
   .alert-incomplete {
-    background: #fff7ed;
-    color: #9a3412;
-    border: 1px solid rgba(154, 52, 18, 0.3);
+    background: rgba(234, 88, 12, 0.15);
+    color: #fdba74;
+    border: 1px solid rgba(234, 88, 12, 0.35);
     font-weight: 600;
   }
   .alert-none {
@@ -754,14 +835,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border: 1px solid var(--csp-border);
     border-radius: var(--csp-radius);
     padding: 0 10px 8px;
-    background: #fafbfc;
+    background: var(--csp-bg);
   }
   .ch-adv summary {
     cursor: pointer;
     font-weight: 600;
     font-size: 12px;
     padding: 10px 4px;
-    color: #075985;
+    color: var(--csp-accent-strong);
   }
   .ch-adv summary:focus-visible { outline: 2px solid var(--csp-accent); border-radius: 4px; }
   .ch-adv .ch-dl { padding: 4px 4px 0; }
@@ -769,7 +850,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .ref-hint {
     margin-top: 12px;
     padding: 10px 12px;
-    background: var(--gray-bg);
+    background: var(--amber-bg);
     border-radius: var(--csp-radius);
     font-size: 12px;
     line-height: 1.45;
@@ -788,7 +869,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   table.data-table td.num,
   table.data-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  tbody.striped tr:nth-child(even) { background: rgba(241, 245, 249, 0.65); }
+  tbody.striped tr:nth-child(even) { background: rgba(255, 255, 255, 0.04); }
   .muted { font-size: 11px; font-weight: 400; color: var(--csp-text-muted); }
 
   .alerts-section .system-alerts {
@@ -820,7 +901,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
   }
   .ch-card {
-    background: var(--csp-surface);
+    background: var(--csp-surface-elevated);
     border: 1px solid var(--csp-border);
     border-radius: var(--csp-radius);
     padding: 14px;
@@ -838,7 +919,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #075985;
+    color: var(--csp-accent-strong);
     margin-bottom: 6px;
   }
   .ch-card .ch-state {
@@ -873,9 +954,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border-radius: var(--csp-radius);
     padding: 18px;
     margin-bottom: 24px;
-    box-shadow: 0 1px 3px rgba(43, 43, 43, 0.06);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
     min-width: 0;
   }
+  .section-sub {
+    font-size: 12px;
+    color: var(--csp-text-muted);
+    margin: -8px 0 16px;
+    max-width: 40rem;
+    line-height: 1.5;
+  }
+  .history-sub {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 20px 0 10px;
+    color: var(--csp-text);
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--csp-border);
+  }
+  .history-sub:first-of-type { margin-top: 0; }
+  .protection-stack > .section { margin-bottom: 16px; }
+  .protection-stack > .section:last-child { margin-bottom: 0; }
   .section-header {
     display: flex;
     align-items: center;
@@ -897,7 +996,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .time-btns { display: flex; gap: 6px; flex-wrap: wrap; }
   .time-btns button {
-    background: var(--gray-bg);
+    background: var(--csp-surface-elevated);
     border: 1px solid var(--csp-border);
     color: var(--csp-text);
     padding: 4px 12px;
@@ -906,15 +1005,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-weight: 500;
     cursor: pointer;
   }
-  .time-btns button:hover { border-color: rgba(43,43,43,0.28); }
+  .time-btns button:hover { border-color: var(--csp-border-strong); }
   .time-btns button:focus-visible {
     outline: 2px solid var(--csp-accent);
     outline-offset: 2px;
   }
   .time-btns button.active {
-    background: var(--csp-btn-dark);
-    color: var(--csp-btn-dark-text);
-    border-color: var(--csp-btn-dark);
+    background: var(--csp-accent);
+    color: #0a0a0a;
+    border-color: var(--csp-accent);
   }
   .chart-wrap { position: relative; height: 280px; }
   @media (min-width: 900px) {
@@ -924,7 +1023,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .export-links a {
     font-size: 12px;
     font-weight: 500;
-    color: #0369a1;
+    color: var(--csp-link);
     text-decoration: none;
   }
   .export-links a:hover { text-decoration: underline; }
@@ -944,6 +1043,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     text-transform: uppercase;
     padding: 6px 10px;
     border-bottom: 2px solid var(--csp-border);
+    background: var(--csp-surface-elevated);
   }
   td { padding: 8px 10px; border-bottom: 1px solid var(--csp-border); }
   tr:last-child td { border-bottom: none; }
@@ -956,14 +1056,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .ok { color: var(--green); font-weight: 600; }
   .low { color: var(--amber); font-weight: 600; }
-  .high { color: #c2410c; font-weight: 600; }
+  .high { color: #fb923c; font-weight: 600; }
   .err { color: var(--red); font-weight: 600; }
   .off { color: var(--gray-text); font-weight: 600; }
   .dry { color: var(--csp-text-muted); font-weight: 500; }
 
   .sim-badge {
-    background: #d97706;
-    color: #fff;
+    background: rgba(217, 119, 6, 0.35);
+    color: #fdba74;
+    border: 1px solid rgba(251, 191, 36, 0.4);
     font-size: 11px;
     font-weight: 700;
     padding: 2px 8px;
@@ -1031,22 +1132,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </header>
 
 <nav class="dash-nav" aria-label="Page sections">
-  <a href="#kpi">Overview</a>
-  <a href="#feed">Feed</a>
+  <a href="#overview">Overview</a>
   <a href="#alerts">Alerts</a>
+  <a href="#protection">Protection</a>
   <a href="#health">Health</a>
-  <a href="#reference">Reference</a>
-  <a href="#channels">Channels</a>
   <a href="#trends">Trends</a>
-  <a href="#sessions">Wet sessions</a>
-  <a href="#today">Today</a>
-  <a href="#stats">Statistics</a>
+  <a href="#history">History</a>
 </nav>
 
 <main id="main">
-  <section id="kpi" class="section kpi-section">
+  <section id="overview" class="section kpi-section">
     <div class="section-header">
-      <h2 class="section-title">At a glance</h2>
+      <h2 class="section-title">Overview</h2>
     </div>
     <div class="kpi-grid">
       <article class="kpi-tile">
@@ -1079,45 +1176,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <p class="kpi-value" id="kpi-ref-short">—</p>
         <p class="kpi-caption">Shift · band</p>
       </article>
-      <article class="kpi-tile">
-        <h3>Channel metrics</h3>
-        <p class="kpi-value" id="kpi-trust">—</p>
-        <p class="kpi-caption" id="kpi-trust-cap">Trust = full record + mtime + ts</p>
-      </article>
-      <article class="kpi-tile">
-        <h3>File mtime</h3>
-        <p class="kpi-value" id="kpi-feed-age">—</p>
-        <p class="kpi-caption" id="kpi-feed-cap">latest.json write age</p>
-      </article>
-      <article class="kpi-tile">
-        <h3>Snapshot (ts)</h3>
-        <p class="kpi-value" id="kpi-json-age">—</p>
-        <p class="kpi-caption" id="kpi-json-cap">age of ts_unix in JSON</p>
-      </article>
     </div>
-  </section>
-
-  <section id="feed" class="section feed-contract-section">
-    <div class="section-header">
-      <h2 class="section-title">Live feed contract</h2>
-    </div>
-    <p style="font-size:12px;color:var(--csp-text-muted);margin:0 0 10px;max-width:60rem">
-      <strong>Trusted</strong> means a full <code>record()</code> wrote the file, the file mtime and JSON <code>ts_unix</code> are within
-      <code>feed_stale_threshold_s</code> (set in <code>config.settings</code>; 0 = auto from <code>SAMPLE_INTERVAL_S</code>).
-      <strong>Degraded</strong> = <code>telemetry_incomplete</code> (e.g. tick error — channel mA is not a real CP sample).
-    </p>
-    <div class="feed-contract-bar" id="feed-contract-bar">
-      <div class="feed-pill stale" id="feed-trust-pill" role="status">—</div>
-      <div class="feed-metrics">
-        <p><span class="fm-k">Threshold (s)</span><span class="fm-v" id="fc-thr">—</span></p>
-        <p><span class="fm-k">Mtime age (s)</span><span class="fm-v" id="fc-file">—</span></p>
-        <p><span class="fm-k">JSON ts age (s)</span><span class="fm-v" id="fc-json">—</span></p>
-        <p><span class="fm-k">telemetry_seq</span><span class="fm-v" id="fc-seq">—</span></p>
-        <p><span class="fm-k">writer_pid</span><span class="fm-v" id="fc-pid">—</span></p>
-        <p><span class="fm-k">Reasons (if not trusted)</span><span class="fm-v" id="fc-reasons">—</span></p>
-        <p><span class="fm-k">Last good channel snapshot</span><span class="fm-v" id="fc-last-good">—</span></p>
-        <p style="grid-column:1/-1" id="fc-tick-wrap" hidden><span class="fm-k">tick_writer_error</span><span class="feed-tick-err" id="fc-tick-err"></span></p>
+    <div class="feed-status-wrap" id="feed-block">
+      <div class="feed-status-row">
+        <div class="feed-pill stale" id="feed-trust-pill" role="status">—</div>
+        <p class="feed-line" id="feed-line-summary">—</p>
       </div>
+      <details class="feed-diag-details" id="feed-diag-details">
+        <summary>Advanced feed diagnostics &amp; paths</summary>
+        <div class="feed-diag-body">
+          <p class="section-sub" style="margin-top:0">Trusted = full <code>record()</code>, fresh file mtime and JSON <code>ts_unix</code> within
+          <code>feed_stale_threshold_s</code> (<code>config.settings</code>).
+          <strong>Degraded</strong> = <code>telemetry_incomplete</code> (e.g. tick error).</p>
+          <div class="feed-contract-bar" id="feed-contract-bar">
+            <div class="feed-metrics">
+              <p><span class="fm-k">Threshold (s)</span><span class="fm-v" id="fc-thr">—</span></p>
+              <p><span class="fm-k">Mtime age (s)</span><span class="fm-v" id="fc-file">—</span></p>
+              <p><span class="fm-k">JSON ts age (s)</span><span class="fm-v" id="fc-json">—</span></p>
+              <p><span class="fm-k">telemetry_seq</span><span class="fm-v" id="fc-seq">—</span></p>
+              <p><span class="fm-k">writer_pid</span><span class="fm-v" id="fc-pid">—</span></p>
+              <p><span class="fm-k">Reasons (if not trusted)</span><span class="fm-v" id="fc-reasons">—</span></p>
+              <p><span class="fm-k">Last good channel snapshot</span><span class="fm-v" id="fc-last-good">—</span></p>
+              <p style="grid-column:1/-1" id="fc-tick-wrap" hidden><span class="fm-k">tick_writer_error</span><span class="feed-tick-err" id="fc-tick-err"></span></p>
+            </div>
+          </div>
+          <div class="telemetry-diag">
+            <p class="telemetry-paths-line">live: <code id="health-latest-path">—</code></p>
+            <p class="telemetry-paths-line">database: <code id="health-sqlite-path">—</code></p>
+            <p id="health-telemetry-meta">—</p>
+          </div>
+        </div>
+      </details>
     </div>
   </section>
 
@@ -1133,15 +1222,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <p id="alert-none" class="alert-none">No active alerts.</p>
   </section>
 
+  <section id="protection" class="section">
+    <div class="section-header">
+      <h2 class="section-title">Protection</h2>
+    </div>
+    <p class="section-sub">Reference electrode and per-channel output (live <code>latest.json</code>).</p>
+    <div class="protection-stack">
+      <div>
+        <h3 class="history-sub" style="border:none;padding:0;margin:0 0 8px">Reference electrode</h3>
+        <div class="ref-dl" role="list">
+          <div class="dl-row"><span class="dl-k" title="ref_raw_mv — ADS1115: single-ended vs differential is in ref_ads_sense / ref_hw_message.">Raw reading</span><span class="dl-v" id="ref-raw">—</span></div>
+          <div class="dl-row"><span class="dl-k" title="mV vs commissioned baseline; null until baseline exists.">Polarization shift</span><span class="dl-v" id="ref-shift">—</span></div>
+          <div class="dl-row"><span class="dl-k" title="Classification band for shift vs expected range.">Shift band</span><span class="dl-v" id="ref-band">—</span></div>
+          <div class="dl-row"><span class="dl-k" title="Whether a commissioning baseline has been stored.">Baseline</span><span class="dl-v" id="ref-baseline">—</span></div>
+          <div class="dl-row"><span class="dl-k" title="Reference ADC / wiring status from firmware.">Hardware</span><span class="dl-v" id="ref-hwmsg">—</span></div>
+        </div>
+        <p id="ref-hint-callout" class="ref-hint" style="display:none"></p>
+      </div>
+      <div style="margin-top:8px">
+        <h3 class="history-sub" style="border:none;padding:0;margin:0 0 8px">Channels</h3>
+        <div class="ch-grid" id="ch-grid" style="--ch-cols: __NUM_CH__"></div>
+      </div>
+    </div>
+  </section>
+
   <section id="health" class="section">
     <div class="section-header">
       <h2 class="section-title">System health</h2>
     </div>
+    <p class="section-sub" style="margin-top:-4px">Cross-checks and faults. File paths and feed maths are under <strong>Overview → Advanced feed diagnostics</strong>.</p>
     <div class="health-grid">
-      <article class="health-card">
-        <h3>Data feed</h3>
-        <p id="health-feed"></p>
-      </article>
       <article class="health-card">
         <h3>Cross-channel balance</h3>
         <p id="health-cross"></p>
@@ -1154,7 +1264,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <details>
           <summary><strong>Feed &amp; accuracy</strong> — how this UI relates to hardware</summary>
           <ul style="margin:8px 0 0 18px;font-size:13px;line-height:1.45;color:var(--csp-text-muted)">
-            <li><strong>Same files as the controller:</strong> match <code>COILSHIELD_LOG_DIR</code> / <code>ICCP_LOG_DIR</code> (or <code>iccp dashboard --log-dir</code>) with <code>iccp start</code>. Paths appear under Telemetry files.</li>
+            <li><strong>Same files as the controller:</strong> match <code>COILSHIELD_LOG_DIR</code> / <code>ICCP_LOG_DIR</code> (or <code>iccp dashboard --log-dir</code>) with <code>iccp start</code>. Paths are in Overview → Advanced.</li>
             <li><strong>Live vs stale vs degraded:</strong> <code>/api/live</code> sets <code>feed_trust_channel_metrics</code> from file mtime age, JSON <code>ts_unix</code> age, and <code>telemetry_incomplete</code> — not from mtime alone. Stopped controller → mtime and ts age grow past threshold. A failed <code>record()</code> triggers <code>recovery_touch_latest</code>: fresh mtime and ts but <code>telemetry_incomplete: true</code> and no <code>telemetry_seq</code> (channel mA is placeholders).</li>
             <li><strong>Proxies (not lab potentials):</strong> cell voltage ≈ bus×duty%; impedance ≈ bus/I; power ≈ bus×I — see README and <code>docs/iccp-vs-coilshield.md</code>.</li>
             <li><strong>PROTECTING vs “wet current”:</strong> the overview flag is true when any channel FSM is PROTECTING, not merely shunt current above a wet threshold.</li>
@@ -1170,35 +1280,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <h3>Reference hardware</h3>
         <p id="health-refhw"></p>
       </article>
-      <article class="health-card telemetry-paths-card">
-        <h3>Telemetry files (this dashboard)</h3>
-        <p class="telemetry-paths-line">live: <code id="health-latest-path">—</code></p>
-        <p class="telemetry-paths-line">database: <code id="health-sqlite-path">—</code></p>
-        <p id="health-telemetry-meta" style="font-size:12px;color:var(--csp-text-muted);margin-top:8px">—</p>
-      </article>
     </div>
-  </section>
-
-  <section id="reference" class="section">
-    <div class="section-header">
-      <h2 class="section-title">Reference electrode</h2>
-    </div>
-    <div class="ref-dl" role="list">
-      <div class="dl-row"><span class="dl-k" title="ref_raw_mv — ADS1115: single-ended vs differential is in ref_ads_sense / ref_hw_message.">Raw reading</span><span class="dl-v" id="ref-raw">—</span></div>
-      <div class="dl-row"><span class="dl-k" title="mV vs commissioned baseline; null until baseline exists.">Polarization shift</span><span class="dl-v" id="ref-shift">—</span></div>
-      <div class="dl-row"><span class="dl-k" title="Classification band for shift vs expected range.">Shift band</span><span class="dl-v" id="ref-band">—</span></div>
-      <div class="dl-row"><span class="dl-k" title="Whether a commissioning baseline has been stored.">Baseline</span><span class="dl-v" id="ref-baseline">—</span></div>
-      <div class="dl-row"><span class="dl-k" title="Reference ADC / wiring status from firmware.">Hardware</span><span class="dl-v" id="ref-hwmsg">—</span></div>
-    </div>
-    <p id="ref-hint-callout" class="ref-hint" style="display:none"></p>
-  </section>
-
-  <section id="channels" class="section">
-    <div class="section-header">
-      <h2 class="section-title">Channels</h2>
-      <span style="font-size:12px;color:var(--csp-text-muted)">Live from latest.json</span>
-    </div>
-    <div class="ch-grid" id="ch-grid" style="--ch-cols: __NUM_CH__"></div>
   </section>
 
   <div class="section" id="trends">
@@ -1225,11 +1307,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
   </div>
 
-  <section id="sessions" class="section">
+  <section id="history" class="section">
     <div class="section-header">
-      <h2 class="section-title">Recent wet sessions</h2>
-      <span style="font-size:12px;color:var(--csp-text-muted)">Last 24h, newest first</span>
+      <h2 class="section-title">History &amp; totals</h2>
     </div>
+    <p class="section-sub">Wet sessions, today’s charge while PROTECTING, and per-channel statistics. Same <code>/api/*</code> as before; anchor links: <a href="#sessions">sessions</a> · <a href="#daily-totals">daily</a> · <a href="#stats">stats</a>.</p>
+
+    <h3 class="history-sub" id="sessions">Recent wet sessions</h3>
+    <p style="font-size:12px;color:var(--csp-text-muted);margin:-6px 0 10px">Last 24h, newest first</p>
     <table class="data-table">
       <thead>
         <tr>
@@ -1244,13 +1329,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </thead>
       <tbody id="sessions-body" class="striped"></tbody>
     </table>
-  </section>
 
-  <div class="section" id="today">
-    <div class="section-header">
-      <span class="section-title">Today's cumulative protection</span>
-      <span style="font-size:12px;color:var(--csp-text-muted)">mA·s while PROTECTING; charge (C) = mA·s ÷ 1000</span>
-    </div>
+    <h3 class="history-sub" id="daily-totals">Today’s cumulative protection</h3>
+    <p style="font-size:12px;color:var(--csp-text-muted);margin:-6px 0 10px">mA·s while PROTECTING; charge (C) = mA·s ÷ 1000</p>
     <table class="data-table">
       <thead>
         <tr>
@@ -1262,14 +1343,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </thead>
       <tbody id="daily-body" class="striped"></tbody>
     </table>
-  </div>
 
-  <div class="section" id="stats">
-    <div class="section-header">
-      <span class="section-title">Statistics — today</span>
-      <span id="stats-since" style="font-size:12px;color:var(--csp-text-muted)"></span>
-      <span style="font-size:11px;color:var(--csp-text-muted)">† Ref Δ / temp: today’s average across all ticks (same value per row).</span>
-    </div>
+    <h3 class="history-sub" id="stats">Statistics — today</h3>
+    <p style="font-size:12px;color:var(--csp-text-muted);margin:-6px 0 10px"><span id="stats-since"></span> <span class="stats-footnote" style="font-size:11px">† Ref Δ / temp: today’s average across all ticks (same value per row).</span></p>
     <table class="data-table">
       <thead>
         <tr>
@@ -1287,20 +1363,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </thead>
       <tbody id="stats-body" class="striped"></tbody>
     </table>
-  </div>
+  </section>
 </main>
 
 <footer class="site-footer">
-  Telemetry: <code>logs/latest.json</code> (live) and <code>logs/</code> SQLite / CSV (history).
-  Exports: use links under Trends. Operator docs: see project <code>README.md</code>.
+  Live feed: <code>latest.json</code> under <code>LOG_DIR</code>; history in SQLite / CSV. Exports: Trends section. Docs: <code>README.md</code>.
 </footer>
 
 <script>
 const CH_COLORS = ['var(--ch0)','var(--ch1)','var(--ch2)','var(--ch3)','var(--ch4)'];
 /* Hex for Chart.js line borders — canvas stroke does not resolve CSS var(). */
-const CHART_CH_HEX = ['#0369a1', '#0f766e', '#c2410c', '#b91c1c', '#6d28d9'];
-const CHART_TARGET_HEX = '#9333ea';
-const CHART_TOTAL_HEX = '#0891b2';
+const CHART_CH_HEX = ['#38bdf8', '#34d399', '#fbbf24', '#f87171', '#a78bfa'];
+const CHART_TARGET_HEX = '#c084fc';
+const CHART_TOTAL_HEX = '#22d3ee';
+const CHART_MUTED = '#a1a1aa';
+const CHART_GRID = 'rgba(255, 255, 255, 0.07)';
 const NUM_CH = __NUM_CH__;
 const STATUS_HINT = {
   OK: 'On target: current vs effective setpoint looks healthy for this tick.',
@@ -1468,7 +1545,10 @@ chart = new Chart(ctx, {
     plugins: {
       legend: {
         position: 'top',
-        labels: { boxWidth: 14, font: { size: 12 }, usePointStyle: false },
+        labels: {
+          boxWidth: 14, font: { size: 12 }, usePointStyle: false,
+          color: CHART_MUTED,
+        },
         onClick: dashLegendClickHandler,
       },
       tooltip: { callbacks: { label: ctx => {
@@ -1478,13 +1558,13 @@ chart = new Chart(ctx, {
       }}}
     },
     scales: {
-      x: { ticks: { maxTicksLimit: 12, font: { size: 11 }, color: '#5c5c5c' }, grid: { color: 'rgba(43,43,43,0.08)' } },
+      x: { ticks: { maxTicksLimit: 12, font: { size: 11 }, color: CHART_MUTED }, grid: { color: CHART_GRID } },
       y: {
-        title: { display: true, text: 'mA', font: { size: 11 }, color: '#5c5c5c' },
+        title: { display: true, text: 'mA', font: { size: 11 }, color: CHART_MUTED },
         min: 0,
         grace: '8%',
-        ticks: { font: { size: 11 }, color: '#5c5c5c' },
-        grid: { color: 'rgba(43,43,43,0.08)' }
+        ticks: { font: { size: 11 }, color: CHART_MUTED },
+        grid: { color: CHART_GRID }
       }
     }
   }
@@ -1641,15 +1721,10 @@ async function fetchLive() {
       setAlertNoneVisible(false);
       window._dashLastLive = null;
       document.getElementById('status-pill').textContent = 'No feed';
-      const kt = document.getElementById('kpi-trust');
-      if (kt) { kt.textContent = '—'; }
-      const kc = document.getElementById('kpi-trust-cap');
-      if (kc) kc.textContent = 'Full record() + mtime + ts';
-      const kja = document.getElementById('kpi-json-age');
-      if (kja) kja.textContent = '—';
-      const kjc = document.getElementById('kpi-json-cap');
-      if (kjc) kjc.textContent = 'age of ts_unix in JSON';
-      document.getElementById('health-feed').textContent = '—';
+      const flsE = document.getElementById('feed-line-summary');
+      if (flsE) { flsE.textContent = '—'; flsE.style.color = ''; }
+      const fddE = document.getElementById('feed-diag-details');
+      if (fddE) fddE.setAttribute('open', '');
       document.getElementById('health-cross').textContent = '—';
       document.getElementById('health-anywet').textContent = '—';
       document.getElementById('health-faults').textContent = '—';
@@ -1727,29 +1802,30 @@ async function fetchLive() {
       tw.hidden = true;
     }
 
-    const kpiT = document.getElementById('kpi-trust');
-    if (kpiT) {
-      if (trust) { kpiT.textContent = 'OK'; kpiT.style.color = ''; }
-      else if (inc) { kpiT.textContent = 'DEG'; kpiT.style.color = ''; }
-      else { kpiT.textContent = 'STALE'; kpiT.style.color = ''; }
+    const fls = document.getElementById('feed-line-summary');
+    if (fls) {
+      if (typeof age === 'number' && Number.isFinite(age)) {
+        const jaStr = (typeof jPayloadAge === 'number' && Number.isFinite(jPayloadAge))
+          ? (Number(jPayloadAge).toFixed(1) + 's') : '—';
+        const tag = trust ? 'OK' : (inc ? 'Degraded' : 'Not trusted');
+        fls.textContent = tag + ' · mtime ' + age.toFixed(1) + 's · JSON ts ' + jaStr
+          + (typeof thr === 'number' ? ' (thr ≤ ' + thr.toFixed(1) + 's)' : '');
+        fls.style.color = trust ? 'var(--green)' : (inc ? 'var(--amber)' : 'var(--red)');
+      } else {
+        fls.textContent = '—';
+        fls.style.color = '';
+      }
     }
-    const kpiTc = document.getElementById('kpi-trust-cap');
-    if (kpiTc) {
-      kpiTc.textContent = trust ? 'All checks passed' : (reasons.length ? reasons.join(' · ') : 'not trusted');
+    const fdd = document.getElementById('feed-diag-details');
+    if (fdd) {
+      if (trust) fdd.removeAttribute('open');
+      else fdd.setAttribute('open', '');
     }
-    const kpiJa = document.getElementById('kpi-json-age');
-    if (kpiJa) {
-      kpiJa.textContent = (jPayloadAge != null && jPayloadAge !== '' && Number.isFinite(Number(jPayloadAge)))
-        ? (Number(jPayloadAge).toFixed(2) + 's')
-        : '—';
-    }
-    const kpiJc = document.getElementById('kpi-json-cap');
-    if (kpiJc) kpiJc.textContent = (typeof thr === 'number' ? 'must be ≤ ' + thr.toFixed(1) + 's' : 'age of ts_unix in JSON');
 
     if (alertInc) {
       if (inc) {
         alertInc.style.display = '';
-        alertInc.textContent = 'Telemetry incomplete (recovery path): channel mA and related fields are not a full control-loop sample. See tick_writer_error and system alerts. Last good snapshot time is shown in Feed contract when available.';
+        alertInc.textContent = 'Telemetry incomplete (recovery path): channel mA and related fields are not a full control-loop sample. See tick_writer_error and system alerts. Last good snapshot time is in Overview → Advanced feed diagnostics.';
       } else {
         alertInc.style.display = 'none';
         alertInc.textContent = '';
@@ -1761,23 +1837,6 @@ async function fetchLive() {
     else if (trust) pill.textContent = 'Live';
     else if (inc) pill.textContent = 'Degraded';
     else pill.textContent = 'Stale / untrusted';
-
-    if (typeof age === 'number') {
-      const ageNote = (typeof jPayloadAge === 'number')
-        ? ' · JSON ts ' + jPayloadAge.toFixed(2) + 's ago' : '';
-      document.getElementById('health-feed').innerHTML =
-        '<code>latest.json</code> mtime <strong>' + age.toFixed(2) + 's</strong> ago' + ageNote + (stale
-          ? ' <span class="stale">(untrusted or stopped)</span>'
-          : (trust ? '' : ' <span class="stale">(see feed strip)</span>'));
-      document.getElementById('kpi-feed-age').textContent = age.toFixed(2) + 's';
-      document.getElementById('kpi-feed-cap').textContent = stale
-        ? 'Mtime or ts over threshold, or incomplete'
-        : (trust ? 'OK — mtime' : 'Check feed strip');
-    } else {
-      document.getElementById('health-feed').textContent = '—';
-      document.getElementById('kpi-feed-age').textContent = '—';
-      document.getElementById('kpi-feed-cap').textContent = 'latest.json mtime';
-    }
 
     const dot = document.getElementById('dot');
     if (trust) dot.style.background = d.fault_latched ? '#f87171' : '#4ade80';
@@ -1967,7 +2026,7 @@ async function fetchLive() {
         tgtEl.textContent = (ch.target_ma != null && ch.target_ma !== '')
           ? fmtOpt(ch.target_ma, 3) : '—';
       }
-      document.getElementById(`duty-${i}`).textContent = fmtOpt(ch.duty, 1);
+      document.getElementById(`duty-${i}`).textContent = fmtOpt(ch.duty, 2);
       const busV = Number(ch.bus_v);
       document.getElementById(`busv-${i}`).textContent = fmtOpt(ch.bus_v, 3);
       const z = ch.impedance_ohm;
@@ -2067,6 +2126,7 @@ function setMetric(m) {
   document.getElementById('chart-section-title').textContent =
     m === 'impedance' ? 'Trends — impedance (Ω)' : 'Trends — current (mA)';
   chart.options.scales.y.title.text = m === 'impedance' ? 'Ω' : 'mA';
+  chart.options.scales.y.title.color = CHART_MUTED;
   if (m === 'impedance') {
     delete chart.options.scales.y.min;
     chart.options.scales.y.grace = '10%';

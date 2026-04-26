@@ -12,6 +12,11 @@ from reference import ref_raw_legend
 CONSOLE_COMMISSION_WIDTH = 80
 
 
+def wall_clock_s() -> str:
+    """Local date+time for stdout (e.g. correlating `iccp start` lines with file logs)."""
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def print_commission_header() -> None:
     """One line like ``CoilShield starting…`` in ``iccp start`` (foreground commission only)."""
     print("CoilShield commissioning (Ctrl+C to stop; writes commissioning.json)")
@@ -145,12 +150,13 @@ def print_status_table(
                 ts_disp = str(raw_ts).replace("T", " ")
         if not ts_disp:
             ts_disp = time.strftime("%Y-%m-%d %H:%M:%S")
+        wall = wall_clock_s()
         dt_suf = (
             f"  Δt={float(tick_dt_s):.3f}s"
             if tick_dt_s is not None and tick_dt_s >= 0
             else ""
         )
-        print(f"[tick] {ts_disp}{dt_suf}")
+        print(f"{wall}  [tick]  telemetry_ts={ts_disp}{dt_suf}")
 
         i_floor = float(getattr(_cfg, "Z_COMPUTE_I_A_MIN", 1e-6))
         w = 152
@@ -215,7 +221,7 @@ def print_status_table(
                 )
                 print(
                     f"{i + 1:<4} {st:<12} {ptag:<6} {di_s}  {bus_v:<8.3f} {ma:>8.2f}  "
-                    f"{duty:<8.1f} {imp_s:<10} {zmed_s:<10} {vc:<8.3f} "
+                    f"{duty:<8.2f} {imp_s:<10} {zmed_s:<10} {vc:<8.3f} "
                     f"{int(st == 'PROTECTING'):<5} {p_s:<9} {e_s:<10} {n_s:<10}"
                 )
             else:
@@ -229,10 +235,10 @@ def print_status_table(
         tpw_s = f"{float(tpw):.4f}" if isinstance(tpw, (int, float)) else "—"
         if include_pwm_path_caption:
             pwm_mx = float(getattr(_cfg, "PWM_MAX_DUTY", 80.0))
-            probe = float(getattr(_cfg, "DUTY_PROBE", 0.1))
+            probe = float(getattr(_cfg, "DUTY_PROBE", 0.01))
             vhard = float(getattr(_cfg, "VCELL_HARD_MAX_V", 0.0) or 0.0)
             print(
-                f"  PWM: REGULATE ramps from {probe:.0f}% up; max duty "
+                f"  PWM: REGULATE ramps from {probe:.2f}% up; max duty "
                 f"min({pwm_mx:.0f}%, 100×{vhard:.1f}V/Bus); Vc≈Bus×PWM/100"
             )
             print(
@@ -291,7 +297,7 @@ def print_verbose_tick_line(
     )
     rleg = ref_raw_legend()
     print(
-        f"[tick]{dt}  {st_s}  |  {ina}  |  "
+        f"{wall_clock_s()}  [tick]{dt}  {st_s}  |  {ina}  |  "
         f"{rleg} {ref_raw_mv:.0f} mV sh {shift_s} {band_s}  |  T {t_s}  |  "
         f"Wet={int(any_wet)}  Latch={int(latched)}  F: {f_s}"
     )
@@ -314,6 +320,6 @@ def print_ref_compact(
     hint = f"  |  {ref_hint}" if ref_hint else ""
     rleg = ref_raw_legend()
     print(
-        f"[ref] {ref_hw_line}  |  {rleg}={ref_raw_mv:.1f} mV  |  shift={shift_str}  "
-        f"|  band={band_disp}{hint}"
+        f"{wall_clock_s()}  [ref] {ref_hw_line}  |  {rleg}={ref_raw_mv:.1f} mV  |  "
+        f"shift={shift_str}  |  band={band_disp}{hint}"
     )

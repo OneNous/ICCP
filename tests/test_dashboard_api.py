@@ -227,3 +227,11 @@ def test_api_daily_and_sessions(log_and_dashboard_client) -> None:
     sess = json.loads(r2.data)["sessions"]
     assert len(sess) == cfg.NUM_CHANNELS
     assert all("avg_impedance_ohm" in s for s in sess)
+
+
+def test_static_geist_font_served(log_and_dashboard_client) -> None:
+    c = log_and_dashboard_client
+    r = c.get("/static/fonts/Geist-Variable.woff2")
+    assert r.status_code == 200
+    assert r.mimetype in ("font/woff2", "application/font-woff2", "application/octet-stream")
+    assert len(r.data) > 10_000

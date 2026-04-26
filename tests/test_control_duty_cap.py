@@ -46,5 +46,7 @@ def test_quantize_duty_respects_pwm_duty_quantum(
     monkeypatch.setattr(cfg, "PWM_DUTY_QUANTUM", 0.1)
     assert _quantize_duty_for_gpio(1.14) == pytest.approx(1.1)
     assert _quantize_duty_for_gpio(0.0) == 0.0
+    monkeypatch.setattr(cfg, "PWM_DUTY_QUANTUM", 0.01)
+    assert _quantize_duty_for_gpio(1.144) == pytest.approx(1.14)
     monkeypatch.setattr(cfg, "PWM_DUTY_QUANTUM", 0.0)
     assert _quantize_duty_for_gpio(3.33) == pytest.approx(3.33)

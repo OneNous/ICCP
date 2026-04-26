@@ -104,7 +104,7 @@ def _commission_anode_wait_line(
         readings, num_channels=cfg.NUM_CHANNELS, channels=chs
     )
     duty_s = " ".join(
-        f"A{ch + 1}={float(duties[ch]):.1f}%" for ch in chs
+        f"A{ch + 1}={float(duties[ch]):.2f}%" for ch in chs
     )
     ts = time.strftime("%H:%M:%S")
     t_s = f"{temp_f:.1f}°F" if temp_f is not None else "—"
@@ -966,7 +966,7 @@ def _pump_regulate_anode_snapshot(
     )
     duties = controller.duties()
     duty_s = " ".join(
-        f"A{ch + 1}={float(duties.get(ch, 0.0)):.1f}%" for ch in chs
+        f"A{ch + 1}={float(duties.get(ch, 0.0)):.2f}%" for ch in chs
     )
     return f"{ina}  |  {duty_s}"
 

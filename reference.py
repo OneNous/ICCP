@@ -1360,12 +1360,17 @@ class ReferenceElectrode:
         return samples
 
     def protection_status(self, shift_mv: float | None = None) -> str:
-        """Band vs effective target/max for shift = raw − baseline (not a CP survey criterion)."""
+        """Classify shift = raw − baseline vs the **protected** band [target, max] mV (UI/telemetry).
+
+        ``OK`` only when ``effective_shift_target_mv`` ≤ shift ≤ ``effective_max_shift_mv``.
+        Below target → ``UNDER`` (not merely “a bit low”: the 0.8× dead band was misleading in the
+        field). Above max → ``OVER``. Control hysteresis lives in :mod:`control`, not here.
+        """
         if shift_mv is None:
             return "UNKNOWN"
         t = self.effective_shift_target_mv()
         hi = self.effective_max_shift_mv()
-        if shift_mv < t * 0.8:
+        if shift_mv < t:
             return "UNDER"
         if shift_mv > hi:
             return "OVER"

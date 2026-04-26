@@ -404,7 +404,7 @@ def channel_rows(data: dict) -> list[tuple[str, ...]]:
                 state[:12],
                 _fmt_float(bus_v, 3),
                 _fmt_float(ma, 2),
-                _fmt_float(duty, 1),
+                _fmt_float(duty, 2),
                 imp_disp,
                 _fmt_float(row.get("cell_voltage_v"), 3),
                 wet,
