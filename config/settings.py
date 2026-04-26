@@ -58,9 +58,12 @@ ADS1115_ADDRESS = 0x48
 ADS1115_BUS = 1
 ADS1115_CHANNEL = 0
 # If True, read the ADS1115 as a **differential** measurement (AIN+ − AIN−) instead of
-# single-ended AINn vs GND. Use for “metal sense” wiring where the negative sense lead
-# is a separate wire (e.g. AIN0=metal tip, AIN1=controller GND at the rail or a Kelvin return).
-ADS1115_DIFFERENTIAL = True
+# single-ended AINn vs GND. Use only when AIN− is **actually** tied to the intended sense
+# node; a floating AIN1 picks up stray V and makes (AIN0−AIN1) meaningless.
+# **Default False:** Ag/AgCl on AIN0, ADS1115 GND on the controller GND rail (plier / bath
+# return on that same rail). Do not connect a second “plier” lead to AIN1 unless you are
+# deliberately using differential mode with correct wiring.
+ADS1115_DIFFERENTIAL = False
 # Differential pair only supports certain ADS1115 mux combos; (0,1) is the common one.
 ADS1115_DIFF_POS_CHANNEL = 0
 ADS1115_DIFF_NEG_CHANNEL = 1
@@ -386,6 +389,20 @@ LATEST_JSON_INCLUDE_DIAG = False
 DIAG_THROTTLE_S = 60.0
 TELEMETRY_RETENTION_DAYS = 30
 SQLITE_PURGE_EVERY_N_INSERTS = 10_000
+# Web dashboard and consumers: treat latest.json as stale if its mtime is older than this
+# (seconds), compared to wall clock when reading the file. 0 = auto:
+#   max(4.0, 5.0 * SAMPLE_INTERVAL_S)
+# so occasional slow ticks on a loaded Pi are less likely to look "stale" by mistake.
+LATEST_FEED_STALE_THRESHOLD_S: float = 0.0
+
+
+def latest_feed_stale_threshold_s() -> float:
+    """Max acceptable age of ``latest.json`` mtime (and JSON ``ts_unix``) for a trusted feed."""
+    raw = float(LATEST_FEED_STALE_THRESHOLD_S or 0.0)
+    if raw > 0.0:
+        return max(3.0, raw)
+    return max(4.0, 5.0 * float(SAMPLE_INTERVAL_S))
+
 
 # --- Reference electrode (ADS1115 default; legacy INA219 if REF_ADC_BACKEND) ---
 # Set False to skip reference ADC init until hardware is wired.

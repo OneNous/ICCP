@@ -21,7 +21,7 @@ override with ``--log-dir`` or env. If the feed is stale while the controller ru
 Direct execution (``python3 dashboard.py``) is not supported — it prints a redirect and
 exits. The module stays importable so ``iccp dashboard`` can drive it.
 
-HTTP: /api/live (Cache-Control: no-store; adds feed_age_s, feed_stale_threshold_s, target_ma_avg_live), /api/diagnostic, /api/history (avg_target_ma for mA charts), /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
+HTTP: /api/live (Cache-Control: no-store; feed_age_s, json_payload_age_s, feed_stale_threshold_s, feed_trust_channel_metrics, feed_stale_reasons, target_ma_avg_live), /api/diagnostic, /api/history (avg_target_ma for mA charts), /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
 
 SQL column names for `readings` / `wet_sessions` / `daily_totals` MUST stay in sync with logger.py _init_schema.
 
@@ -123,18 +123,51 @@ def _latest() -> dict:
 
 
 def _live_envelope() -> dict:
-    """Payload for /api/live: latest.json plus feed-health metadata for the UI."""
+    """Payload for /api/live: latest.json plus feed-health metadata for the UI.
+
+    ``feed_trust_channel_metrics`` is True only when the file mtime is fresh, the
+    JSON ``ts_unix`` is not older than the same threshold, and
+    ``telemetry_incomplete`` is false (full ``record()`` wrote channel data).
+    """
     data = _latest()
+    now = time.time()
+    thr = float(cfg.latest_feed_stale_threshold_s())
     try:
         st = LATEST_PATH.stat()
         data["feed_file_mtime_unix"] = round(st.st_mtime, 6)
-        data["feed_age_s"] = round(time.time() - st.st_mtime, 3)
+        data["feed_age_s"] = round(now - st.st_mtime, 3)
     except OSError:
         data["feed_file_mtime_unix"] = None
         data["feed_age_s"] = None
     data["sample_interval_s"] = float(cfg.SAMPLE_INTERVAL_S)
-    # If the controller stops, latest.json stops updating; UI treats age above this as stale.
-    data["feed_stale_threshold_s"] = max(3.0, 3.0 * float(cfg.SAMPLE_INTERVAL_S))
+    data["feed_stale_threshold_s"] = thr
+    tsu = data.get("ts_unix")
+    json_payload_age_s: float | None = None
+    if isinstance(tsu, (int, float)) and not isinstance(tsu, bool):
+        try:
+            json_payload_age_s = max(0.0, now - float(tsu))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    data["json_payload_age_s"] = (
+        round(json_payload_age_s, 3) if json_payload_age_s is not None else None
+    )
+    incomplete = bool(data.get("telemetry_incomplete"))
+    file_age = data.get("feed_age_s")
+    file_stale = isinstance(file_age, (int, float)) and float(file_age) > thr
+    json_stale = (
+        json_payload_age_s is not None
+        and json_payload_age_s > thr * 1.01
+    )
+    reasons: list[str] = []
+    if file_stale:
+        reasons.append("file_mtime")
+    if json_stale:
+        reasons.append("json_ts")
+    if incomplete:
+        reasons.append("telemetry_incomplete")
+    data["feed_stale_reasons"] = reasons
+    data["feed_trust_channel_metrics"] = len(reasons) == 0
+    data["feed_ok"] = len(reasons) == 0
     data["target_ma"] = float(cfg.TARGET_MA)
     # Mean of per-channel effective targets from the snapshot (matches controller setpoints).
     tgts: list[float] = []
@@ -536,6 +569,59 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     line-height: 1.35;
   }
 
+  .feed-contract-section { margin-top: 4px; }
+  .feed-contract-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 20px;
+    align-items: flex-start;
+    background: var(--csp-surface);
+    border: 1px solid var(--csp-border);
+    border-radius: var(--csp-radius);
+    padding: 16px 18px;
+    box-shadow: 0 1px 2px rgba(43,43,43,0.04);
+  }
+  .feed-pill {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 8px 16px;
+    border-radius: 999px;
+    white-space: nowrap;
+    align-self: center;
+  }
+  .feed-pill.ok { background: var(--green-bg); color: var(--green); border: 1px solid rgba(21, 128, 61, 0.25); }
+  .feed-pill.degraded { background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(180, 83, 9, 0.3); }
+  .feed-pill.stale { background: var(--red-bg); color: var(--red); border: 1px solid rgba(185, 28, 28, 0.25); }
+  .feed-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px 20px;
+    font-size: 12px;
+    flex: 1;
+    min-width: 0;
+  }
+  .feed-metrics p { line-height: 1.4; margin: 0; }
+  .feed-metrics .fm-k {
+    color: var(--csp-text-muted);
+    display: block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+  }
+  .feed-metrics .fm-v {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    word-break: break-word;
+    color: var(--csp-text);
+  }
+  .feed-tick-err {
+    font-size: 12px;
+    color: var(--red);
+    font-weight: 500;
+    line-height: 1.35;
+  }
+
   .health-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -596,6 +682,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-weight: 500;
   }
   .alert-stale code { font-size: 12px; word-break: break-all; }
+  .alert-incomplete {
+    background: #fff7ed;
+    color: #9a3412;
+    border: 1px solid rgba(154, 52, 18, 0.3);
+    font-weight: 600;
+  }
   .alert-none {
     color: var(--csp-text-muted);
     font-size: 13px;
@@ -940,6 +1032,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <nav class="dash-nav" aria-label="Page sections">
   <a href="#kpi">Overview</a>
+  <a href="#feed">Feed</a>
   <a href="#alerts">Alerts</a>
   <a href="#health">Health</a>
   <a href="#reference">Reference</a>
@@ -987,10 +1080,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <p class="kpi-caption">Shift · band</p>
       </article>
       <article class="kpi-tile">
-        <h3>Data feed</h3>
-        <p class="kpi-value" id="kpi-feed-age">—</p>
-        <p class="kpi-caption" id="kpi-feed-cap">latest.json age</p>
+        <h3>Channel metrics</h3>
+        <p class="kpi-value" id="kpi-trust">—</p>
+        <p class="kpi-caption" id="kpi-trust-cap">Trust = full record + mtime + ts</p>
       </article>
+      <article class="kpi-tile">
+        <h3>File mtime</h3>
+        <p class="kpi-value" id="kpi-feed-age">—</p>
+        <p class="kpi-caption" id="kpi-feed-cap">latest.json write age</p>
+      </article>
+      <article class="kpi-tile">
+        <h3>Snapshot (ts)</h3>
+        <p class="kpi-value" id="kpi-json-age">—</p>
+        <p class="kpi-caption" id="kpi-json-cap">age of ts_unix in JSON</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="feed" class="section feed-contract-section">
+    <div class="section-header">
+      <h2 class="section-title">Live feed contract</h2>
+    </div>
+    <p style="font-size:12px;color:var(--csp-text-muted);margin:0 0 10px;max-width:60rem">
+      <strong>Trusted</strong> means a full <code>record()</code> wrote the file, the file mtime and JSON <code>ts_unix</code> are within
+      <code>feed_stale_threshold_s</code> (set in <code>config.settings</code>; 0 = auto from <code>SAMPLE_INTERVAL_S</code>).
+      <strong>Degraded</strong> = <code>telemetry_incomplete</code> (e.g. tick error — channel mA is not a real CP sample).
+    </p>
+    <div class="feed-contract-bar" id="feed-contract-bar">
+      <div class="feed-pill stale" id="feed-trust-pill" role="status">—</div>
+      <div class="feed-metrics">
+        <p><span class="fm-k">Threshold (s)</span><span class="fm-v" id="fc-thr">—</span></p>
+        <p><span class="fm-k">Mtime age (s)</span><span class="fm-v" id="fc-file">—</span></p>
+        <p><span class="fm-k">JSON ts age (s)</span><span class="fm-v" id="fc-json">—</span></p>
+        <p><span class="fm-k">telemetry_seq</span><span class="fm-v" id="fc-seq">—</span></p>
+        <p><span class="fm-k">writer_pid</span><span class="fm-v" id="fc-pid">—</span></p>
+        <p><span class="fm-k">Reasons (if not trusted)</span><span class="fm-v" id="fc-reasons">—</span></p>
+        <p><span class="fm-k">Last good channel snapshot</span><span class="fm-v" id="fc-last-good">—</span></p>
+        <p style="grid-column:1/-1" id="fc-tick-wrap" hidden><span class="fm-k">tick_writer_error</span><span class="feed-tick-err" id="fc-tick-err"></span></p>
+      </div>
     </div>
   </section>
 
@@ -999,6 +1126,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <h2 class="section-title">Alerts &amp; notices</h2>
     </div>
     <div id="alert-fault" class="alert-block alert-fault" style="display:none"></div>
+    <div id="alert-incomplete" class="alert-block alert-incomplete" style="display:none"></div>
     <div id="alert-feed" class="alert-block alert-feed" style="display:none"></div>
     <div id="alert-stale" class="alert-block alert-stale" style="display:none"></div>
     <div id="alert-system" class="system-alerts" style="display:none"></div>
@@ -1027,7 +1155,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <summary><strong>Feed &amp; accuracy</strong> — how this UI relates to hardware</summary>
           <ul style="margin:8px 0 0 18px;font-size:13px;line-height:1.45;color:var(--csp-text-muted)">
             <li><strong>Same files as the controller:</strong> match <code>COILSHIELD_LOG_DIR</code> / <code>ICCP_LOG_DIR</code> (or <code>iccp dashboard --log-dir</code>) with <code>iccp start</code>. Paths appear under Telemetry files.</li>
-            <li><strong>Stale feed:</strong> if <code>latest.json</code> stops updating, numbers freeze; age vs <code>feed_stale_threshold_s</code> flags stale. If <code>log.record()</code> throws, <code>recovery_touch_latest</code> still refreshes timestamps and merges a <code>tick_writer_error</code> / system alert.</li>
+            <li><strong>Live vs stale vs degraded:</strong> <code>/api/live</code> sets <code>feed_trust_channel_metrics</code> from file mtime age, JSON <code>ts_unix</code> age, and <code>telemetry_incomplete</code> — not from mtime alone. Stopped controller → mtime and ts age grow past threshold. A failed <code>record()</code> triggers <code>recovery_touch_latest</code>: fresh mtime and ts but <code>telemetry_incomplete: true</code> and no <code>telemetry_seq</code> (channel mA is placeholders).</li>
             <li><strong>Proxies (not lab potentials):</strong> cell voltage ≈ bus×duty%; impedance ≈ bus/I; power ≈ bus×I — see README and <code>docs/iccp-vs-coilshield.md</code>.</li>
             <li><strong>PROTECTING vs “wet current”:</strong> the overview flag is true when any channel FSM is PROTECTING, not merely shunt current above a wet threshold.</li>
             <li><strong>Targets:</strong> each channel card shows the effective mA setpoint for that tick; KPI “settings default” uses module <code>TARGET_MA</code> (outer loop may move the live setpoint).</li>
@@ -1364,6 +1492,7 @@ chart = new Chart(ctx, {
 
 function syncChartLiveTail(d) {
   if (!chart || !d.channels || d.error) return;
+  if (d.feed_trust_channel_metrics === false || d.telemetry_incomplete) return;
   const lab = (d.ts && d.ts.length >= 19) ? d.ts.slice(11, 19) : '';
   if (!lab) return;
 
@@ -1483,27 +1612,56 @@ function setAlertNoneVisible(show) {
   if (el) el.style.display = show ? '' : 'none';
 }
 
+function _dashFeedTrustStale(d) {
+  const age = d.feed_age_s;
+  const thr = d.feed_stale_threshold_s ?? 3;
+  if (d.feed_trust_channel_metrics === true) return false;
+  if (d.feed_trust_channel_metrics === false) return true;
+  const jAge = d.json_payload_age_s;
+  return (typeof age === 'number' && age > thr)
+    || (typeof jAge === 'number' && jAge > thr * 1.01)
+    || !!d.telemetry_incomplete;
+}
+
 async function fetchLive() {
   try {
-    const d = await fetch('/api/live', { cache: 'no-store' }).then(r => r.json());
+    const d = await fetch('/api/live?_t=' + Date.now(), { cache: 'no-store' }).then(r => r.json());
     const alertFeed = document.getElementById('alert-feed');
     const alertFault = document.getElementById('alert-fault');
     const alertSys = document.getElementById('alert-system');
+    const alertInc = document.getElementById('alert-incomplete');
     if (d.error) {
       alertFeed.style.display = '';
       alertFeed.textContent = d.error;
       const ast = document.getElementById('alert-stale');
       if (ast) { ast.style.display = 'none'; ast.innerHTML = ''; }
+      if (alertInc) { alertInc.style.display = 'none'; alertInc.textContent = ''; }
       if (alertFault) { alertFault.style.display = 'none'; alertFault.textContent = ''; }
       if (alertSys) { alertSys.style.display = 'none'; alertSys.innerHTML = ''; }
       setAlertNoneVisible(false);
       window._dashLastLive = null;
       document.getElementById('status-pill').textContent = 'No feed';
+      const kt = document.getElementById('kpi-trust');
+      if (kt) { kt.textContent = '—'; }
+      const kc = document.getElementById('kpi-trust-cap');
+      if (kc) kc.textContent = 'Full record() + mtime + ts';
+      const kja = document.getElementById('kpi-json-age');
+      if (kja) kja.textContent = '—';
+      const kjc = document.getElementById('kpi-json-cap');
+      if (kjc) kjc.textContent = 'age of ts_unix in JSON';
       document.getElementById('health-feed').textContent = '—';
       document.getElementById('health-cross').textContent = '—';
       document.getElementById('health-anywet').textContent = '—';
       document.getElementById('health-faults').textContent = '—';
       document.getElementById('health-refhw').textContent = '—';
+      const fcp = document.getElementById('feed-trust-pill');
+      if (fcp) { fcp.className = 'feed-pill stale'; fcp.textContent = 'No data'; }
+      const ids = ['fc-thr','fc-file','fc-json','fc-seq','fc-pid','fc-reasons','fc-last-good'];
+      ids.forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '—'; });
+      const fwrap = document.getElementById('fc-tick-wrap');
+      if (fwrap) fwrap.hidden = true;
+      const fte = document.getElementById('fc-tick-err');
+      if (fte) fte.textContent = '';
       const hlp = document.getElementById('health-latest-path');
       const hsp = document.getElementById('health-sqlite-path');
       const hm = document.getElementById('health-telemetry-meta');
@@ -1521,27 +1679,110 @@ async function fetchLive() {
 
     const age = d.feed_age_s;
     const thr = d.feed_stale_threshold_s ?? 3;
-    const stale = typeof age === 'number' && age > thr;
+    const jPayloadAge = d.json_payload_age_s;
+    const trust = d.feed_trust_channel_metrics;
+    const stale = _dashFeedTrustStale(d);
+    const inc = !!d.telemetry_incomplete;
+    const reasons = Array.isArray(d.feed_stale_reasons) ? d.feed_stale_reasons : [];
+
+    const fcp = document.getElementById('feed-trust-pill');
+    if (fcp) {
+      if (trust) {
+        fcp.className = 'feed-pill ok';
+        fcp.textContent = 'Trusted channel metrics';
+      } else if (inc) {
+        fcp.className = 'feed-pill degraded';
+        fcp.textContent = 'Degraded (incomplete)';
+      } else {
+        fcp.className = 'feed-pill stale';
+        fcp.textContent = 'Not trusted (mtime / json ts)';
+      }
+    }
+    const ft = document.getElementById('fc-thr');
+    if (ft) ft.textContent = (typeof thr === 'number' && Number.isFinite(thr)) ? thr.toFixed(2) : '—';
+    const ff = document.getElementById('fc-file');
+    if (ff) ff.textContent = (typeof age === 'number' && Number.isFinite(age)) ? age.toFixed(3) : '—';
+    const fj = document.getElementById('fc-json');
+    if (fj) fj.textContent = (jPayloadAge != null && jPayloadAge !== '' && Number.isFinite(Number(jPayloadAge))) ? Number(jPayloadAge).toFixed(3) : '—';
+    const fsq = document.getElementById('fc-seq');
+    if (fsq) fsq.textContent = (d.telemetry_seq != null && d.telemetry_seq !== '') ? String(d.telemetry_seq) : '— (recovery or legacy)';
+    const fpi = document.getElementById('fc-pid');
+    if (fpi) fpi.textContent = (d.writer_pid != null && d.writer_pid !== '') ? String(d.writer_pid) : '—';
+    const fr = document.getElementById('fc-reasons');
+    if (fr) fr.textContent = reasons.length ? reasons.join(' · ') : '—';
+    const flg = document.getElementById('fc-last-good');
+    if (flg) {
+      const lu = d.last_valid_channel_snapshot_ts_unix;
+      flg.textContent = (lu != null && lu !== '' && Number.isFinite(Number(lu)))
+        ? (fmtUnixTs(lu) + ' · ' + Number(lu).toFixed(3) + ' unix')
+        : '—';
+    }
+    const tw = document.getElementById('fc-tick-wrap');
+    const tec = (d.tick_writer_error || '').trim();
+    if (tw && tec) {
+      tw.hidden = false;
+      const tline = document.getElementById('fc-tick-err');
+      if (tline) tline.textContent = tec;
+    } else if (tw) {
+      tw.hidden = true;
+    }
+
+    const kpiT = document.getElementById('kpi-trust');
+    if (kpiT) {
+      if (trust) { kpiT.textContent = 'OK'; kpiT.style.color = ''; }
+      else if (inc) { kpiT.textContent = 'DEG'; kpiT.style.color = ''; }
+      else { kpiT.textContent = 'STALE'; kpiT.style.color = ''; }
+    }
+    const kpiTc = document.getElementById('kpi-trust-cap');
+    if (kpiTc) {
+      kpiTc.textContent = trust ? 'All checks passed' : (reasons.length ? reasons.join(' · ') : 'not trusted');
+    }
+    const kpiJa = document.getElementById('kpi-json-age');
+    if (kpiJa) {
+      kpiJa.textContent = (jPayloadAge != null && jPayloadAge !== '' && Number.isFinite(Number(jPayloadAge)))
+        ? (Number(jPayloadAge).toFixed(2) + 's')
+        : '—';
+    }
+    const kpiJc = document.getElementById('kpi-json-cap');
+    if (kpiJc) kpiJc.textContent = (typeof thr === 'number' ? 'must be ≤ ' + thr.toFixed(1) + 's' : 'age of ts_unix in JSON');
+
+    if (alertInc) {
+      if (inc) {
+        alertInc.style.display = '';
+        alertInc.textContent = 'Telemetry incomplete (recovery path): channel mA and related fields are not a full control-loop sample. See tick_writer_error and system alerts. Last good snapshot time is shown in Feed contract when available.';
+      } else {
+        alertInc.style.display = 'none';
+        alertInc.textContent = '';
+      }
+    }
+
     const pill = document.getElementById('status-pill');
     if (d.fault_latched) pill.textContent = 'Fault latched';
-    else if (stale) pill.textContent = 'Stale feed';
-    else pill.textContent = 'Live';
+    else if (trust) pill.textContent = 'Live';
+    else if (inc) pill.textContent = 'Degraded';
+    else pill.textContent = 'Stale / untrusted';
 
     if (typeof age === 'number') {
+      const ageNote = (typeof jPayloadAge === 'number')
+        ? ' · JSON ts ' + jPayloadAge.toFixed(2) + 's ago' : '';
       document.getElementById('health-feed').innerHTML =
-        'last write to <code>latest.json</code> <strong>' + age.toFixed(2) + 's</strong> ago' +
-        (stale ? ' <span class="stale">(controller may be stopped)</span>' : '');
+        '<code>latest.json</code> mtime <strong>' + age.toFixed(2) + 's</strong> ago' + ageNote + (stale
+          ? ' <span class="stale">(untrusted or stopped)</span>'
+          : (trust ? '' : ' <span class="stale">(see feed strip)</span>'));
       document.getElementById('kpi-feed-age').textContent = age.toFixed(2) + 's';
-      document.getElementById('kpi-feed-cap').textContent =
-        stale ? 'Stale — check iccp controller' : 'OK — within threshold';
+      document.getElementById('kpi-feed-cap').textContent = stale
+        ? 'Mtime or ts over threshold, or incomplete'
+        : (trust ? 'OK — mtime' : 'Check feed strip');
     } else {
       document.getElementById('health-feed').textContent = '—';
       document.getElementById('kpi-feed-age').textContent = '—';
-      document.getElementById('kpi-feed-cap').textContent = 'latest.json age';
+      document.getElementById('kpi-feed-cap').textContent = 'latest.json mtime';
     }
 
     const dot = document.getElementById('dot');
-    dot.style.background = stale ? '#fbbf24' : (d.fault_latched ? '#f87171' : '#4ade80');
+    if (trust) dot.style.background = d.fault_latched ? '#f87171' : '#4ade80';
+    else if (inc) dot.style.background = '#fb923c';
+    else dot.style.background = '#fbbf24';
 
     const cr = d.cross || {};
     const icv = cr.i_cv, zcv = cr.z_cv;
@@ -1650,22 +1891,29 @@ async function fetchLive() {
     }
 
     if (alertStale) {
-      if (stale && typeof age === 'number') {
+      const mtimeOrJson = reasons.indexOf('file_mtime') >= 0 || reasons.indexOf('json_ts') >= 0;
+      if (!trust && mtimeOrJson && typeof age === 'number') {
         const p = (d.telemetry_paths && d.telemetry_paths.latest_json)
           ? d.telemetry_paths.latest_json : '';
+        const ja = (typeof jPayloadAge === 'number' && Number.isFinite(jPayloadAge))
+          ? ' · JSON <code>ts_unix</code> is <strong>' + jPayloadAge.toFixed(1) + 's</strong> old'
+          : '';
         alertStale.style.display = '';
         alertStale.innerHTML =
-          '<strong>Live feed is stale</strong> — <code>latest.json</code> has not been updated in ' +
-          '<strong>' + age.toFixed(0) + 's</strong>. The numbers below are from the last successful write, not real time. ' +
-          'Start <code>iccp start</code> on this host (or fix systemd) and use the <strong>same</strong> telemetry directory as this dashboard. ' +
-          (p ? 'This instance reads: <code>' + p + '</code>' : '') +
-          '<br><span style="font-size:12px;opacity:.95">Tip: <code>export COILSHIELD_LOG_DIR=/abs/path</code> for both processes, or <code>iccp dashboard --log-dir /abs/path/logs ...</code></span>';
+          '<strong>File mtime or JSON sample time is too old</strong> — mtime ' +
+          '<strong>' + age.toFixed(1) + 's</strong> ago' + ja +
+          ' (threshold <strong>' + thr.toFixed(2) + 's</strong>). ' +
+          'The UI does not show channel mA as “live” until mtime and <code>ts_unix</code> are both fresh. ' +
+          (p ? 'This dashboard reads: <code>' + p + '</code>. ' : '') +
+          'Start <code>iccp start</code> and match <code>COILSHIELD_LOG_DIR</code> / <code>iccp dashboard --log-dir</code>. ' +
+          '<br><span style="font-size:12px;opacity:.95">Tip: <code>export COILSHIELD_LOG_DIR=/abs/path</code> for both processes.</span>';
         anyAlert = true;
       } else {
         alertStale.style.display = 'none';
         alertStale.innerHTML = '';
       }
     }
+    if (alertInc && inc) anyAlert = true;
 
     const sal = alertSys;
     sal.innerHTML = '';
@@ -1794,7 +2042,9 @@ async function fetchLive() {
   } catch (e) {
     const af = document.getElementById('alert-feed');
     const ast = document.getElementById('alert-stale');
+    const ainc = document.getElementById('alert-incomplete');
     if (ast) { ast.style.display = 'none'; ast.innerHTML = ''; }
+    if (ainc) { ainc.style.display = 'none'; ainc.textContent = ''; }
     if (af) {
       af.style.display = '';
       af.textContent = 'Network error loading /api/live';
@@ -1803,6 +2053,8 @@ async function fetchLive() {
     window._dashLastLive = null;
     document.getElementById('status-pill').textContent = 'No feed';
     document.getElementById('dot').style.background = '#94a3b8';
+    const fcpn = document.getElementById('feed-trust-pill');
+    if (fcpn) { fcpn.className = 'feed-pill stale'; fcpn.textContent = '—'; }
     const salE = document.getElementById('alert-system');
     if (salE) { salE.style.display = 'none'; salE.innerHTML = ''; }
   }
@@ -1960,6 +2212,11 @@ async function fetchDaily() {
   } catch (e) {}
 }
 
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  fetchLive();
+  loadHistory(activeMinutes);
+});
 setInterval(fetchLive, 400);
 setInterval(() => loadHistory(activeMinutes), 2000);
 setInterval(fetchStats, 5000);

@@ -124,6 +124,13 @@ def test_api_live_includes_feed_envelope(log_and_dashboard_client) -> None:
     assert data.get("error") is None
     assert "feed_age_s" in data
     assert "feed_stale_threshold_s" in data
+    assert "json_payload_age_s" in data
+    assert "feed_stale_reasons" in data and isinstance(data["feed_stale_reasons"], list)
+    assert data.get("feed_ok") is True
+    assert data.get("feed_trust_channel_metrics") is True
+    assert "telemetry_seq" in data
+    assert isinstance(data.get("writer_pid"), int)
+    assert data.get("telemetry_incomplete") in (None, False)
     assert "sample_interval_s" in data
     assert r.headers.get("Cache-Control") == "no-store"
     assert data["channels"]["0"].get("reading_ok") is True
@@ -137,6 +144,41 @@ def test_api_live_includes_feed_envelope(log_and_dashboard_client) -> None:
     assert isinstance(tp, dict)
     assert "latest_json" in tp and "log_dir" in tp and "log_dir_source" in tp
     assert tp["latest_json"].endswith("latest.json")
+
+
+def test_api_live_telemetry_incomplete_untrusted(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """recovery_touch_latest keeps mtime fresh but feed_trust is false when incomplete."""
+    monkeypatch.setattr(cfg, "LOG_DIR", tmp_path)
+    from logger import DataLogger
+
+    log = DataLogger()
+    readings = {i: {"ok": True, "current": 0.1, "bus_v": 11.5} for i in range(cfg.NUM_CHANNELS)}
+    log.record(
+        readings,
+        False,
+        [],
+        {i: 5.0 for i in range(cfg.NUM_CHANNELS)},
+        False,
+        {i: "OPEN" for i in range(cfg.NUM_CHANNELS)},
+    )
+    log.recovery_touch_latest("simulated tick failure", exc=RuntimeError("x"))
+    log.close()
+
+    import dashboard
+
+    # ``dashboard`` may already be imported in this process with a different LATEST_PATH.
+    monkeypatch.setattr(dashboard, "LATEST_PATH", tmp_path / cfg.LATEST_JSON_NAME)
+    dashboard.app.config["TESTING"] = True
+    c = dashboard.app.test_client()
+    r = c.get("/api/live")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data.get("telemetry_incomplete") is True
+    assert data.get("feed_trust_channel_metrics") is False
+    assert "telemetry_incomplete" in (data.get("feed_stale_reasons") or [])
+    assert "telemetry_seq" not in data or data.get("telemetry_seq") is None
 
 
 def test_api_stats_includes_ref_and_temp(log_and_dashboard_client) -> None:

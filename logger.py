@@ -7,6 +7,10 @@ Four sinks per record() call:
   3. iccp_faults.log (deduped fault signature + fsync)
   4. iccp_YYYY-MM-DD.csv (buffered CSV)
 
+Every successful full ``record()`` also sets ``telemetry_seq`` (monotonic in-process),
+``writer_pid``, and ``telemetry_incomplete: false``. ``recovery_touch_latest`` omits
+seq/pid, sets ``telemetry_incomplete: true``, and clears per-channel data.
+
 readings: per-tick telemetry including chN_impedance_ohm, chN_cell_voltage_v,
   chN_power_w (bus V × I as W), chN_z_delta_ohm (ΔZ vs prior tick), chN_target_ma
   (effective mA setpoint for that channel), total_power_w.
@@ -260,6 +264,8 @@ class DataLogger:
             for i in range(cfg.NUM_CHANNELS)
         }
         self._load_today_daily_from_db()
+        # Monotonic counter in ``latest.json`` so UIs can detect replays or stuck files.
+        self._telemetry_seq = 0
 
     def _daily_csv_path(self) -> Path:
         return cfg.LOG_DIR / f"{cfg.LOG_BASE_NAME}_{time.strftime('%Y-%m-%d')}.csv"
@@ -542,6 +548,8 @@ class DataLogger:
         cur["ts_unix"] = time.time()
         cur["tick_writer_error"] = line[:500]
         cur["telemetry_incomplete"] = True
+        cur.pop("telemetry_seq", None)
+        cur.pop("writer_pid", None)
         cur["channels"] = _latest_json_placeholder_channels()
         cur["total_ma"] = 0.0
         cur["total_power_w"] = 0.0
@@ -937,6 +945,10 @@ class DataLogger:
         )
         if diag_extra:
             payload["diag"] = diag_extra
+        self._telemetry_seq += 1
+        payload["telemetry_seq"] = int(self._telemetry_seq)
+        payload["writer_pid"] = os.getpid()
+        payload["telemetry_incomplete"] = False
         _atomic_write_same_dir(self._latest_path, json.dumps(payload))
 
         pre_sig = self._fault_signature
