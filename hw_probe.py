@@ -69,6 +69,7 @@ if cfg is not None:
     ADS1115_ADDRESS = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
     ADS1115_BUS = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))
     ADS1115_FSR_V = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
+    SHUNT_OHMS = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
 else:
     INA219_ADDRESSES = (0x40, 0x41, 0x44, 0x45)
     I2C_BUS = 1
@@ -77,8 +78,7 @@ else:
     ADS1115_ADDRESS = 0x48
     ADS1115_BUS = 1
     ADS1115_FSR_V = 2.048
-
-SHUNT_OHMS = 0.1
+    SHUNT_OHMS = 1.0
 # N-model for probe *copy* and crude duty×V: switched anode/5V rail (measure real V with DMM/INA bus_v).
 # Often ~4.85–5.0 V on USB; not the same as the Pi gate drive below.
 NOMINAL_ANODE_RAIL_V = 5.0
@@ -544,9 +544,9 @@ def run_ina219_reads(
 
     print()
     print(
-        f"  {'Anode':<14} {'Addr':<6} {'Bus V':>8} {'Shunt mV':>10} {'mA':>10} {'mW':>10}  Status"
+        f"  {'Anode':<14} {'Addr':<6} {'Bus V':>9} {'Shunt mV':>11} {'mA':>10} {'mW':>10}  Status"
     )
-    print("  " + "─" * 58)
+    print("  " + "─" * 60)
     for ch in idxs:
         addr = int(INA219_ADDRESSES[ch])
         label = anode_label(ch)
@@ -554,8 +554,8 @@ def run_ina219_reads(
         if r.get("ok"):
             print(
                 f"  {label:<14} 0x{addr:02X}  "
-                f"{r['bus_v']:>8.3f} "
-                f"{r['shunt_mv']:>10.4f} "
+                f"{r['bus_v']:>9.4f} "
+                f"{r['shunt_mv']:>11.5f} "
                 f"{r['current_ma']:>10.4f} "
                 f"{r['power_mw']:>10.4f}  OK"
             )
@@ -646,29 +646,29 @@ def run_continuous(
             ts = time.strftime("%H:%M:%S")
             print(f"\n  [{ts}  tick {tick}]")
             print(
-                f"  {'Anode':<14} {'Bus V':>8} {'Shunt mV':>10} {'mA':>10} {'mW':>10}  Status"
+                f"  {'Anode':<14} {'Bus V':>9} {'Shunt mV':>11} {'mA':>10} {'mW':>10}  Status"
             )
-            print("  " + "─" * 52)
+            print("  " + "─" * 54)
             for ch in idxs:
                 addr = int(INA219_ADDRESSES[ch])
                 label = anode_label(ch)
                 if not _mux_select_anode_for_probe(sm, ch):
                     print(
-                        f"  {label:<14} {'—':>8} {'—':>10} {'—':>10} {'—':>10}  "
+                        f"  {label:<14} {'—':>9} {'—':>11} {'—':>10} {'—':>10}  "
                         f"mux EIO (stop `iccp`?)"
                     )
                     continue
                 r = ina219_read(sm, addr, shunt_ohms)
                 if r.get("ok"):
                     print(
-                        f"  {label:<14} {r['bus_v']:>8.3f} "
-                        f"{r['shunt_mv']:>10.4f} "
+                        f"  {label:<14} {r['bus_v']:>9.4f} "
+                        f"{r['shunt_mv']:>11.5f} "
                         f"{r['current_ma']:>10.4f} "
                         f"{r['power_mw']:>10.4f}  OK"
                     )
                 else:
                     print(
-                        f"  {label:<14} {'—':>8} {'—':>10} {'—':>10} {'—':>10}  {r.get('error')}"
+                        f"  {label:<14} {'—':>9} {'—':>11} {'—':>10} {'—':>10}  {r.get('error')}"
                     )
 
             if ads_bus is not None:
@@ -1015,7 +1015,7 @@ def main() -> int:
         default=None,
         help="I2C bus for ADS1115 (default: same as --bus / settings ADS1115_BUS)",
     )
-    ap.add_argument("--shunt", type=float, default=SHUNT_OHMS, help="Shunt Ω (default 0.1)")
+    ap.add_argument("--shunt", type=float, default=SHUNT_OHMS, help="Shunt Ω (default from INA219_SHUNT_OHMS, v1 = 1.0)")
     ap.add_argument("--skip-ina", action="store_true", help="Skip INA219 steps")
     ap.add_argument("--skip-ads", action="store_true", help="Skip ADS1115 step")
     ap.add_argument("--skip-temp", action="store_true", help="Skip DS18B20 step")

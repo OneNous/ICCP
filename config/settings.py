@@ -179,13 +179,63 @@ INA219_FAILSAFE_MIN_BUS_CHANNELS: int = 2
 # (:func:`sensors.ina219_read_failure_expected_idle`). Keep in line with :data:`DUTY_PROBE`
 # (session start floor) so a 0.01% default command is not a false “drive on” for diagnostics.
 INA219_BENIGN_IDLE_DUTY_MAX_PCT: float = 0.01
+# INA219 numeric precision. Bus voltage (TI “bus”, IN− vs GND) is 4 mV/LSB; shunt
+# voltage is the differential (VIN+ − VIN−) across the R_shunt, with LSB set by PGA
+# (e.g. 10 µV at 40 mV / GAIN=1 — see :func:`i2c_bench.ina219_parse` and the datasheet).
+# `READ_*` control :func:`sensors.read_all_real` / :func:`sensors.read_all_sim`; `LOG_*`
+# control :meth:`Logger.record` JSON/SQLite rounding (keep READ ≥ LOG so telemetry
+# is not the bottleneck).
+INA219_BUS_V_READ_DECIMALS: int = 5
+INA219_SHUNT_MV_READ_DECIMALS: int = 6
+INA219_BUS_V_LOG_DECIMALS: int = 4
+INA219_SHUNT_MV_LOG_DECIMALS: int = 5
+INA219_SHUNT_UV_LOG_DECIMALS: int = 2
+# Physical shunt on each anode INA219 branch (Ω). CoilShield v1 hardware uses **1.0** (1 Ω sense).
+# **0.1** (R100 on many breakouts) is still valid — set :envvar:`COILSHIELD_INA219_SHUNT_OHMS` or
+# this constant. Must match hardware or reported mA and LSB semantics are wrong.
+INA219_SHUNT_OHMS: float = 1.0
+_sohm = (os.environ.get("COILSHIELD_INA219_SHUNT_OHMS") or "").strip()
+if _sohm:
+    INA219_SHUNT_OHMS = max(1e-6, float(_sohm))
+# TI INA219 shunt-voltage register LSB in volts (±40 mV full scale, PGA ÷1 → 10 µV/LSB).
+INA219_SHUNT_LSB_V: float = 1e-5
+# Nominal shunt-current LSB (mA) — mirrors ``ina219_nominal_current_lsb_ma()``; re-tune if you
+# change only shunt value at runtime.
+INA219_CURRENT_LSB_MA: float = (INA219_SHUNT_LSB_V / max(INA219_SHUNT_OHMS, 1e-9)) * 1000.0
+# GAIN_AUTO in :mod:`sensors` picks a PGA; shunt full scale is ±40 mV at ÷1. Shunt drop is
+# V_shunt = I_mA/1000 × R_shunt. If you raise :data:`MAX_MA` or shunt R, confirm
+# V_shunt ≤ 40 mV at the worst case (e.g. MAX_MA=5, R=1 Ω → 5 mV, comfortable).
+# A spike far above the intended envelope can still saturate; keep **MAX_MA** aligned
+# with actual protection and wiring. Do not change gain-related code without re-checking this.
+# Floor for effective mA setpoint (``control.Controller._channel_target`` uses
+# :func:`iccp_electrolyte.effective_target_ma_floor`). Clamps pathological sub-LSB targets; **0**
+# means only the shunt-LSB floor (and :data:`INA219_ENFORCE_CURRENT_LSB_FLOOR`) applies.
+TARGET_MA_FLOOR: float = 0.0
+# When True, :func:`iccp_electrolyte.effective_target_ma_floor` includes the shunt LSB mA.
+# Set False in tests that use sub-LSB ``TARGET_MA`` on purpose.
+INA219_ENFORCE_CURRENT_LSB_FLOOR: bool = True
+
+# Feedforward duty from rolling median Z (see :mod:`iccp_electrolyte`).
+FEEDFORWARD_ENABLED: bool = False
+# Proportional trim: added to duty (%) after normal ramp step: ``Kp * (target_ma - current_ma)``.
+FEEDBACK_KP: float = 0.0
+# When feedforward applies, limit one tick to at most this many percentage points *above* the
+# current duty (0 = no cap). Stale or extreme Z can otherwise step duty toward ``hi`` instantly.
+FEEDFORWARD_MAX_DUTY_JUMP_PCT: float = 10.0
+
+# Runtime health composite (0..1). Weights should sum to 1.0.
+HEALTH_WEIGHT_ANODE: float = 0.40
+HEALTH_WEIGHT_SURFACE: float = 0.35
+HEALTH_WEIGHT_POLARIZATION: float = 0.25
+HEALTH_ALERT_THRESHOLD: float = 0.50
 
 # Dedicated INA219 for reference electrode (only if REF_ADC_BACKEND = "ina219").
 # On the SAME bus as anodes: must not use any INA219_ADDRESSES. Default 0x42 (strap on module);
 # re-strap if that collides with another device.
 # On a dedicated gpio-only bus with only the ref INA: any free strap is fine.
 REF_INA219_ADDRESS = 0x42
-REF_INA219_SHUNT_OHMS = 0.1
+# Match :data:`INA219_SHUNT_OHMS` when the ref module uses the same R_shunt; override if different.
+REF_INA219_SHUNT_OHMS = INA219_SHUNT_OHMS
 # Optional: median of this many bus/shunt reads per reference sample (1 = single read).
 # Try 9 or 16 on long leads or gpio I2C if readings are noisy.
 REF_INA219_MEDIAN_SAMPLES = 1
@@ -244,8 +294,8 @@ Z_COMPUTE_I_A_MIN = 1e-6
 # Floor in REGULATE: ramp up with PWM_STEP; ceiling is Vcell-capped PWM_MAX
 # (no separate “staging %” caps — current/bus/overcurrent limits are the guards).
 # 0.01% steps: match PWM_MIN_DUTY, PWM_DUTY_QUANTUM, and soft-PWM (RPi.GPIO 0.0–100.0 float).
-# Also the default % when enabling soft-PWM (PWMBank init, leave_static_gate_off,
-# iccp_runtime after a 0% ref soak) so CP sessions start at the same quantum.
+# Also the default % when leaving static gate, after ref-soak re-seed, and as the REGULATE probe
+# floor — not the PWMBank power-on state (which stays 0% until the FSM raises duty).
 DUTY_PROBE = 0.01
 # REGULATE: hold **0%% PWM** when sensed |I| is below this (mA) and **I ≥ per-channel
 # target** (at/beyond setpoint on sensor noise). Does not apply while I < target — otherwise
@@ -392,6 +442,11 @@ FAULT_LOG_NAME = "iccp_faults.log"
 LOG_MAX_BYTES = 1_000_000
 LOG_ROTATION_KEEP = 5
 SQLITE_DB_NAME = "coilshield.db"
+# Buffer high-frequency ``readings`` rows to cut SD write amplification. Flush when the
+# first of: wall interval elapses, or buffer size reaches max. Set **either** to 0 to
+# disable batching (one INSERT + COMMIT per tick, legacy behavior; best for unit tests).
+SQLITE_FLUSH_INTERVAL_S: float = 30.0
+SQLITE_FLUSH_MAX_ROWS: int = 60
 LATEST_JSON_NAME = "latest.json"
 # Touch `LOG_DIR / DIAGNOSTIC_REQUEST_FILE` while main is running to write
 # `LOG_DIR / DIAGNOSTIC_SNAPSHOT_JSON` (rate-limited by DIAGNOSTIC_MIN_INTERVAL_S).
@@ -471,6 +526,17 @@ COMMISSIONING_PHASE3_LOCK_SETTLE_S = 30.0
 # Phase 2: shift confirm hysteresis — within this fraction of TARGET_SHIFT_MV counts as “still
 # good”; below that band decays confirm_count instead of hard reset (noisy tap water).
 COMMISSIONING_SHIFT_CONFIRM_TOLERANCE = 0.9
+# Phase 2: ``"linear"`` = step :data:`COMMISSIONING_RAMP_STEP_MA` until shift confirms;
+# ``"binary"`` = bisect mA between :data:`COMMISSIONING_BINARY_MA_LO` and ``MAX_MA``;
+# ``"hybrid"`` = binary search then linear ramp/confirm (Algorithm D) — v1 default.
+COMMISSIONING_RAMP_MODE: str = "hybrid"
+# Binary search must not target below the INA219 current LSB, or the sensor cannot confirm
+# a distinct step (same class of failure as a linear ramp to sub-LSB mA).
+COMMISSIONING_BINARY_MA_LO: float = max(1e-4, INA219_CURRENT_LSB_MA)
+# Written to commissioning.json; bump and handle migration in :func:`commissioning.load_commissioned_target`.
+COMMISSIONING_JSON_SCHEMA_VERSION: int = 2
+COMMISSIONING_BINARY_RESOLUTION_MA: float = 0.01
+COMMISSIONING_BINARY_MAX_ITERATIONS: int = 12
 # 0 = off. Aborts ``commissioning.run`` if wall time from run start exceeds this (stuck I²C, etc.).
 COMMISSIONING_WALL_TIMEOUT_S: float = 0.0
 # After PWM cut, brief settle before the OC **burst** when ``COMMISSIONING_OC_CURVE_ENABLED`` (``COMMISSIONING_OC_INFLECTION_SKIP_RATES``

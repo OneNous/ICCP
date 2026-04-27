@@ -1236,6 +1236,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="dl-row"><span class="dl-k" title="Classification band for shift vs expected range.">Shift band</span><span class="dl-v" id="ref-band">—</span></div>
           <div class="dl-row"><span class="dl-k" title="Whether a commissioning baseline has been stored.">Baseline</span><span class="dl-v" id="ref-baseline">—</span></div>
           <div class="dl-row"><span class="dl-k" title="Reference ADC / wiring status from firmware.">Hardware</span><span class="dl-v" id="ref-hwmsg">—</span></div>
+          <div class="dl-row"><span class="dl-k" title="0..1 composite vs commissioning baselines (galvanic, Z, depol).">System health</span><span class="dl-v" id="ref-health">—</span></div>
         </div>
         <p id="ref-hint-callout" class="ref-hint" style="display:none"></p>
       </div>
@@ -1926,6 +1927,13 @@ async function fetchLive() {
       d.ref_baseline_set ? 'Yes' : 'No';
     const hw = (d.ref_hw_message || '').trim();
     document.getElementById('ref-hwmsg').textContent = hw || '—';
+    const hlt = d.health_alert ? ' ⚠' : '';
+    const hs =
+      d.system_health != null && d.system_health !== ''
+        ? `${Number(d.system_health).toFixed(2)}${hlt}`
+        : '—';
+    const rh = document.getElementById('ref-health');
+    if (rh) rh.textContent = hs;
 
     const hintEl = document.getElementById('ref-hint-callout');
     const rh = (d.ref_hint || '').trim();

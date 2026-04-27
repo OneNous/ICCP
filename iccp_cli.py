@@ -179,7 +179,10 @@ def _print_help() -> None:
                              Without --no-anode-prompts, waits for Enter: anodes out (Phase 1),
                              then anodes in (before Phase 2). Disabled for sim, pipes, or
                              COMMISSIONING_ANODE_PLACEMENT_PROMPTS=0 / ICCP_COMMISSION_NO_ANODE_PROMPTS=1,
-                             or field mode (COMMISSIONING_FIELD_MODE / ICCP_COMMISSION_FIELD_MODE=1).
+                             or field mode (COMMISSIONING_FIELD_MODE=1 or ICCP_COMMISSION_FIELD_MODE=1).
+                             Phase-2 mA search: ``COMMISSIONING_RAMP_MODE`` in config — ``hybrid`` (v1: binary
+                             + linear confirm), ``binary``, or ``linear``. Shunt: ``INA219_SHUNT_OHMS`` or
+                             env ``COILSHIELD_INA219_SHUNT_OHMS`` (v1 = 1.0 Ω); see README.
                              If Enter is ignored, pass --no-anode-prompts (reads are from /dev/tty first).
                              With --anode / --anodes / --channels, INA status lines list only those anodes.
                              While waiting for Enter, a read-only INA line every few seconds (outputs off);

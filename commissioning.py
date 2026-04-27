@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import config.settings as cfg
 import temp as temp_mod
+from iccp_electrolyte import cell_impedance_ohm
 from channel_labels import anode_hw_label
 from console_ui import (
     commission_ina_compact,
@@ -36,6 +37,38 @@ if TYPE_CHECKING:
     from control import Controller
 
 _COMM_FILE = cfg.PROJECT_ROOT / "commissioning.json"
+# Avoid stderr spam if load_commissioned_target() is called more than once.
+_commissioning_schema_warned: set[str] = set()
+_legacy_commissioning_complete_flag_warned: bool = False
+
+
+def _warn_commissioning_json_schema(data: object) -> None:
+    """Log once if commissioning.json is missing or older :data:`COMMISSIONING_JSON_SCHEMA_VERSION`."""
+    if not isinstance(data, dict):
+        return
+    exp = int(getattr(cfg, "COMMISSIONING_JSON_SCHEMA_VERSION", 2))
+    g = data.get("schema_version")
+    g_key = f"missing:{g!r}" if g is None else f"sv:{g!r}"
+    if g_key in _commissioning_schema_warned:
+        return
+    _commissioning_schema_warned.add(g_key)
+    if g is None:
+        print(
+            "[commissioning] commissioning.json has no schema_version — re-run `iccp commission` "
+            "so v2 baselines and health/ramp metadata are not silently absent.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        gi = int(g)
+    except (TypeError, ValueError):
+        return
+    if gi < exp:
+        print(
+            f"[commissioning] commissioning.json schema_version={gi} < {exp} — re-commission to "
+            "refresh baselines and metadata.",
+            file=sys.stderr,
+        )
 
 
 def _commission_oc_debug() -> bool:
@@ -371,7 +404,26 @@ def needs_commissioning() -> bool:
             file=sys.stderr,
         )
         return True
-    return "native_mv" not in data
+    if "native_mv" not in data:
+        return True
+    if "commissioned_target_ma" not in data:
+        return True
+    cc = data.get("commissioning_complete")
+    if cc is False:
+        return True
+    if cc is True:
+        return False
+    # Legacy files (before commissioning_complete): treat as complete if we have
+    # both native and ramp target; warn once on stderr.
+    global _legacy_commissioning_complete_flag_warned
+    if not _legacy_commissioning_complete_flag_warned:
+        print(
+            "[commissioning] commissioning.json has no commissioning_complete key — "
+            "assuming full commissioning finished (add key or re-run `iccp commission`).",
+            file=sys.stderr,
+        )
+        _legacy_commissioning_complete_flag_warned = True
+    return False
 
 
 def native_recapture_due() -> bool:
@@ -400,23 +452,30 @@ def load_commissioned_target() -> float:
     if not _COMM_FILE.exists():
         return cfg.TARGET_MA
     try:
-        return float(
-            json.loads(_COMM_FILE.read_text(encoding="utf-8")).get(
-                "commissioned_target_ma", cfg.TARGET_MA
-            )
-        )
+        data = json.loads(_COMM_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         print(
             f"[commissioning] invalid commissioning.json (commissioned_target_ma fallback): {e}",
             file=sys.stderr,
         )
         return cfg.TARGET_MA
-    except (OSError, TypeError, ValueError) as e:
+    except OSError as e:
         print(
             f"[commissioning] commissioned_target_ma read error: {e}",
             file=sys.stderr,
         )
         return cfg.TARGET_MA
+    _warn_commissioning_json_schema(data)
+    try:
+        if isinstance(data, dict):
+            return float(data.get("commissioned_target_ma", cfg.TARGET_MA))
+    except (TypeError, ValueError) as e:
+        print(
+            f"[commissioning] commissioned_target_ma read error: {e}",
+            file=sys.stderr,
+        )
+        return cfg.TARGET_MA
+    return cfg.TARGET_MA
 
 
 def reset() -> None:
@@ -1117,6 +1176,12 @@ def run(
     # Phase 1 OCP and static gate expect true 0% command; init may be at DUTY_PROBE from PWMBank.
     controller.all_outputs_off()
 
+    if verbose and _commissioning_field_mode():
+        log(
+            "Field mode: anodes stay on the coil; no remove/install prompts. "
+            "Single OCP baseline only."
+        )
+
     if verbose:
         print()
         if _commissioning_field_mode():
@@ -1257,36 +1322,121 @@ def run(
     return float(cfg.TARGET_MA)
 
 
-def _phase2_3_ramp_lock(
+def _phase2_binary_search_mA(
     reference: ReferenceElectrode,
     controller: Controller,
     sim_state: Any | None,
-    *,
     log: Callable[[str], None],
     verbose: bool,
     comm_deadline: float | None,
-) -> None:
-    """Phase 2 ramp + Phase 3 lock; mutates ``cfg.TARGET_MA`` on success."""
-    current_target_ma = max(cfg.TARGET_MA * 0.1, 0.05)
-    confirm_count = 0
-    curve_on = bool(getattr(cfg, "COMMISSIONING_OC_CURVE_ENABLED", True))
-    if curve_on:
-        if bool(getattr(cfg, "COMMISSIONING_OC_DURATION_MODE", False)):
-            ds = float(getattr(cfg, "COMMISSIONING_OC_CURVE_DURATION_S", 3.0))
-            oc_desc = f"OC duration {ds:g}s window + inflection, duty restore"
-        else:
-            burst_n = int(getattr(cfg, "COMMISSIONING_OC_BURST_SAMPLES", 20))
-            burst_iv = float(getattr(cfg, "COMMISSIONING_OC_BURST_INTERVAL_S", 0.01))
-            if burst_iv <= 0.0:
-                oc_desc = (
-                    f"OC curve {burst_n} samples back-to-back (ADC-paced), "
-                    "inflection, duty restore"
+    oc_desc: str,
+) -> tuple[float, list[dict[str, Any]], bool]:
+    """Bisect mA until shift reaches target or span is below resolution.
+
+    Returns ``(mA, history, reached_in_band)`` where *reached_in_band* is True if some trial
+    hit the shift target (used by hybrid to decide linear fallback vs refine-from-*out*).
+    """
+    lo = float(
+        getattr(
+            cfg,
+            "COMMISSIONING_BINARY_MA_LO",
+            max(1e-4, float(cfg.INA219_CURRENT_LSB_MA)),
+        )
+    )
+    hi = float(min(float(cfg.MAX_MA), float(getattr(cfg, "MAX_MA", 5.0))))
+    res = max(1e-4, float(getattr(cfg, "COMMISSIONING_BINARY_RESOLUTION_MA", 0.01)))
+    max_iter = max(1, int(getattr(cfg, "COMMISSIONING_BINARY_MAX_ITERATIONS", 12)))
+    history: list[dict[str, Any]] = []
+    best_ma: float | None = None
+    thr = float(reference.effective_shift_target_mv())
+    for _it in range(max_iter):
+        _check_comm_wall_deadline(comm_deadline)
+        if hi - lo < res:
+            break
+        mid = round((lo + hi) / 2.0, 3)
+        cfg.TARGET_MA = mid
+        _pump_control(
+            controller,
+            sim_state,
+            RAMP_SETTLE_S,
+            reference=reference,
+            wall_deadline_mono=comm_deadline,
+            commission_log=log if verbose else None,
+            progress_label="Phase 2 binary",
+            progress_next="instant-off",
+            progress_interval_s=_COMMISSION_PUMP_PROGRESS_S,
+            anode_progress_detail=True,
+        )
+        if verbose:
+            r_settle = _sensor_readings(sim_state)
+            log(
+                f"Binary try {mid:.3f} mA · {RAMP_SETTLE_S:.0f}s regulate  |  "
+                f"{commission_ina_compact(r_settle, num_channels=cfg.NUM_CHANNELS, channels=cfg.active_channel_indices_list(), mark_highest_shunt=True)}"
+            )
+        raw, shift, depol = _instant_off_ref_mv_and_restore(
+            controller,
+            reference,
+            sim_state,
+            log=log if verbose else None,
+            wall_deadline_mono=comm_deadline,
+        )
+        history.append(
+            {
+                "ma": mid,
+                "shift_mv": shift,
+                "depol_rate_mv_s": depol,
+                "ref_raw_mv": raw,
+                "mode": "binary",
+            }
+        )
+        if verbose:
+            shift_str = f"{shift:.1f}" if shift is not None else "N/A"
+            ttot = float(cfg.TARGET_SHIFT_MV)
+            if reference.galvanic_offset_mv is not None:
+                log(
+                    f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
+                    f"shift (ref@off−1b baseline) {shift_str} / {thr:.1f} mV additional "
+                    f"({ttot:.0f} mV total from 1a)  [binary]"
                 )
             else:
-                oc_desc = f"OC curve {burst_n}×{burst_iv:g}s + inflection, duty restore"
-    else:
-        oc_desc = f"dwell {INSTANT_OFF_WINDOW_S:.1f}s + single read"
+                log(
+                    f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
+                    f"shift (ref@off−native) {shift_str} / {ttot:.0f} mV  [binary]"
+                )
+        if shift is not None and shift >= thr:
+            best_ma = mid
+            hi = mid
+        else:
+            lo = mid
+    out = float(best_ma) if best_ma is not None else round((lo + hi) / 2.0, 3)
+    if best_ma is None and verbose:
+        log(
+            "WARNING: binary search did not reach target shift in band — "
+            f"using fallback {out:.3f} mA; check bonding and water."
+        )
+    reached = best_ma is not None
+    cfg.TARGET_MA = round(out, 3)
+    return out, history, reached
 
+
+def _phase2_linear_ramp_mA(
+    reference: ReferenceElectrode,
+    controller: Controller,
+    sim_state: Any | None,
+    log: Callable[[str], None],
+    verbose: bool,
+    comm_deadline: float | None,
+    oc_desc: str,
+    *,
+    start_ma: float | None = None,
+) -> tuple[float, list[dict[str, Any]]]:
+    """Step mA until shift confirms (or MAX_MA). If *start_mA* is None, start from 0.1×TARGET / 0.05 mA."""
+    history: list[dict[str, Any]] = []
+    if start_ma is None:
+        current_target_ma = max(cfg.TARGET_MA * 0.1, 0.05)
+    else:
+        current_target_ma = float(start_ma)
+    confirm_count = 0
     while current_target_ma <= cfg.MAX_MA:
         _check_comm_wall_deadline(comm_deadline)
         cfg.TARGET_MA = round(current_target_ma, 3)
@@ -1314,6 +1464,15 @@ def _phase2_3_ramp_lock(
             sim_state,
             log=log if verbose else None,
             wall_deadline_mono=comm_deadline,
+        )
+        history.append(
+            {
+                "ma": round(current_target_ma, 3),
+                "shift_mv": shift,
+                "depol_rate_mv_s": _depol,
+                "ref_raw_mv": raw,
+                "mode": "linear",
+            }
         )
         shift_str = f"{shift:.1f}" if shift is not None else "N/A"
         eff_thr = reference.effective_shift_target_mv()
@@ -1362,6 +1521,96 @@ def _phase2_3_ramp_lock(
             "WARNING: reached MAX_MA without achieving target shift — "
             "check bonding, anode contact, and water conductivity."
         )
+    return current_target_ma, history
+
+
+def _phase2_3_ramp_lock(
+    reference: ReferenceElectrode,
+    controller: Controller,
+    sim_state: Any | None,
+    *,
+    log: Callable[[str], None],
+    verbose: bool,
+    comm_deadline: float | None,
+) -> None:
+    """Phase 2 ramp + Phase 3 lock; mutates ``cfg.TARGET_MA`` on success."""
+    ramp_search_history: list[dict[str, Any]] = []
+    mode = str(getattr(cfg, "COMMISSIONING_RAMP_MODE", "linear") or "linear").lower()
+    curve_on = bool(getattr(cfg, "COMMISSIONING_OC_CURVE_ENABLED", True))
+    if curve_on:
+        if bool(getattr(cfg, "COMMISSIONING_OC_DURATION_MODE", False)):
+            ds = float(getattr(cfg, "COMMISSIONING_OC_CURVE_DURATION_S", 3.0))
+            oc_desc = f"OC duration {ds:g}s window + inflection, duty restore"
+        else:
+            burst_n = int(getattr(cfg, "COMMISSIONING_OC_BURST_SAMPLES", 20))
+            burst_iv = float(getattr(cfg, "COMMISSIONING_OC_BURST_INTERVAL_S", 0.01))
+            if burst_iv <= 0.0:
+                oc_desc = (
+                    f"OC curve {burst_n} samples back-to-back (ADC-paced), "
+                    "inflection, duty restore"
+                )
+            else:
+                oc_desc = f"OC curve {burst_n}×{burst_iv:g}s + inflection, duty restore"
+    else:
+        oc_desc = f"dwell {INSTANT_OFF_WINDOW_S:.1f}s + single read"
+
+    if mode == "binary":
+        out, h, _reached = _phase2_binary_search_mA(
+            reference,
+            controller,
+            sim_state,
+            log,
+            verbose,
+            comm_deadline,
+            oc_desc,
+        )
+        current_target_ma = out
+        ramp_search_history = h
+    elif mode == "hybrid":
+        out, h_bin, reached = _phase2_binary_search_mA(
+            reference,
+            controller,
+            sim_state,
+            log,
+            verbose,
+            comm_deadline,
+            oc_desc,
+        )
+        ramp_search_history = list(h_bin)
+        if verbose and not reached:
+            log(
+                "Phase 2 (hybrid): binary search did not end in-band — "
+                "running full linear ramp from minimum setpoint."
+            )
+        elif verbose and reached:
+            log(
+                f"Phase 2 (hybrid): linear confirm streak from {out:.3f} mA "
+                "(after binary search)."
+            )
+        start: float | None = out if reached else None
+        cur, h_lin = _phase2_linear_ramp_mA(
+            reference,
+            controller,
+            sim_state,
+            log,
+            verbose,
+            comm_deadline,
+            oc_desc,
+            start_ma=start,
+        )
+        current_target_ma = cur
+        ramp_search_history.extend(h_lin)
+    else:
+        current_target_ma, ramp_search_history = _phase2_linear_ramp_mA(
+            reference,
+            controller,
+            sim_state,
+            log,
+            verbose,
+            comm_deadline,
+            oc_desc,
+            start_ma=None,
+        )
 
     _check_comm_wall_deadline(comm_deadline)
     phase3_s = max(
@@ -1400,22 +1649,43 @@ def _phase2_3_ramp_lock(
     )
     # Nested per-channel hints (docs/iccp-requirements.md §8.1 Phase 3). One reference
     # electrode → one system shift; per-channel copy is for schema compatibility only.
+    r_z = _sensor_readings(sim_state)
     channels_hints: dict[str, dict[str, Any]] = {}
     for ch in range(cfg.NUM_CHANNELS):
         per_ch_target = float(
             getattr(cfg, "CHANNEL_TARGET_MA", {}).get(ch, current_target_ma)
         )
-        channels_hints[str(ch)] = {
+        ent: dict[str, Any] = {
             "commissioned_target_ma": round(per_ch_target, 3),
             "system_final_shift_mv": final_shift,
             "final_shift_mv": final_shift,
         }
-    comm_payload = {
+        row = r_z.get(ch) or {}
+        if row.get("ok"):
+            try:
+                ent["z_baseline_ohm"] = cell_impedance_ohm(
+                    float(row["bus_v"]), float(row["current"])
+                )
+            except (TypeError, ValueError, KeyError):
+                pass
+        channels_hints[str(ch)] = ent
+    comm_payload: dict[str, Any] = {
+        "schema_version": int(
+            getattr(cfg, "COMMISSIONING_JSON_SCHEMA_VERSION", 2)
+        ),
+        "commissioning_complete": True,
         "commissioned_target_ma": current_target_ma,
         "commissioned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "final_shift_mv": final_shift,
         "channels": channels_hints,
+        "depol_baseline_mv_s": (
+            None
+            if _f_depol is None
+            else round(float(_f_depol), 6)
+        ),
     }
+    if ramp_search_history:
+        comm_payload["ramp_search_history"] = ramp_search_history
     # Full file replace: no merge with stale keys from an older commissioning.json.
     # Preserve ref_ads_scale if it was set in the file (calibration / manual).
     ref_ads_scale: float | None = None

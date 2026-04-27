@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 import config.settings as cfg
-from control import _quantize_duty_for_gpio, duty_pct_cap_for_vcell
+from control import (
+    _quantize_duty_for_gpio,
+    _rpi_change_duty_cycle_arg,
+    duty_pct_cap_for_vcell,
+)
 
 
 def test_duty_cap_disabled_when_vmax_zero(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,3 +54,11 @@ def test_quantize_duty_respects_pwm_duty_quantum(
     assert _quantize_duty_for_gpio(1.144) == pytest.approx(1.14)
     monkeypatch.setattr(cfg, "PWM_DUTY_QUANTUM", 0.0)
     assert _quantize_duty_for_gpio(3.33) == pytest.approx(3.33)
+
+
+def test_rpi_change_duty_preserves_hundredth_pct_not_int() -> None:
+    """``ChangeDutyCycle`` must not use ``int`` — 0.01% must stay off zero."""
+    assert _rpi_change_duty_cycle_arg(0.0) == 0.0
+    assert _rpi_change_duty_cycle_arg(0.01) == pytest.approx(0.01)
+    assert _rpi_change_duty_cycle_arg(12.345) == pytest.approx(12.35)
+    assert _rpi_change_duty_cycle_arg(100.0) == 100.0

@@ -220,7 +220,7 @@ def print_status_table(
                     else "—"
                 )
                 print(
-                    f"{i + 1:<4} {st:<12} {ptag:<6} {di_s}  {bus_v:<8.3f} {ma:>8.2f}  "
+                    f"{i + 1:<4} {st:<12} {ptag:<6} {di_s}  {bus_v:<9.4f} {ma:>8.2f}  "
                     f"{duty:<8.2f} {imp_s:<10} {zmed_s:<10} {vc:<8.3f} "
                     f"{int(st == 'PROTECTING'):<5} {p_s:<9} {e_s:<10} {n_s:<10}"
                 )

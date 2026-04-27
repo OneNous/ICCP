@@ -82,12 +82,73 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     assert "native_mv" in data
     assert "commissioned_target_ma" in data
     assert "commissioned_at" in data
+    assert data.get("schema_version") == int(
+        getattr(cfg, "COMMISSIONING_JSON_SCHEMA_VERSION", 2)
+    )
     assert isinstance(data["native_mv"], (int, float))
     assert data["native_mv"] == 210.0
     assert data.get("native_oc_anodes_in_mv") == 200.0
     assert data.get("galvanic_offset_mv") == 10.0
     assert data.get("galvanic_offset_baseline_mv") == 10.0
     assert data.get("final_shift_mv") == -100.0
+    assert data.get("commissioning_complete") is True
+
+
+def test_needs_commissioning_false_when_complete(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    p = tmp_path / "commissioning.json"
+    p.write_text(
+        json.dumps(
+            {
+                "native_mv": 100.0,
+                "commissioned_target_ma": 0.5,
+                "commissioning_complete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cfg, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(commissioning, "_COMM_FILE", p)
+    assert commissioning.needs_commissioning() is False
+    assert capsys.readouterr().err == ""
+
+
+def test_needs_commissioning_true_when_incomplete(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = tmp_path / "commissioning.json"
+    p.write_text(
+        json.dumps(
+            {
+                "native_mv": 100.0,
+                "commissioned_target_ma": 0.5,
+                "commissioning_complete": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cfg, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(commissioning, "_COMM_FILE", p)
+    assert commissioning.needs_commissioning() is True
+
+
+def test_needs_commissioning_legacy_file_warns_once(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    p = tmp_path / "commissioning.json"
+    p.write_text(
+        json.dumps({"native_mv": 100.0, "commissioned_target_ma": 0.4}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cfg, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(commissioning, "_COMM_FILE", p)
+    monkeypatch.setattr(commissioning, "_legacy_commissioning_complete_flag_warned", False)
+    assert commissioning.needs_commissioning() is False
+    err1 = capsys.readouterr().err
+    assert "commissioning_complete" in err1
+    assert commissioning.needs_commissioning() is False
+    assert capsys.readouterr().err == ""
 
 
 def test_commissioning_field_mode_single_capture_no_galvanic_keys(
@@ -163,6 +224,7 @@ def test_commissioning_field_mode_single_capture_no_galvanic_keys(
     assert data.get("native_oc_anodes_in_mv") is None
     assert data.get("galvanic_offset_mv") is None
     assert data.get("final_shift_mv") == 100.0
+    assert data.get("commissioning_complete") is True
 
 
 def test_delivered_ma_report_formats_ina_channels() -> None:
@@ -231,3 +293,21 @@ def test_phase2_active_channel_subset_single_line(
     assert len(lines) == 1
     assert "A1" in lines[0] and "A2" not in lines[0]
     assert "By default" not in lines[0]
+
+
+def test_load_commissioned_target_warns_without_schema_version(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    p = tmp_path / "commissioning.json"
+    p.write_text('{"commissioned_target_ma": 1.5}', encoding="utf-8")
+    monkeypatch.setattr(cfg, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(commissioning, "_COMM_FILE", p)
+    commissioning._commissioning_schema_warned.clear()
+    assert commissioning.load_commissioned_target() == 1.5
+    err = capsys.readouterr().err
+    assert "schema_version" in err
+
+
+def test_commissioning_binary_ma_lo_uses_lsb_default() -> None:
+    assert float(cfg.COMMISSIONING_BINARY_MA_LO) >= float(cfg.INA219_CURRENT_LSB_MA) * 0.99
+    assert float(cfg.COMMISSIONING_BINARY_MA_LO) >= 1e-4

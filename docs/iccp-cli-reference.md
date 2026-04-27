@@ -27,7 +27,7 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 
 ## `iccp commission`
 
-**What it does:** Runs the full commissioning flow (`commissioning.run()`): writes **`commissioning.json`**, uses real hardware on a Raspberry Pi unless **`--sim`**.
+**What it does:** Runs the full commissioning flow (`commissioning.run()`): writes **`commissioning.json`**, uses real hardware on a Raspberry Pi unless **`--sim`**. A full successful run sets **`commissioning_complete: true`**. If that flag is missing or `false` after a crash, **`needs_commissioning()`** treats the file as incomplete (legacy files with calibration keys and no flag are still accepted—see [commissioning.md](commissioning.md) / `commissioning.py`).
 
 **When to use it:** First bring-up, after replacing the zinc reference, major rewiring, or when you need to re-establish native baseline and per-channel calibration without going through a full controller first-boot path.
 
@@ -36,7 +36,9 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 - **`--sim`**: simulator (also used automatically off-Pi).
 - **`--force`**: skip the guard that aborts if **`latest.json`** was updated very recently (another controller may still own PWM). Use only when you are sure nothing else is driving the stack.
 - **`--native-only`**: run Phase 1 only — re-capture the native baseline via the new `reference.capture_native` primitive (static gate off, rest-current gate, stability + slope gates, median of samples) and persist it to **`commissioning.json`** with a fresh `native_measured_unix` / `native_recapture_due_unix`. Does not touch `commissioned_target_ma`. Per docs/iccp-requirements.md §3.4 / §8.1 Phase 1.
-- **Default (interactive):** two **Press Enter** pauses on a TTY — confirm anodes are **out** of the bath before open-circuit native (Phase 1), then **in** before the CP ramp (Phase 2). Skipped in **`--sim`**, when stdin is not a TTY, or with **`--no-anode-prompts`**, or set **`COMMISSIONING_ANODE_PLACEMENT_PROMPTS = False`** in `config.settings`, or env **`ICCP_COMMISSION_NO_ANODE_PROMPTS=1`**. **Field mode** (`COMMISSIONING_FIELD_MODE = True` or env `ICCP_COMMISSION_FIELD_MODE=1`) skips both pauses and the Phase 1b second capture — one OCP native with anodes installed, then ramp.
+- **Default (interactive):** two **Press Enter** pauses on a TTY — confirm anodes are **out** of the bath before open-circuit native (Phase 1), then **in** before the CP ramp (Phase 2). Skipped in **`--sim`**, when stdin is not a TTY, or with **`--no-anode-prompts`**, or set **`COMMISSIONING_ANODE_PLACEMENT_PROMPTS = False`** in `config.settings`, or env **`ICCP_COMMISSION_NO_ANODE_PROMPTS=1`**. **Field mode** — set **`COMMISSIONING_FIELD_MODE=True`** in `config.settings` *or* **`ICCP_COMMISSION_FIELD_MODE=1`**: same behavior (no anode in/out pauses, no Phase 1b second capture) — one OCP native with anodes installed, then ramp.
+
+**Config (not flags):** Phase-2 mA search uses **`COMMISSIONING_RAMP_MODE`** — **`hybrid`** (default: binary search then linear confirm streak), **`linear`**, or **`binary`**. Anode INA sense resistor: **`INA219_SHUNT_OHMS`** (v1 = **1.0** Ω) or env **`COILSHIELD_INA219_SHUNT_OHMS`**.
 
 **Notes:** On Pi, commission stops the **`iccp`** systemd unit first (`stop`, not `restart`) so PWM is not left running by the service. Requires **`RPi.GPIO`** on real hardware.
 

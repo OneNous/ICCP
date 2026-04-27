@@ -1,9 +1,9 @@
 # CoilShield (ICCP)
 
 Impressed-current cathodic protection monitor/controller for HVAC-style coils.  
-**Defaults:** see `TARGET_MA` (default **0.5 mA** aluminum-conservative; raise for bench), `CHANNEL_WET_THRESHOLD_MA`, and anode limits in `config/settings.py` (commissioning writes `commissioned_target_ma`).
+**Defaults:** see `TARGET_MA` (default **0.5 mA** aluminum-conservative; raise for bench), `CHANNEL_WET_THRESHOLD_MA`, and anode limits in `config/settings.py` (commissioning writes `commissioned_target_ma`). **INA219 shunt:** v1 hardware uses **1.0** Ω in `INA219_SHUNT_OHMS` (legacy **0.1** Ω breakouts still work). Override without editing the file: **`COILSHIELD_INA219_SHUNT_OHMS`**. Wrong shunt → wrong mA and LSB-based floors.
 
-**How this maps to “standard ICCP”:** the inner loop regulates **shunt current** toward `TARGET_MA`; the **reference** path defaults to **ADS1115** (legacy: **INA219**) for **polarization shift** vs a commissioned baseline and **nudges** `TARGET_MA`—still not the same as holding structure potential to an industry criterion (e.g. −0.85 V CSE). See [docs/iccp-comparison.md](docs/iccp-comparison.md) for diagrams, **external standards links**, and [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md) for a line-by-line mapping to the code. **Field design \(R_a\)** (textbook/soil) vs **logged `impedance_ohm`:** [docs/field-ra-and-telemetry.md](docs/field-ra-and-telemetry.md). **Field install (bond, liquid line, reference, CLI):** [docs/installation-field-wiring.md](docs/installation-field-wiring.md).
+**How this maps to “standard ICCP”:** the inner loop regulates **shunt current** toward `TARGET_MA`; the **reference** path defaults to **ADS1115** (legacy: **INA219**) for **polarization shift** vs a commissioned baseline and **nudges** `TARGET_MA`—still not the same as holding structure potential to an industry criterion (e.g. −0.85 V CSE). See [docs/iccp-comparison.md](docs/iccp-comparison.md) for diagrams, **external standards links**, and [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md) for a line-by-line mapping to the code. **Field design \(R_a\)** (textbook/soil) vs **logged `impedance_ohm`:** [docs/field-ra-and-telemetry.md](docs/field-ra-and-telemetry.md). **Field install (bond, liquid line, reference, CLI):** [docs/installation-field-wiring.md](docs/installation-field-wiring.md). **Post–v1 / fleet software roadmap** (adaptive loops, EQI, field temp comp, etc.): [docs/post-v1-software-waves.md](docs/post-v1-software-waves.md).
 
 ## One CLI, one way
 
@@ -87,7 +87,9 @@ The outer loop compares **shift (mV)** against `TARGET_SHIFT_MV` / `MAX_SHIFT_MV
 
 ### DS18B20 temperature
 
-**Drain-pan / sump air** temperature uses a **DS18B20** on the Pi **1-Wire** bus (no extra Python package — reads `/sys/bus/w1/devices/28-*/w1_slave`). Wiring: **VCC 3.3 V**, **GND**, **DATA → GPIO4** with a **4.7 kΩ** pull-up to 3.3 V. Enable 1-Wire: `sudo raspi-config` → Interface Options → 1-Wire, or add `dtoverlay=w1-gpio` to `/boot/firmware/config.txt` (reboot). Load modules if needed: `sudo modprobe w1-gpio && sudo modprobe w1-therm`.
+**Drain-pan / sump air** temperature uses a **DS18B20** on the Pi **1-Wire** bus (no extra Python package — reads `/sys/bus/w1/devices/28-*/w1_slave`). Wiring: **VCC 3.3 V**, **GND**, **DATA → GPIO4** with a **4.7 kΩ** pull-up to 3.3 V. Enable 1-Wire: `sudo raspi-config` → Interface Options → 1-Wire, or add `dtoverlay=w1-gpio` to `/boot/firmware/config.txt` (reboot). Load modules if needed: `sudo modprobe w1-gpio && sudo modprobe w1-therm`. **`latest.json`** can include **`wet_onset_temp_f`** (drain-pan **°F** at the tick a channel first enters protection stats) for long-term refrigerant / airflow trend analysis. **`readings`** SQLite rows can be **batched** to reduce SD wear: **`SQLITE_FLUSH_INTERVAL_S`** and **`SQLITE_FLUSH_MAX_ROWS`** in `config/settings.py`.
+
+**Production hardening (watchdog, GPIO, commissioning):** [docs/watchdog-failsafe.md](docs/watchdog-failsafe.md) · long-term ref **temp** slope (not short commissioning) · [docs/field-temp-comp-selfcal.md](docs/field-temp-comp-selfcal.md).
 
 ### Anode PWM frequency (`PWM_FREQUENCY_HZ`)
 

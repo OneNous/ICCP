@@ -7,6 +7,7 @@ optional diagnostics live in one module.
 
 from __future__ import annotations
 
+import atexit
 import os
 import signal
 import sys
@@ -68,12 +69,28 @@ def run_iccp_forever(args: Namespace) -> int:
             ctrl.all_outputs_off()
         except Exception:
             pass
+        try:
+            log.flush()
+        except Exception:
+            pass
         if signum == signal.SIGINT:
             raise KeyboardInterrupt
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _signal_pwm_off)
     signal.signal(signal.SIGINT, _signal_pwm_off)
+
+    def _atexit_failsafe() -> None:
+        try:
+            ctrl.all_outputs_off()
+        except Exception:
+            pass
+        try:
+            log.flush()
+        except Exception:
+            pass
+
+    atexit.register(_atexit_failsafe)
 
     leds.setup()
 

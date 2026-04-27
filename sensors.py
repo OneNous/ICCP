@@ -2,8 +2,13 @@
 CoilShield ICCP — sensor abstraction layer.
 
 Real path : reads four INA219 boards via I2C (4 channels total).
-            Addresses: 0x40, 0x41, 0x44, 0x45
-            Each board measures one anode channel.
+            Addresses: 0x40, 0x41, 0x44, 0x45 — one anode per board. For each, the
+            INA219 reports (1) **bus voltage** — the high-side load rail in volts
+            (TI ``voltage()`` / bus register, 4 mV/LSB), and (2) **shunt voltage** —
+            the differential across the sense pair **VIN+ minus VIN−** in mV
+            (``shunt_voltage()``), from which mA and mW are derived. Optional fields
+            ``shunt_v`` and ``v_shunt_uv`` duplicate the shunt in volts and microvolts
+            for high-resolution UI/log.
 
 Sim path  : 10 distinct HVAC cooling cycles over a compressed 24-hour window.
             Each of the 4 channels has unique wet/dry timing so the control
@@ -35,6 +40,36 @@ from channel_labels import anode_hw_label
 SIM_MODE: bool = os.environ.get("COILSHIELD_SIM", "0") == "1"
 
 ChannelReading = dict[str, Any]
+
+# Zeroed error tuple when INA219 read did not run or failed.
+_INA219_ERR_VALUES: dict[str, float] = {
+    "bus_v": 0.0,
+    "shunt_mv": 0.0,
+    "shunt_v": 0.0,
+    "v_shunt_uv": 0.0,
+}
+
+
+def _ina219_quantize(bus_v: float, shunt_mv: float) -> dict[str, float]:
+    """
+    Turn raw bus V and shunt mV (VIN+ − VIN−) into consistently rounded fields.
+
+    Decimals are driven by :data:`config.settings.INA219_BUS_V_READ_DECIMALS` and
+    :data:`config.settings.INA219_SHUNT_MV_READ_DECIMALS`.
+    """
+    b_dec = int(getattr(cfg, "INA219_BUS_V_READ_DECIMALS", 5))
+    s_dec = int(getattr(cfg, "INA219_SHUNT_MV_READ_DECIMALS", 6))
+    b = round(float(bus_v), b_dec)
+    s_mv = round(float(shunt_mv), s_dec)
+    s_v = round(s_mv * 0.001, min(9, s_dec + 3))
+    uv = s_mv * 1000.0
+    return {
+        "bus_v": b,
+        "shunt_mv": s_mv,
+        "shunt_v": s_v,
+        "v_shunt_uv": float(uv),
+    }
+
 
 # Substrings of ``reading["error"]`` treated as bus glitches when outputs are idle
 # (not wiring faults like NACK / DeviceRangeError overflow).
@@ -115,7 +150,7 @@ def _init_ina219_sensor_list_for_import() -> list[Any]:
 
     from i2c_bench import mux_select_on_bus
 
-    SHUNT_OHMS = 0.1  # R100 shunt resistor on each board
+    SHUNT_OHMS = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
     max_a = max(1, int(getattr(cfg, "INA219_INIT_MAX_ATTEMPTS", 8)))
     delay0 = max(0.0, float(getattr(cfg, "INA219_INIT_RETRY_DELAY_S", 0.1)))
     first_delay = max(0.0, float(getattr(cfg, "I2C_INA_IMPORT_FIRST_DELAY_S", 0.0)))
@@ -274,7 +309,7 @@ def _ina219_one_off_diag(iccp_ch: int, addr: int) -> dict[str, Any] | None:
         return None
     from i2c_bench import ina219_diag_snapshot, mux_select_on_bus
 
-    shunt = 0.1
+    shunt = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
     try:
         import smbus2
 
@@ -410,9 +445,9 @@ def read_all_real() -> dict[int, ChannelReading]:
                     if current_ma != current_ma:  # NaN check
                         raise ValueError("NaN current")
 
+                    q = _ina219_quantize(bus_v, shunt_mv)
                     results[iccp_ch] = {
-                        "bus_v": round(bus_v, 4),
-                        "shunt_mv": round(shunt_mv, 4),
+                        **q,
                         "current": round(current_ma, 6),
                         "power": round(power_mw, 6),
                         "ok": True,
@@ -423,8 +458,7 @@ def read_all_real() -> dict[int, ChannelReading]:
                         iccp_ch, int(cfg.INA219_ADDRESSES[iccp_ch])
                     )
                     results[iccp_ch] = {
-                        "bus_v": 0.0,
-                        "shunt_mv": 0.0,
+                        **_INA219_ERR_VALUES,
                         "current": 0.0,
                         "power": 0.0,
                         "ok": False,
@@ -439,8 +473,7 @@ def read_all_real() -> dict[int, ChannelReading]:
                         iccp_ch, int(cfg.INA219_ADDRESSES[iccp_ch])
                     )
                     results[iccp_ch] = {
-                        "bus_v": 0.0,
-                        "shunt_mv": 0.0,
+                        **_INA219_ERR_VALUES,
                         "current": 0.0,
                         "power": 0.0,
                         "ok": False,
@@ -459,8 +492,7 @@ def read_all_real() -> dict[int, ChannelReading]:
     for ch in range(cfg.NUM_CHANNELS):
         if ch not in results:
             results[ch] = {
-                "bus_v": 0.0,
-                "shunt_mv": 0.0,
+                **_INA219_ERR_VALUES,
                 "current": 0.0,
                 "power": 0.0,
                 "ok": False,
@@ -552,6 +584,10 @@ def read_all_sim(state: SimSensorState) -> dict[int, ChannelReading]:
     Generate one tick of simulated sensor readings.
     Dry → noise below CHANNEL_WET_THRESHOLD_MA (per-channel bias/scale).
     Wet → current tracks previous-tick duty (duty feedback loop).
+
+    Shunt mV = ``current * INA219_SHUNT_OHMS`` (R100 0.1 Ω vs 1 Ω bench). Wet/dry thresholds
+    in mA and ``CHANNEL_WET_THRESHOLD_*`` were tuned with the default shunt; re-check sim
+    schedule and wetness after changing **INA219_SHUNT_OHMS** (regression risk, not a bug).
     """
     sim_s = state.sim_seconds()
     results: dict[int, ChannelReading] = {}
@@ -587,9 +623,10 @@ def read_all_sim(state: SimSensorState) -> dict[int, ChannelReading]:
         if cfg.SIM_INJECT_FAULT_CH is not None and ch == cfg.SIM_INJECT_FAULT_CH:
             current = cfg.SIM_INJECT_OVERCURRENT_MA
 
+        r_shunt = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
+        q = _ina219_quantize(bus_v, current * r_shunt)
         results[ch] = {
-            "bus_v":    round(bus_v, 4),
-            "shunt_mv": round(current * 0.1, 4),
+            **q,
             "current":  round(current, 6),
             "power":    round(current * bus_v, 6),
             "sim_wet":  wet,

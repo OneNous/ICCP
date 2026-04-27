@@ -109,7 +109,7 @@ def build_deep_snapshot() -> dict[str, Any]:
                 sm.close()
                 sm = smbus2.SMBus(ref_bus)
             ref_addr = int(getattr(cfg, "REF_INA219_ADDRESS", 0x40))
-            sh = float(getattr(cfg, "REF_INA219_SHUNT_OHMS", 0.1))
+            sh = float(getattr(cfg, "REF_INA219_SHUNT_OHMS", 1.0))
             snap["ina219_ref"] = ina219_diag_snapshot(sm, ref_addr, shunt_ohm=sh)
     finally:
         try:

@@ -24,9 +24,11 @@ cooling_cycles: one row per completed ICCP temperature band segment (same window
   ref_hw_message, ref_hint, ref_baseline_set, ref_depol_rate_mv_s (SQLite/CSV also carry
   raw/hw_ok/hint; hw_message, baseline_set, depol rate are CSV + JSON).
 
-wet_sessions: one row per **spec-v2 “protection”** episode — legacy path PROTECTING **or**
+  wet_sessions: one row per **spec-v2 “protection”** episode — legacy path PROTECTING **or**
   state_v2 in {Polarizing, Protected, Overprotected} (path FSM may still read REGULATE
-  while shift FSM is Protected). Closes on leaving that combined condition.
+  while shift FSM is Protected). Closes on leaving that combined condition. When ``temp_f`` is
+  available, **latest.json** can include ``wet_onset_temp_f`` / ``dry_onset_temp_f`` (per-channel
+  °F) on first enter / exit of stats-protection for diagnostic trend analysis — not for control.
 
 daily_totals: per-calendar-day chN_ma_s (mA·s), chN_wet_s (seconds in that same condition),
   chN_energy_j (∫ V·I dt in joules while readings are valid).
@@ -41,8 +43,10 @@ Per-channel derived telemetry (latest.json + CSV; see also readings.cross_*):
   energy_today_j, reading_ok (INA219 sample succeeded, or idle-bus benign for transient I2C while PWM off). System cross-channel: i_cv, z_cv (pstdev/mean when ≥2 channels OK).
 
 CSV vs SQLite/latest.json:
-  SQLite and latest.json are written every control tick (near real-time).
-  CSV is buffered and flushed on LOG_INTERVAL_S and on fault-signature transitions (eventually consistent).
+  ``latest.json`` is written every control tick. ``readings`` rows in SQLite can be **batched**
+  (see :data:`config.settings.SQLITE_FLUSH_INTERVAL_S` / ``SQLITE_FLUSH_MAX_ROWS``) to reduce
+  SD wear; :meth:`flush` / :meth:`close` forces a flush. CSV is buffered and flushed on
+  ``LOG_INTERVAL_S`` and on fault-signature transitions (eventually consistent).
 
 Dashboard SQL / column names MUST stay in sync with dashboard.py.
 """
@@ -63,16 +67,15 @@ from pathlib import Path
 
 import config.settings as cfg
 from channel_labels import anode_label
+from iccp_electrolyte import (
+    anode_activity_score,
+    cell_impedance_ohm,
+    estimate_c_dl_f,
+    polarization_depol_score,
+    surface_z_score,
+    system_health_composite,
+)
 from sensors import ina219_read_failure_expected_idle
-
-
-def _cell_impedance_ohm(bus_v: float, current_ma: float) -> float:
-    """DC-ish ratio: V / I(A). High Ω when dry / negligible current."""
-    i_a = max(
-        current_ma / 1000.0,
-        float(getattr(cfg, "Z_COMPUTE_I_A_MIN", 1e-6)),
-    )
-    return round(bus_v / i_a, 2)
 
 
 def _cell_voltage_v(bus_v: float, duty_pct: float) -> float:
@@ -252,6 +255,9 @@ class DataLogger:
         self._migrate_legacy_channel_states()
         self._purge_old_rows()
         self._insert_count = 0
+        self._readings_buffer: list[tuple[object, ...]] = []
+        self._readings_insert_sql: str = ""
+        self._last_readings_db_flush = time.monotonic()
 
         # Previous tick: combined “stats protection” (legacy PROTECTING or v2 Polarizing+).
         self._prev_stats_prot: dict[int, bool] = {
@@ -654,6 +660,9 @@ class DataLogger:
         self._roll_daily_calendar(ts_ymd)
 
         dt_s = cfg.SAMPLE_INTERVAL_S
+        bus_log_dec = int(getattr(cfg, "INA219_BUS_V_LOG_DECIMALS", 4))
+        shunt_log_dec = int(getattr(cfg, "INA219_SHUNT_MV_LOG_DECIMALS", 5))
+        shunt_uv_log_dec = int(getattr(cfg, "INA219_SHUNT_UV_LOG_DECIMALS", 2))
         eff_targets = _effective_channel_targets_mas(channel_targets)
         channels: dict[int, dict] = {}
         for i in range(cfg.NUM_CHANNELS):
@@ -662,14 +671,27 @@ class DataLogger:
             if ok:
                 try:
                     ma = round(float(r["current"]), 4)
-                    bus_v = round(float(r["bus_v"]), 3)
+                    bus_v = round(float(r["bus_v"]), bus_log_dec)
+                    shunt_mv = round(float(r.get("shunt_mv", 0.0)), shunt_log_dec)
+                    shunt_v = round(
+                        float(r.get("shunt_v", shunt_mv * 0.001)), shunt_log_dec + 2
+                    )
+                    v_shunt_uv = round(
+                        float(r.get("v_shunt_uv", shunt_mv * 1000.0)), shunt_uv_log_dec
+                    )
                 except (TypeError, ValueError):
                     ok = False
                     ma = 0.0
                     bus_v = 0.0
+                    shunt_mv = 0.0
+                    shunt_v = 0.0
+                    v_shunt_uv = 0.0
             else:
                 ma = 0.0
                 bus_v = 0.0
+                shunt_mv = 0.0
+                shunt_v = 0.0
+                v_shunt_uv = 0.0
             duty = round(float(duties.get(i, 0.0)), 2)
             state = (ch_status or {}).get(i, "UNKNOWN")
             benign_idle = (not ok) and ina219_read_failure_expected_idle(
@@ -686,7 +708,7 @@ class DataLogger:
                 if benign_idle
                 else (_channel_health(ok, state, ma, tgt_for_ch) if ok else "ERR")
             )
-            z_ohm = _cell_impedance_ohm(bus_v, ma) if ok else 0.0
+            z_ohm = cell_impedance_ohm(bus_v, ma) if ok else 0.0
             v_cell = _cell_voltage_v(bus_v, duty) if ok else 0.0
             p_w = _dc_power_w(bus_v, ma) if ok else 0.0
             prev_z = self._prev_z_ohm[i]
@@ -765,6 +787,9 @@ class DataLogger:
                 "ma": ma,
                 "duty": duty,
                 "bus_v": bus_v,
+                "shunt_mv": shunt_mv,
+                "shunt_v": shunt_v,
+                "v_shunt_uv": v_shunt_uv,
                 "target_ma": round(tgt_for_ch, 4),
                 "sensor_error": sensor_err,
                 "status": status,
@@ -803,6 +828,12 @@ class DataLogger:
                 "fault": state_v2_for_ch == "Fault",
                 "fault_reason": fault_reason_for_ch,
             }
+            c_dl_f = None
+            if ok and ref_depol_rate_mv_s is not None:
+                _cdl = estimate_c_dl_f(ma, float(ref_depol_rate_mv_s))
+                if _cdl is not None:
+                    c_dl_f = round(_cdl, 9)
+            channels[i]["c_dl_f"] = c_dl_f
 
         self._update_wet_sessions(ts_unix, channels, dt_s)
         self._accumulate_daily_totals(channels, dt_s)
@@ -820,7 +851,7 @@ class DataLogger:
         total_power_w = round(sum(d["power_w"] for d in channels.values()), 6)
         active_v = [d["bus_v"] for d in channels.values() if d["bus_v"] > 0]
         supply_v_avg = (
-            round(sum(active_v) / len(active_v), 3) if active_v else 0.0
+            round(sum(active_v) / len(active_v), bus_log_dec) if active_v else 0.0
         )
         wet_channels = sum(
             1 for d in channels.values() if d.get("_stats_protecting")
@@ -838,6 +869,16 @@ class DataLogger:
         ]
         cross_i_cv = _coefficient_of_variation(mas_ok)
         cross_z_cv = _coefficient_of_variation(zs_ok)
+
+        wet_onset_temps: dict[str, float] = {}
+        dry_onset_temps: dict[str, float] = {}
+        if temp_f is not None:
+            for i in range(cfg.NUM_CHANNELS):
+                st_now = bool(channels[i].get("_stats_protecting"))
+                if (not self._prev_stats_prot[i]) and st_now:
+                    wet_onset_temps[str(i)] = float(temp_f)
+                if self._prev_stats_prot[i] and (not st_now):
+                    dry_onset_temps[str(i)] = float(temp_f)
 
         self._write_db(
             ts,
@@ -931,6 +972,10 @@ class DataLogger:
         )
         payload["ref_depol_rate_mv_s"] = ref_depol_rate_mv_s
         payload["temp_f"] = temp_f
+        if wet_onset_temps:
+            payload["wet_onset_temp_f"] = wet_onset_temps
+        if dry_onset_temps:
+            payload["dry_onset_temp_f"] = dry_onset_temps
         # Spec v2 system fields (docs/iccp-requirements.md §9.2). `wet` remains any_wet
         # (path). `wet_channels` counts combined stats-protection (legacy PROTECTING or
         # v2 Polarizing / Protected / Overprotected).
@@ -972,6 +1017,34 @@ class DataLogger:
             if t_to_system_protected_s is not None
             else None
         )
+        _comm_h: dict = {}
+        try:
+            _cjp = cfg.PROJECT_ROOT / "commissioning.json"
+            if _cjp.is_file():
+                _comm_h = json.loads(_cjp.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            _comm_h = {}
+        _chb = _comm_h.get("channels") or {}
+        _zsurf: list[float] = []
+        for _i in range(cfg.NUM_CHANNELS):
+            _zb0 = (_chb.get(str(_i)) or {}).get("z_baseline_ohm")
+            _zsurf.append(surface_z_score(channels[_i]["impedance_ohm"], _zb0))
+        _surf_m = sum(_zsurf) / len(_zsurf) if _zsurf else 0.5
+        _anm = anode_activity_score(
+            galvanic_offset_mv, galvanic_offset_baseline_mv
+        )
+        _polm = polarization_depol_score(
+            ref_depol_rate_mv_s,
+            _comm_h.get("depol_baseline_mv_s"),
+        )
+        _hval = system_health_composite(_anm, _surf_m, _polm)
+        _hthr = float(getattr(cfg, "HEALTH_ALERT_THRESHOLD", 0.5))
+        # Single reference → shift/depol inputs are system-level; surface Z uses per-ch mA+Z
+        # vs a channel-stored z_baseline from commissioning. Do not treat `system_health` as
+        # an independent per-channel health score in the UI.
+        payload["system_health"] = round(_hval, 4)
+        payload["health_score_scope"] = "system"
+        payload["health_alert"] = bool(_hval < _hthr)
         if diag_extra:
             payload["diag"] = diag_extra
         self._telemetry_seq += 1
@@ -1220,32 +1293,73 @@ class DataLogger:
         n_params = 5 + cfg.NUM_CHANNELS * n_ch_cols + 3 + 2 + 3 + 3 + 1
         placeholders = ",".join(["?"] * n_params)
         ref_hw_sql = None if ref_hw_ok is None else (1 if ref_hw_ok else 0)
+        params: tuple[object, ...] = (
+            ts,
+            ts_unix,
+            int(wet),
+            int(fault_latched),
+            ";".join(faults),
+            *ch_values,
+            total_ma,
+            supply_v_avg,
+            total_power_w,
+            cross_i_cv,
+            cross_z_cv,
+            ref_shift_mv,
+            ref_status,
+            temp_f,
+            ref_raw_mv,
+            ref_hw_sql,
+            ref_hint,
+            ref_depol_rate_mv_s,
+        )
+        sql = f"INSERT INTO readings ({col_names}) VALUES ({placeholders})"
+        ival = float(getattr(cfg, "SQLITE_FLUSH_INTERVAL_S", 0.0) or 0.0)
+        nmax = int(getattr(cfg, "SQLITE_FLUSH_MAX_ROWS", 0) or 0)
+        batch = ival > 0.0 and nmax > 0
         with self._db_lock:
-            self._db.execute(
-                f"INSERT INTO readings ({col_names}) VALUES ({placeholders})",
-                (
-                    ts,
-                    ts_unix,
-                    int(wet),
-                    int(fault_latched),
-                    ";".join(faults),
-                    *ch_values,
-                    total_ma,
-                    supply_v_avg,
-                    total_power_w,
-                    cross_i_cv,
-                    cross_z_cv,
-                    ref_shift_mv,
-                    ref_status,
-                    temp_f,
-                    ref_raw_mv,
-                    ref_hw_sql,
-                    ref_hint,
-                    ref_depol_rate_mv_s,
-                ),
-            )
-            self._db.commit()
-        self._insert_count += 1
+            if not batch:
+                self._readings_insert_sql = ""
+                self._db.execute(sql, params)
+                self._db.commit()
+                self._insert_count += 1
+            else:
+                self._readings_insert_sql = sql
+                self._readings_buffer.append(params)
+                self._flush_readings_buffer_if_due(sql, ival, nmax)
+
+    def _flush_readings_buffer_if_due(
+        self, sql: str, interval_s: float, max_rows: int, *, force: bool = False
+    ) -> None:
+        if not self._readings_buffer:
+            return
+        if force:
+            self._execute_readings_buffer(sql, len(self._readings_buffer))
+            return
+        if len(self._readings_buffer) >= max_rows:
+            self._execute_readings_buffer(sql, len(self._readings_buffer))
+            return
+        if (time.monotonic() - self._last_readings_db_flush) >= interval_s:
+            self._execute_readings_buffer(sql, len(self._readings_buffer))
+
+    def _execute_readings_buffer(self, sql: str, n: int) -> None:
+        if not self._readings_buffer or n <= 0:
+            return
+        chunk = self._readings_buffer[:n]
+        del self._readings_buffer[:n]
+        self._db.executemany(sql, chunk)
+        self._db.commit()
+        self._last_readings_db_flush = time.monotonic()
+        self._insert_count += len(chunk)
+
+    def flush(self) -> None:
+        """Force SQLite ``readings`` buffer and CSV to disk (e.g. before process exit)."""
+        with self._db_lock:
+            if self._readings_buffer and self._readings_insert_sql:
+                self._flush_readings_buffer_if_due(
+                    self._readings_insert_sql, 0.0, 1, force=True
+                )
+        self._flush_csv(sync=True)
 
     def feed_cooling_cycle(
         self,
@@ -1387,6 +1501,7 @@ class DataLogger:
         self._csv_headers_written = False
 
     def close(self) -> None:
+        self.flush()
         ts_unix = time.time()
         if self._cycle_active:
             self._finalize_cooling_cycle(ts_unix)

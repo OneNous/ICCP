@@ -20,6 +20,9 @@ def _readings_all(
 def test_regulate_uses_duty_probe_when_i_below_idle_and_below_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        cfg, "INA219_ENFORCE_CURRENT_LSB_FLOOR", False, raising=False
+    )
     monkeypatch.setattr(cfg, "TARGET_MA", 0.05)
     monkeypatch.setattr(cfg, "REGULATE_IDLE_OFF_BELOW_MA", 0.05)
     monkeypatch.setattr(cfg, "DUTY_PROBE", 0.1)
@@ -39,6 +42,9 @@ def test_regulate_idle_off_still_cuts_output_when_satisfied_in_noise(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """|I| below REGULATE_IDLE_OFF but I ≥ mA setpoint: hold 0% (open-path / noise guard)."""
+    monkeypatch.setattr(
+        cfg, "INA219_ENFORCE_CURRENT_LSB_FLOOR", False, raising=False
+    )
     monkeypatch.setattr(cfg, "TARGET_MA", 0.03)
     monkeypatch.setattr(cfg, "REGULATE_IDLE_OFF_BELOW_MA", 0.05)
     monkeypatch.setattr(cfg, "DUTY_PROBE", 0.1)

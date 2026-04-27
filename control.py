@@ -39,6 +39,7 @@ from collections import deque
 
 import config.settings as cfg
 from channel_labels import anode_hw_label, anode_label
+from iccp_electrolyte import cell_impedance_ohm
 from sensors import ina219_read_failure_expected_idle
 
 _SIM = os.environ.get("COILSHIELD_SIM", "0") == "1"
@@ -161,6 +162,20 @@ def _quantize_duty_for_gpio(duty: float) -> float:
     return d
 
 
+def _rpi_change_duty_cycle_arg(duty: float) -> float:
+    """
+    Duty % to pass to RPi.GPIO ``PWM.ChangeDutyCycle``.
+
+    RPi.GPIO uses floats internally; **do not** cast to ``int`` (that would make e.g. 0.01% → 0
+    and erase sub-1% drive). Rounding to 2 decimal places matches ``PWM_DUTY_QUANTUM``=0.01% and
+    tames binary float noise before the library call.
+    """
+    d = float(duty)
+    if d <= 0.0:
+        return 0.0
+    return round(max(0.0, min(100.0, d)), 2)
+
+
 def classify_path(ch: "ChannelState", i_ma: float, v_bus: float, cfg) -> str:
     """
     Classify conduction path once per tick (before FSM transitions).
@@ -228,9 +243,8 @@ class PWMBank:
                 p = GPIO.PWM(pin, self._pwm_carrier_hz)
                 p.start(0.0)
                 self._pwm.append(p)
-        s0 = _session_start_duty_pct()
-        if s0 > 0.0:
-            self.set_duty_unified(s0)
+        # Stay at 0% until the control FSM (REGULATE) or an explicit :meth:`set_duty` /
+        # :meth:`set_duty_unified` / :meth:`leave_static_gate_off` / :meth:`seed_session_start_duty` applies drive.
 
     @property
     def static_gate_off_active(self) -> bool:
@@ -301,7 +315,7 @@ class PWMBank:
             GPIO.setup(pin, GPIO.OUT)
             GPIO.output(pin, GPIO.LOW)
             return
-        self._pwm[ch].ChangeDutyCycle(duty)
+        self._pwm[ch].ChangeDutyCycle(_rpi_change_duty_cycle_arg(duty))
 
     def set_duty_unified(self, duty: float) -> None:
         """Set the same PWM duty (%) on every MOSFET gate. Sim-safe. Honors static mode."""
@@ -329,8 +343,9 @@ class PWMBank:
                 GPIO.setup(pin, GPIO.OUT)
                 GPIO.output(pin, GPIO.LOW)
             return
+        d_hw = _rpi_change_duty_cycle_arg(duty)
         for ch in range(cfg.NUM_CHANNELS):
-            self._pwm[ch].ChangeDutyCycle(duty)
+            self._pwm[ch].ChangeDutyCycle(d_hw)
 
     def duty(self, ch: int) -> float:
         return self._duties[ch]
@@ -392,6 +407,7 @@ class ChannelState:
         self.last_state_recheck_monotonic: float = time.monotonic()
         wlen = max(4, int(getattr(cfg, "IMPEDANCE_MEDIAN_WINDOW", 32)))
         self._z_window: deque[float] = deque(maxlen=wlen)
+        self._feedforward_done: bool = False
         # --- Shift-based FSM (docs/iccp-requirements.md §2.2, §6) ---
         self.state_v2: str = STATE_V2_OFF
         self.state_v2_enter_monotonic: float = time.monotonic()
@@ -802,8 +818,7 @@ class Controller:
                     state.protecting_enter_streak = 0
                     state.protecting_exit_streak = 0
 
-            i_floor = float(getattr(cfg, "Z_COMPUTE_I_A_MIN", 1e-6))
-            z_log = bus_v / max(current_ma / 1000.0, i_floor)
+            z_log = cell_impedance_ohm(bus_v, current_ma)
             state._z_window.append(z_log)
 
             path = classify_path(state, current_ma, bus_v, cfg)
@@ -873,12 +888,44 @@ class Controller:
 
             current_duty = self._pwm.duty(ch)
             if status == ChannelState.OPEN:
+                state._feedforward_done = False
                 self._pwm.set_duty(ch, 0.0)
             elif status == ChannelState.REGULATE:
                 lo, hi = probe_duty, hi_ramp
                 if current_duty < lo:
-                    # Reach DUTY_PROBE first; a prior idle check here could keep 0% with I=0.
-                    self._pwm.set_duty(ch, lo)
+                    applied_ff = False
+                    if bool(getattr(cfg, "FEEDFORWARD_ENABLED", False)) and (
+                        not state._feedforward_done
+                    ):
+                        # Use rolling median Z when the window is filled; use this-tick
+                        # branch Z at DUTY_PROBE when fewer than 3 samples (Algorithm A:
+                        # path opens with probe current, Z = V/I exists before 3-tick median).
+                        zm = self.median_impedance_ohm(ch)
+                        if zm is None and float(z_log) > 0.0:
+                            zm = float(z_log)
+                        if zm is not None and float(zm) > 0.0:
+                            from iccp_electrolyte import predict_duty_feedforward
+
+                            ff = float(
+                                predict_duty_feedforward(
+                                    target_ma, bus_v, float(zm)
+                                )
+                            )
+                            _jump = float(
+                                getattr(cfg, "FEEDFORWARD_MAX_DUTY_JUMP_PCT", 0.0) or 0.0
+                            )
+                            if _jump > 0.0:
+                                ff = min(ff, float(current_duty) + _jump)
+                            ff = max(float(lo), min(ff, float(hi)))
+                            if ff > float(lo) + 1e-6:
+                                self._pwm.set_duty(
+                                    ch, _quantize_duty_for_gpio(ff)
+                                )
+                                applied_ff = True
+                    if not applied_ff:
+                        # Reach DUTY_PROBE first; a prior idle check here could keep 0% with I=0.
+                        self._pwm.set_duty(ch, lo)
+                    state._feedforward_done = True
                     continue
                 idle_off = float(getattr(cfg, "REGULATE_IDLE_OFF_BELOW_MA", 0.05))
                 if (
@@ -901,7 +948,10 @@ class Controller:
                     new_duty = max(lo, current_duty - step)
                 else:
                     new_duty = current_duty
-                self._pwm.set_duty(ch, new_duty)
+                _kp = float(getattr(cfg, "FEEDBACK_KP", 0.0) or 0.0)
+                if _kp > 0.0:
+                    new_duty = new_duty + _kp * (target_ma - current_ma)
+                self._pwm.set_duty(ch, _quantize_duty_for_gpio(new_duty))
             elif status == ChannelState.PROTECTING:
                 if current_ma < target_ma:
                     new_duty = current_duty + pwm_ramp_step(
@@ -913,6 +963,9 @@ class Controller:
                     )
                 else:
                     new_duty = current_duty
+                _kp = float(getattr(cfg, "FEEDBACK_KP", 0.0) or 0.0)
+                if _kp > 0.0:
+                    new_duty = new_duty + _kp * (target_ma - current_ma)
                 self._pwm.set_duty(ch, clamp(new_duty, 0.0, hi_protect))
 
         if use_bank:
@@ -1059,15 +1112,18 @@ class Controller:
         # increase mA setpoint when shift is below the effective mV target — not 0.8×target, which
         # left a dead band where the UI was UNDER but OUTER_LOOP_TRIM_TO_SHIFT_CENTER=False froze
         # TARGET_MA. Optional trim nudges down from the high side of the [center, hi] window.
+        from iccp_electrolyte import effective_target_ma_floor
+
+        floor_m = float(effective_target_ma_floor())
         if shift_mv < float(center) - 1e-6 and nudge_ok:
             cfg.TARGET_MA = round(min(cfg.TARGET_MA + step, max_target), 3)
             self._mark_outer_potential_nudge()
         elif shift_mv > float(hi) + 1e-6 and nudge_ok:
-            cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, 0.05), 3)
+            cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, floor_m), 3)
             self._mark_outer_potential_nudge()
         elif bool(getattr(cfg, "OUTER_LOOP_TRIM_TO_SHIFT_CENTER", True)) and nudge_ok:
             if shift_mv > float(center) + float(trim_tol):
-                cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, 0.05), 3)
+                cfg.TARGET_MA = round(max(cfg.TARGET_MA - step, floor_m), 3)
                 self._mark_outer_potential_nudge()
 
     def duties(self) -> dict[int, float]:
@@ -1118,7 +1174,10 @@ class Controller:
         return self._channel_target(ch)
 
     def _channel_target(self, ch: int) -> float:
-        return float(getattr(cfg, "CHANNEL_TARGET_MA", {}).get(ch, cfg.TARGET_MA))
+        from iccp_electrolyte import effective_target_ma_floor
+
+        t = float(getattr(cfg, "CHANNEL_TARGET_MA", {}).get(ch, cfg.TARGET_MA))
+        return max(t, effective_target_ma_floor())
 
     def _channel_max_ma(self, ch: int) -> float:
         return float(getattr(cfg, "CHANNEL_MAX_MA", {}).get(ch, cfg.MAX_MA))

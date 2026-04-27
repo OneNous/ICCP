@@ -216,15 +216,24 @@ def ina219_read(bus: Any, addr: int, shunt_ohm: float) -> dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
-def ina219_diag_snapshot(bus: Any, addr: int, *, shunt_ohm: float = 0.1) -> dict[str, Any]:
+def ina219_diag_snapshot(
+    bus: Any, addr: int, *, shunt_ohm: float | None = None
+) -> dict[str, Any]:
     """INA219 register dump for support logs (smbus2 only; no pi-ina219)."""
+    import config.settings as _cfg
+
+    r_ohm = float(
+        shunt_ohm
+        if shunt_ohm is not None
+        else (getattr(_cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
+    )
     out: dict[str, Any] = {"address": int(addr), "ok": False}
     try:
         ina219_ensure_converting(bus, addr)
         cfg = ina219_read_config(bus, addr)
         pga = _ina219_pga_bits(cfg)
         raw_s, raw_b = ina219_read_registers(bus, addr)
-        parsed = ina219_parse(raw_s, raw_b, shunt_ohm, pga_bits=pga)
+        parsed = ina219_parse(raw_s, raw_b, r_ohm, pga_bits=pga)
         out.update(
             {
                 "ok": True,

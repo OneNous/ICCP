@@ -20,3 +20,6 @@ os.environ.pop("COILSHIELD_TARGET_MA", None)
 import config.settings as _cfg  # noqa: E402
 
 _cfg.SHARED_RETURN_PWM = False
+# Tests expect one SQLite commit per `record` unless a batching test enables buffering.
+_cfg.SQLITE_FLUSH_INTERVAL_S = 0.0
+_cfg.SQLITE_FLUSH_MAX_ROWS = 0
