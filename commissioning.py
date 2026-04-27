@@ -1322,6 +1322,21 @@ def run(
     return float(cfg.TARGET_MA)
 
 
+def _commission_shift_band_mv(reference: ReferenceElectrode) -> tuple[float, float]:
+    """Additional shift (mV) window vs 1b baseline: same as runtime ``protection_status`` OK band."""
+    thr_lo = float(reference.effective_shift_target_mv())
+    thr_hi = float(reference.effective_max_shift_mv())
+    if thr_hi < thr_lo:
+        thr_hi = thr_lo
+    return thr_lo, thr_hi
+
+
+def _shift_in_commission_window(
+    shift: float | None, thr_lo: float, thr_hi: float
+) -> bool:
+    return shift is not None and thr_lo <= float(shift) <= thr_hi
+
+
 def _phase2_binary_search_mA(
     reference: ReferenceElectrode,
     controller: Controller,
@@ -1331,10 +1346,10 @@ def _phase2_binary_search_mA(
     comm_deadline: float | None,
     oc_desc: str,
 ) -> tuple[float, list[dict[str, Any]], bool]:
-    """Bisect mA until shift reaches target or span is below resolution.
+    """Bisect mA until some trial lands shift in ``[effective_shift_target, effective_max]``.
 
     Returns ``(mA, history, reached_in_band)`` where *reached_in_band* is True if some trial
-    hit the shift target (used by hybrid to decide linear fallback vs refine-from-*out*).
+    hit that window (used by hybrid to decide linear fallback vs refine-from-*out*).
     """
     lo = float(
         getattr(
@@ -1348,7 +1363,7 @@ def _phase2_binary_search_mA(
     max_iter = max(1, int(getattr(cfg, "COMMISSIONING_BINARY_MAX_ITERATIONS", 12)))
     history: list[dict[str, Any]] = []
     best_ma: float | None = None
-    thr = float(reference.effective_shift_target_mv())
+    thr_lo, thr_hi = _commission_shift_band_mv(reference)
     for _it in range(max_iter):
         _check_comm_wall_deadline(comm_deadline)
         if hi - lo < res:
@@ -1392,26 +1407,30 @@ def _phase2_binary_search_mA(
         if verbose:
             shift_str = f"{shift:.1f}" if shift is not None else "N/A"
             ttot = float(cfg.TARGET_SHIFT_MV)
+            band = f"{thr_lo:.1f}…{thr_hi:.1f} mV additional"
             if reference.galvanic_offset_mv is not None:
                 log(
                     f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
-                    f"shift (ref@off−1b baseline) {shift_str} / {thr:.1f} mV additional "
-                    f"({ttot:.0f} mV total from 1a)  [binary]"
+                    f"shift (ref@off−1b baseline) {shift_str}  (window {band}, "
+                    f"{ttot:.0f} mV total from 1a)  [binary]"
                 )
             else:
                 log(
                     f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
-                    f"shift (ref@off−native) {shift_str} / {ttot:.0f} mV  [binary]"
+                    f"shift (ref@off−native) {shift_str}  (window {band})  [binary]"
                 )
-        if shift is not None and shift >= thr:
+        if _shift_in_commission_window(shift, thr_lo, thr_hi):
             best_ma = mid
+            hi = mid
+        elif shift is not None and float(shift) > thr_hi:
             hi = mid
         else:
             lo = mid
     out = float(best_ma) if best_ma is not None else round((lo + hi) / 2.0, 3)
     if best_ma is None and verbose:
         log(
-            "WARNING: binary search did not reach target shift in band — "
+            "WARNING: binary search did not land shift inside the "
+            f"{thr_lo:.1f}…{thr_hi:.1f} mV window — "
             f"using fallback {out:.3f} mA; check bonding and water."
         )
     reached = best_ma is not None
@@ -1432,6 +1451,18 @@ def _phase2_linear_ramp_mA(
 ) -> tuple[float, list[dict[str, Any]]]:
     """Step mA until shift confirms (or MAX_MA). If *start_mA* is None, start from 0.1×TARGET / 0.05 mA."""
     history: list[dict[str, Any]] = []
+    thr_lo, thr_hi = _commission_shift_band_mv(reference)
+    ma_floor = float(
+        getattr(
+            cfg,
+            "COMMISSIONING_BINARY_MA_LO",
+            max(1e-4, float(cfg.INA219_CURRENT_LSB_MA)),
+        )
+    )
+    ramp_coarse = float(getattr(cfg, "COMMISSIONING_RAMP_STEP_MA", 0.15))
+    ramp_fine = float(getattr(cfg, "COMMISSIONING_RAMP_FINE_STEP_MA", 0.05))
+    near_frac = float(getattr(cfg, "COMMISSIONING_RAMP_FINE_NEAR_SHIFT_FRAC", 0.5))
+    tol = float(getattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_TOLERANCE", 0.9))
     if start_ma is None:
         current_target_ma = max(cfg.TARGET_MA * 0.1, 0.05)
     else:
@@ -1475,42 +1506,55 @@ def _phase2_linear_ramp_mA(
             }
         )
         shift_str = f"{shift:.1f}" if shift is not None else "N/A"
-        eff_thr = reference.effective_shift_target_mv()
         ttot = float(cfg.TARGET_SHIFT_MV)
+        band = f"{thr_lo:.1f}…{thr_hi:.1f} mV additional"
         if verbose:
             if reference.galvanic_offset_mv is not None:
                 log(
                     f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
-                    f"shift (ref@off−1b baseline) {shift_str} / {eff_thr:.1f} mV additional "
-                    f"({ttot:.0f} mV total from 1a)"
+                    f"shift (ref@off−1b baseline) {shift_str}  (window {band}, "
+                    f"{ttot:.0f} mV total from 1a)"
                 )
             else:
                 log(
                     f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
-                    f"shift (ref@off−native) {shift_str} / {ttot:.0f} mV"
+                    f"shift (ref@off−native) {shift_str}  (window {band})"
                 )
 
-        tol = float(getattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_TOLERANCE", 0.9))
-        thr = float(eff_thr)
-        if shift is not None and shift >= thr:
+        if _shift_in_commission_window(shift, thr_lo, thr_hi):
             confirm_count += 1
             if verbose:
-                log(f"Shift in band — streak {confirm_count}/{CONFIRM_TICKS}")
+                log(f"Shift in window — streak {confirm_count}/{CONFIRM_TICKS}")
             if confirm_count >= CONFIRM_TICKS:
                 break
-        elif shift is not None and shift >= thr * tol:
+        elif shift is not None and float(shift) > thr_hi:
+            confirm_count = max(0, confirm_count - 1)
+            excess = float(shift) - thr_hi
+            step_down = ramp_fine if excess < 20.0 else ramp_coarse
+            if current_target_ma <= ma_floor + 1e-9:
+                if verbose:
+                    log(
+                        "WARNING: shift exceeds window ceiling but setpoint is already at "
+                        f"minimum ({ma_floor:g} mA) — cannot reduce further; stopping Phase 2 ramp."
+                    )
+                break
+            current_target_ma = round(max(ma_floor, current_target_ma - step_down), 3)
+            if verbose:
+                log(
+                    f"Shift {float(shift):.1f} mV above ceiling {thr_hi:.1f} mV — "
+                    f"reducing setpoint to {current_target_ma:.3f} mA"
+                )
+        elif (
+            shift is not None
+            and thr_lo * tol <= float(shift) < thr_lo
+        ):
             pass
         else:
             # Decay streak on bad samples (no hard reset) — noisy tap water.
             confirm_count = max(0, confirm_count - 1)
-            ramp_coarse = float(getattr(cfg, "COMMISSIONING_RAMP_STEP_MA", 0.15))
-            ramp_fine = float(getattr(cfg, "COMMISSIONING_RAMP_FINE_STEP_MA", 0.05))
-            near_frac = float(
-                getattr(cfg, "COMMISSIONING_RAMP_FINE_NEAR_SHIFT_FRAC", 0.5)
-            )
             step = (
                 ramp_fine
-                if shift is not None and shift > eff_thr * near_frac
+                if shift is not None and float(shift) > thr_lo * near_frac
                 else ramp_coarse
             )
             current_target_ma = round(current_target_ma + step, 3)
