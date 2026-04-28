@@ -76,7 +76,7 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 
 **Common options:** **`--host 0.0.0.0`**, **`--port 8080`**, **`--log-dir PATH`** (must match the controller).
 
-**Notes:** On Pi, **`daemon-reload`** only (no restart — the dashboard is read-only from the controller's perspective).
+**Notes:** On Pi, **`daemon-reload`** only (no restart — the dashboard is read-only from the controller's perspective). JSON for external apps: **`/api/meta`**, **`/api/live`**, **`/api/history`**, … — see [desktop-app-integration.md](desktop-app-integration.md).
 
 ---
 

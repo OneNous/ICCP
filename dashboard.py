@@ -26,7 +26,13 @@ Vendored **Geist** variable fonts are served from ``/static/fonts/`` (``static/`
 this file) for offline / Pi use — no font CDN. HTML/CSS lives in this module; avoid duplicating
 feed-health copy between Overview and Health (diagnostics are under a ``<details>`` block).
 
-HTTP: /api/live (Cache-Control: no-store; feed_age_s, json_payload_age_s, feed_stale_threshold_s, feed_trust_channel_metrics, feed_stale_reasons, target_ma_avg_live), /api/diagnostic, /api/history (avg_target_ma for mA charts), /api/stats, /api/daily, /api/sessions, /api/export, /api/export/csv
+HTTP: ``/api/meta`` (controller layout + package version), ``/api/live`` (Cache-Control: no-store;
+feed_age_s, json_payload_age_s, feed_stale_threshold_s, feed_trust_channel_metrics,
+feed_stale_reasons, target_ma_avg_live), ``/api/diagnostic``, ``/api/history`` (avg_target_ma for mA
+charts), ``/api/stats``, ``/api/daily``, ``/api/sessions``, ``/api/export``, ``/api/export/csv``.
+**CORS:** all ``/api/*`` responses include permissive headers so Electron / Vite dev servers can
+``fetch`` a tunneled ``http://127.0.0.1:<port>/api/...`` from another origin. See
+``docs/desktop-app-integration.md``.
 
 SQL column names for `readings` / `wet_sessions` / `daily_totals` MUST stay in sync with logger.py _init_schema.
 
@@ -37,6 +43,7 @@ Install Flask if needed:
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import os
 import sqlite3
@@ -78,6 +85,30 @@ app = Flask(
     static_folder=str(_DASHBOARD_DIR / "static"),
     static_url_path="/static",
 )
+
+
+@app.before_request
+def _dashboard_api_cors_preflight() -> Response | None:
+    """Allow browser/Electron renderers on another origin to call read-only ``/api/*`` GET APIs."""
+    if request.method != "OPTIONS":
+        return None
+    if not str(request.path).startswith("/api/"):
+        return None
+    r = make_response("", 204)
+    r.headers["Access-Control-Allow-Origin"] = "*"
+    r.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    r.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    r.headers["Access-Control-Max-Age"] = "86400"
+    return r
+
+
+@app.after_request
+def _dashboard_api_cors_headers(resp: Response) -> Response:
+    if str(request.path).startswith("/api/"):
+        resp.headers.setdefault("Access-Control-Allow-Origin", "*")
+        resp.headers.setdefault("Access-Control-Allow-Methods", "GET, OPTIONS")
+    return resp
+
 
 # /api/history: cap window so bad params cannot load unbounded rows into memory.
 _HISTORY_MINUTES_DEFAULT = _HISTORY_MINUTES_DEFAULT
@@ -128,6 +159,35 @@ def _latest() -> dict:
         return json.loads(LATEST_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {"error": "no data yet — is the controller (iccp start) running?"}
+
+
+def _package_version() -> str | None:
+    try:
+        return importlib.metadata.version("coilshield-iccp")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+@app.route("/api/meta")
+def api_meta():
+    """Build and channel layout for external desktop clients (no ``latest.json`` required)."""
+    paths = cfg.resolved_telemetry_paths()
+    body = {
+        "package": "coilshield-iccp",
+        "package_version": _package_version(),
+        "num_channels": int(cfg.NUM_CHANNELS),
+        "target_ma": float(cfg.TARGET_MA),
+        "max_ma": float(cfg.MAX_MA),
+        "sample_interval_s": float(cfg.SAMPLE_INTERVAL_S),
+        "pwm_frequency_hz": int(getattr(cfg, "PWM_FREQUENCY_HZ", 0) or 0),
+        "sim_mode": os.environ.get("COILSHIELD_SIM", "0").strip() == "1",
+        "log_dir": paths.get("log_dir"),
+        "latest_json": paths.get("latest_json"),
+        "sqlite_db": paths.get("sqlite_db"),
+    }
+    resp = make_response(jsonify(body))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def _live_envelope() -> dict:
@@ -1380,6 +1440,7 @@ const CHART_TOTAL_HEX = '#22d3ee';
 const CHART_MUTED = '#a1a1aa';
 const CHART_GRID = 'rgba(255, 255, 255, 0.07)';
 const NUM_CH = __NUM_CH__;
+const MA_NOISE_FLOOR = __MA_NOISE_FLOOR__;
 const STATUS_HINT = {
   OK: 'On target: current vs effective setpoint looks healthy for this tick.',
   LOW: 'Marginal: current is low vs this channel target (or non-conducting path).',
@@ -2094,12 +2155,12 @@ async function fetchLive() {
 
       const zf = document.getElementById(`zero-flag-${i}`);
       const busOk = Number.isFinite(busV);
-      if (!stale && readingOk && Math.abs(maDisp) < 0.001 && busOk && Math.abs(busV) < 0.05) {
+      if (!stale && readingOk && Math.abs(maDisp) < MA_NOISE_FLOOR && busOk && Math.abs(busV) < 0.05) {
         zf.style.display = 'inline-block';
-        zf.textContent = 'Live: 0 mA and ~0 V bus (path open / supply off / INA219 idle)';
-      } else if (!stale && readingOk && Math.abs(maDisp) < 0.001) {
+        zf.textContent = `Live: |I| < ${MA_NOISE_FLOOR.toFixed(3)} mA and ~0 V bus (below sensor noise floor; path open / supply off / INA219 idle)`;
+      } else if (!stale && readingOk && Math.abs(maDisp) < MA_NOISE_FLOOR) {
         zf.style.display = 'inline-block';
-        zf.textContent = 'Live: 0 mA (sensor OK — check wet state and bus voltage)';
+        zf.textContent = `Live: |I| < ${MA_NOISE_FLOOR.toFixed(3)} mA (below sensor noise floor; sensor OK — check wet state and bus voltage)`;
       } else {
         zf.style.display = 'none';
         zf.textContent = '';
@@ -2303,6 +2364,10 @@ fetchSessions();
 DASHBOARD_HTML = (
     DASHBOARD_HTML.replace("__NUM_CH__", str(cfg.NUM_CHANNELS)).replace(
         "__IDX_MAX__", str(max(0, int(cfg.NUM_CHANNELS) - 1))
+    )
+    .replace(
+        "__MA_NOISE_FLOOR__",
+        f"{float(getattr(cfg, 'INA219_CURRENT_NOISE_FLOOR_MA', 0.03) or 0.03):.3f}",
     )
 )
 

@@ -144,6 +144,31 @@ def test_api_live_includes_feed_envelope(log_and_dashboard_client) -> None:
     assert isinstance(tp, dict)
     assert "latest_json" in tp and "log_dir" in tp and "log_dir_source" in tp
     assert tp["latest_json"].endswith("latest.json")
+    assert r.headers.get("Access-Control-Allow-Origin") == "*"
+
+
+def test_api_options_preflight_api_live(log_and_dashboard_client) -> None:
+    c = log_and_dashboard_client
+    r = c.open("/api/live", method="OPTIONS")
+    assert r.status_code == 204
+    assert r.headers.get("Access-Control-Allow-Origin") == "*"
+
+
+def test_api_meta(log_and_dashboard_client) -> None:
+    c = log_and_dashboard_client
+    r = c.get("/api/meta")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data["package"] == "coilshield-iccp"
+    assert data["num_channels"] == cfg.NUM_CHANNELS
+    assert isinstance(data["target_ma"], (int, float))
+    assert isinstance(data["max_ma"], (int, float))
+    assert isinstance(data["sample_interval_s"], (int, float))
+    assert isinstance(data["pwm_frequency_hz"], int)
+    assert isinstance(data["sim_mode"], bool)
+    assert "log_dir" in data and "latest_json" in data and "sqlite_db" in data
+    assert r.headers.get("Cache-Control") == "no-store"
+    assert r.headers.get("Access-Control-Allow-Origin") == "*"
 
 
 def test_api_live_telemetry_incomplete_untrusted(

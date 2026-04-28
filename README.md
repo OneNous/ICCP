@@ -23,6 +23,13 @@ Every supported operation goes through the single `iccp` console script (install
 
 Full reference: [docs/iccp-cli-reference.md](docs/iccp-cli-reference.md).
 
+**External desktop / Command Center apps:** the dashboard exposes read-only JSON under **`/api/*`**
+(including **`/api/meta`** and **`/api/live`**) with **CORS** enabled for cross-origin `fetch` to an
+SSH-forwarded `http://127.0.0.1:<port>`. Control actions stay on **`iccp`** / **`systemctl`** over
+SSH. Monitoring from off-LAN is the same flow: make **SSH** reachable (e.g. Tailscale on the Pi,
+or a hardened WAN forward to port 22 only — **do not** expose dashboard **8080** publicly without
+extra auth). Details: [docs/desktop-app-integration.md](docs/desktop-app-integration.md).
+
 **Hardware knowledge base** (part datasheets + **Raspberry Pi GPIO** tables): [docs/knowledge-base/README.md](docs/knowledge-base/README.md) · short Pi GPIO note: [docs/raspberry-pi-gpio.md](docs/raspberry-pi-gpio.md).
 
 ## Simulator (bench / no hardware)

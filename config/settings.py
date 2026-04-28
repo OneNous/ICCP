@@ -202,6 +202,12 @@ INA219_SHUNT_LSB_V: float = 1e-5
 # Nominal shunt-current LSB (mA) — mirrors ``ina219_nominal_current_lsb_ma()``; re-tune if you
 # change only shunt value at runtime.
 INA219_CURRENT_LSB_MA: float = (INA219_SHUNT_LSB_V / max(INA219_SHUNT_OHMS, 1e-9)) * 1000.0
+
+# Practical measurement floor (mA): below this magnitude, the INA219 reading is typically dominated
+# by offset/noise/pickup on real wiring and should not be treated as "accurate current".
+# With v1 hardware (1.0 Ω shunt), the theoretical LSB is ~0.010 mA, but field noise commonly yields
+# ~0.030 mA as the smallest stable non-zero magnitude.
+INA219_CURRENT_NOISE_FLOOR_MA: float = 0.03
 # GAIN_AUTO in :mod:`sensors` picks a PGA; shunt full scale is ±40 mV at ÷1. Shunt drop is
 # V_shunt = I_mA/1000 × R_shunt. If you raise :data:`MAX_MA` or shunt R, confirm
 # V_shunt ≤ 40 mV at the worst case (e.g. MAX_MA=5, R=1 Ω → 5 mV, comfortable).
@@ -210,7 +216,7 @@ INA219_CURRENT_LSB_MA: float = (INA219_SHUNT_LSB_V / max(INA219_SHUNT_OHMS, 1e-9
 # Floor for effective mA setpoint (``control.Controller._channel_target`` uses
 # :func:`iccp_electrolyte.effective_target_ma_floor`). Clamps pathological sub-LSB targets; **0**
 # means only the shunt-LSB floor (and :data:`INA219_ENFORCE_CURRENT_LSB_FLOOR`) applies.
-TARGET_MA_FLOOR: float = 0.0
+TARGET_MA_FLOOR: float = INA219_CURRENT_NOISE_FLOOR_MA
 # When True, :func:`iccp_electrolyte.effective_target_ma_floor` includes the shunt LSB mA.
 # Set False in tests that use sub-LSB ``TARGET_MA`` on purpose.
 INA219_ENFORCE_CURRENT_LSB_FLOOR: bool = True
@@ -302,7 +308,7 @@ DUTY_PROBE = 0.01
 # 0 mA with a small target would deadlock at 0%% and never apply DUTY_PROBE.
 # Prevents runaway on open / ultra-high-Z when already “satisfied” on I.
 # Set to **0** to disable the idle hold entirely.
-REGULATE_IDLE_OFF_BELOW_MA = 0.05
+REGULATE_IDLE_OFF_BELOW_MA = INA219_CURRENT_NOISE_FLOOR_MA
 # PROTECTING duty ceiling (%); keep in line with PWM_MAX_DUTY unless you intentionally cap lower.
 DUTY_PROTECT_MAX = 80.0
 
