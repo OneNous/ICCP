@@ -391,10 +391,16 @@ def _abort_if_systemd_iccp_active_for_foreground_start(force: bool) -> int | Non
     """
     If the packaged systemd unit is already running, refuse ``iccp start`` so two
     controllers do not share PWM / I2C. Override with ``--force`` (unsafe if unsure).
+
+    When ``iccp start`` is the **ExecStart** of ``iccp.service``, systemd sets
+    ``INVOCATION_ID``; the unit is *active* because this process *is* the service,
+    not because a second controller exists — do not abort.
     """
     if force:
         return None
     if not running_on_raspberry_pi():
+        return None
+    if (os.environ.get("INVOCATION_ID") or "").strip():
         return None
     flag = os.environ.get("ICCP_SYSTEMD_SYNC", "1").strip().lower()
     if flag in ("0", "off", "false", "no", "disable", "disabled"):

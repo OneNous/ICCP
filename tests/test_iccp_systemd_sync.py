@@ -91,6 +91,7 @@ def test_abort_foreground_start_when_systemd_unit_active(
 ) -> None:
     monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
     monkeypatch.delenv("ICCP_SYSTEMD_SYNC", raising=False)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
 
     def fake_run(cmd: list[str], **kwargs: object) -> object:
         if cmd[:3] == ["systemctl", "is-active", "iccp"]:
@@ -104,6 +105,21 @@ def test_abort_foreground_start_when_systemd_unit_active(
     monkeypatch.setattr(iccp_cli.subprocess, "run", fake_run)
     assert iccp_cli._abort_if_systemd_iccp_active_for_foreground_start(False) == 1
     assert iccp_cli._abort_if_systemd_iccp_active_for_foreground_start(True) is None
+
+
+def test_abort_foreground_start_skipped_under_systemd_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ExecStart of iccp.service: unit is active because we ARE the service."""
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: True)
+    monkeypatch.delenv("ICCP_SYSTEMD_SYNC", raising=False)
+    monkeypatch.setenv("INVOCATION_ID", "c3f3e4f5-a1b2-4c5d-8e9f-0123456789ab")
+
+    def fake_run(cmd: list[str], **kwargs: object) -> object:
+        raise AssertionError("should not query systemctl when INVOCATION_ID is set")
+
+    monkeypatch.setattr(iccp_cli.subprocess, "run", fake_run)
+    assert iccp_cli._abort_if_systemd_iccp_active_for_foreground_start(False) is None
 
 
 def test_abort_foreground_start_skipped_when_systemctl_unavailable(
