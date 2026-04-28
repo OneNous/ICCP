@@ -25,6 +25,7 @@ from console_ui import (
     commission_log_main,
     print_commission_section,
 )
+from cli_events import emit, output_mode
 from reference import (
     ReferenceElectrode,
     _update_comm_file,
@@ -53,22 +54,46 @@ def _warn_commissioning_json_schema(data: object) -> None:
         return
     _commissioning_schema_warned.add(g_key)
     if g is None:
-        print(
-            "[commissioning] commissioning.json has no schema_version — re-run `iccp commission` "
-            "so v2 baselines and health/ramp metadata are not silently absent.",
-            file=sys.stderr,
-        )
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "warn",
+                    "cmd": "commission",
+                    "source": "commissioning",
+                    "event": "commissioning.schema.warn",
+                    "msg": "commissioning.json missing schema_version",
+                    "data": {"path": str(_COMM_FILE)},
+                }
+            )
+        else:
+            print(
+                "[commissioning] commissioning.json has no schema_version — re-run `iccp commission` "
+                "so v2 baselines and health/ramp metadata are not silently absent.",
+                file=sys.stderr,
+            )
         return
     try:
         gi = int(g)
     except (TypeError, ValueError):
         return
     if gi < exp:
-        print(
-            f"[commissioning] commissioning.json schema_version={gi} < {exp} — re-commission to "
-            "refresh baselines and metadata.",
-            file=sys.stderr,
-        )
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "warn",
+                    "cmd": "commission",
+                    "source": "commissioning",
+                    "event": "commissioning.schema.warn",
+                    "msg": "commissioning.json schema_version too old",
+                    "data": {"path": str(_COMM_FILE), "schema_version": gi, "expected": exp},
+                }
+            )
+        else:
+            print(
+                f"[commissioning] commissioning.json schema_version={gi} < {exp} — re-commission to "
+                "refresh baselines and metadata.",
+                file=sys.stderr,
+            )
 
 
 def _commission_oc_debug() -> bool:
@@ -167,7 +192,33 @@ def _print_commission_anode_wait_line(
 ) -> None:
     """INA + PWM% + ref raw — read-only (does not run the ICCP control tick)."""
     _, line = _commission_anode_wait_line(controller, reference, sim_state)
-    print(line)
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "commission",
+                "source": "commissioning",
+                "event": "commission.prompt.status",
+                "msg": "anode-wait status",
+                "data": {"line": line},
+            }
+        )
+    else:
+        print(line)
+
+
+def _commission_prompts_enabled() -> bool:
+    """
+    Interactive commissioning prompts (Enter to continue) are OFF by default.
+    Enable with `iccp commission --with-prompts`.
+    """
+    flag = (os.environ.get("ICCP_COMMISSION_WITH_PROMPTS") or "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return False
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
 
 
 def _readline_wait_enter_for_anode_prompt(
@@ -247,6 +298,9 @@ def _anode_placement_should_interact(
     """True when we should block on operator Enter (removed / installed anodes)."""
     import sensors
 
+    # Prompts are OFF by default; enable explicitly via `iccp commission --with-prompts`.
+    if not _commission_prompts_enabled():
+        return False
     if anode_placement_prompts is False:
         return False
     if _commissioning_field_mode():
@@ -335,7 +389,19 @@ def _anode_placement_pause(
             if key == _last_wait_key:
                 return
             _last_wait_key = key
-            print(line)
+            if output_mode() == "jsonl":
+                emit(
+                    {
+                        "level": "info",
+                        "cmd": "commission",
+                        "source": "commissioning",
+                        "event": "commission.prompt.status",
+                        "msg": "anode-wait status",
+                        "data": {"line": line},
+                    }
+                )
+            else:
+                print(line)
 
         on_timeout = _on_timeout
     _readline_wait_enter_for_anode_prompt(on_select_timeout=on_timeout)
@@ -393,16 +459,42 @@ def needs_commissioning() -> bool:
     try:
         data = json.loads(_COMM_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
-        print(
-            f"[commissioning] invalid commissioning.json (treat as needs commissioning): {e}",
-            file=sys.stderr,
-        )
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "warn",
+                    "cmd": "commission",
+                    "source": "commissioning",
+                    "event": "commissioning.json.invalid",
+                    "msg": "invalid commissioning.json; treating as needs commissioning",
+                    "data": {"path": str(_COMM_FILE)},
+                    "err": {"type": type(e).__name__, "message": str(e)},
+                }
+            )
+        else:
+            print(
+                f"[commissioning] invalid commissioning.json (treat as needs commissioning): {e}",
+                file=sys.stderr,
+            )
         return True
     except OSError as e:
-        print(
-            f"[commissioning] cannot read commissioning.json: {e}",
-            file=sys.stderr,
-        )
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "warn",
+                    "cmd": "commission",
+                    "source": "commissioning",
+                    "event": "commissioning.json.read_failed",
+                    "msg": "cannot read commissioning.json; treating as needs commissioning",
+                    "data": {"path": str(_COMM_FILE)},
+                    "err": {"type": type(e).__name__, "message": str(e)},
+                }
+            )
+        else:
+            print(
+                f"[commissioning] cannot read commissioning.json: {e}",
+                file=sys.stderr,
+            )
         return True
     if "native_mv" not in data:
         return True
@@ -417,11 +509,23 @@ def needs_commissioning() -> bool:
     # both native and ramp target; warn once on stderr.
     global _legacy_commissioning_complete_flag_warned
     if not _legacy_commissioning_complete_flag_warned:
-        print(
-            "[commissioning] commissioning.json has no commissioning_complete key — "
-            "assuming full commissioning finished (add key or re-run `iccp commission`).",
-            file=sys.stderr,
-        )
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "warn",
+                    "cmd": "commission",
+                    "source": "commissioning",
+                    "event": "commissioning.json.legacy_complete_missing",
+                    "msg": "commissioning_complete key missing; assuming full commissioning finished",
+                    "data": {"path": str(_COMM_FILE)},
+                }
+            )
+        else:
+            print(
+                "[commissioning] commissioning.json has no commissioning_complete key — "
+                "assuming full commissioning finished (add key or re-run `iccp commission`).",
+                file=sys.stderr,
+            )
         _legacy_commissioning_complete_flag_warned = True
     return False
 
@@ -622,22 +726,50 @@ def _wait_ina_oc_confirm(
         if ok:
             return True
         time.sleep(0.005)
-    print("[main] INA219 OC confirm timeout — last gate failures:")
-    for ln in last_reasons:
-        print(f"    {ln}")
-    print("    last per-channel snapshot (ok, mA, bus_v, err):")
-    for ch in range(cfg.NUM_CHANNELS):
-        r = last_readings.get(ch, {})
-        print(
-            f"      {anode_hw_label(ch)}: ok={r.get('ok')} I={r.get('current', '—')} "
-            f"bus_v={r.get('bus_v', '—')} err={r.get('error', '')!r}"
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "warn",
+                "cmd": "commission",
+                "source": "commissioning",
+                "event": "commission.oc_confirm.timeout",
+                "msg": "INA219 OC confirm timeout",
+                "data": {
+                    "mode": mode,
+                    "reasons": list(last_reasons),
+                    "channels": [
+                        {
+                            "ch": ch,
+                            "label": anode_hw_label(ch),
+                            "ok": (last_readings.get(ch, {}) or {}).get("ok"),
+                            "current_ma": (last_readings.get(ch, {}) or {}).get("current"),
+                            "bus_v": (last_readings.get(ch, {}) or {}).get("bus_v"),
+                            "error": (last_readings.get(ch, {}) or {}).get("error"),
+                        }
+                        for ch in range(cfg.NUM_CHANNELS)
+                    ],
+                    "confirm_i_ma": getattr(cfg, "COMMISSIONING_OC_CONFIRM_I_MA", 0.15),
+                    "ocbus_max_delta_v": getattr(cfg, "COMMISSIONING_OCBUS_MAX_DELTA_V", 0.05),
+                },
+            }
         )
-    print(
-        f"    mode={mode!r}  COMMISSIONING_OC_CONFIRM_I_MA="
-        f"{getattr(cfg, 'COMMISSIONING_OC_CONFIRM_I_MA', 0.15)!r}  "
-        f"COMMISSIONING_OCBUS_MAX_DELTA_V="
-        f"{getattr(cfg, 'COMMISSIONING_OCBUS_MAX_DELTA_V', 0.05)!r}"
-    )
+    else:
+        print("[main] INA219 OC confirm timeout — last gate failures:")
+        for ln in last_reasons:
+            print(f"    {ln}")
+        print("    last per-channel snapshot (ok, mA, bus_v, err):")
+        for ch in range(cfg.NUM_CHANNELS):
+            r = last_readings.get(ch, {})
+            print(
+                f"      {anode_hw_label(ch)}: ok={r.get('ok')} I={r.get('current', '—')} "
+                f"bus_v={r.get('bus_v', '—')} err={r.get('error', '')!r}"
+            )
+        print(
+            f"    mode={mode!r}  COMMISSIONING_OC_CONFIRM_I_MA="
+            f"{getattr(cfg, 'COMMISSIONING_OC_CONFIRM_I_MA', 0.15)!r}  "
+            f"COMMISSIONING_OCBUS_MAX_DELTA_V="
+            f"{getattr(cfg, 'COMMISSIONING_OCBUS_MAX_DELTA_V', 0.05)!r}"
+        )
     return False
 
 
@@ -1129,13 +1261,37 @@ def _phase1_spec_native_capture(
         try:
             controller.enter_static_gate_off()
         except Exception as e:  # pragma: no cover
-            print(f"[commission] static_gate_low: {e}", file=sys.stderr)
+            if output_mode() == "jsonl":
+                emit(
+                    {
+                        "level": "warn",
+                        "cmd": "commission",
+                        "source": "commissioning",
+                        "event": "commission.static_gate_low.failed",
+                        "msg": "enter_static_gate_off failed",
+                        "err": {"type": type(e).__name__, "message": str(e)},
+                    }
+                )
+            else:
+                print(f"[commission] static_gate_low: {e}", file=sys.stderr)
 
     def _restore() -> None:
         try:
             controller.leave_static_gate_off()
         except Exception as e:  # pragma: no cover
-            print(f"[commission] leave static_gate: {e}", file=sys.stderr)
+            if output_mode() == "jsonl":
+                emit(
+                    {
+                        "level": "warn",
+                        "cmd": "commission",
+                        "source": "commissioning",
+                        "event": "commission.static_gate_restore.failed",
+                        "msg": "leave_static_gate_off failed",
+                        "err": {"type": type(e).__name__, "message": str(e)},
+                    }
+                )
+            else:
+                print(f"[commission] leave static_gate: {e}", file=sys.stderr)
 
     def _capture_once() -> tuple[float | None, str]:
         with _commissioning_pwm_hz_context(controller):
@@ -1183,7 +1339,8 @@ def run(
         )
 
     if verbose:
-        print()
+        if output_mode() != "jsonl":
+            print()
         if _commissioning_field_mode():
             print_commission_section(
                 "Phase 1 — native Ecorr (field: anodes installed, MOSFETs off)"
@@ -1251,7 +1408,8 @@ def run(
                 sim_state=sim_state,
             )
         if verbose:
-            print()
+            if output_mode() != "jsonl":
+                print()
             print_commission_section("Phase 1b — OCP with anodes in bath (MOSFETs off)")
         native_in, cap2 = _phase1_spec_native_capture(
             reference,
@@ -1300,7 +1458,8 @@ def run(
             f"Wall limit: {wto:g} s from here (COMMISSIONING_WALL_TIMEOUT_S)"
         )
     if verbose:
-        print()
+        if output_mode() != "jsonl":
+            print()
         print_commission_section("Phase 2 — ramp to target shift")
         for _line in _phase2_active_channel_lines():
             log(_line)
@@ -1662,7 +1821,8 @@ def _phase2_3_ramp_lock(
         float(getattr(cfg, "COMMISSIONING_PHASE3_LOCK_SETTLE_S", 30.0)),
     )
     if verbose:
-        print()
+        if output_mode() != "jsonl":
+            print()
         print_commission_section("Phase 3 — lock, final OC, and save")
     log(
         f"Lock {current_target_ma:.3f} mA/ch — {phase3_s:.0f}s final regulate, then last instant-off"
@@ -1773,7 +1933,8 @@ def run_native_only(
     controller.all_outputs_off()
 
     if verbose:
-        print()
+        if output_mode() != "jsonl":
+            print()
         if _commissioning_field_mode():
             print_commission_section(
                 "Phase 1 — native only (field: single OCP baseline)"
@@ -1827,7 +1988,8 @@ def run_native_only(
                 sim_state=sim_state,
             )
         if verbose:
-            print()
+            if output_mode() != "jsonl":
+                print()
             print_commission_section("Phase 1b — OCP with anodes in bath (MOSFETs off)")
         native_in, r2 = _phase1_spec_native_capture(
             reference, controller, sim_state, on_relax_progress=on_relax_progress

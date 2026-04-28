@@ -43,6 +43,7 @@ def run_iccp_forever(args: Namespace) -> int:
     )
 
     import config.settings as cfg
+    from cli_events import emit, output_mode
 
     Path(cfg.LOG_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -96,34 +97,86 @@ def run_iccp_forever(args: Namespace) -> int:
 
     _ac = getattr(cfg, "ACTIVE_CHANNEL_INDICES", None)
     _ac_s = "all" if _ac is None else ",".join(str(i) for i in sorted(_ac))
-    print(
-        f"CoilShield starting (sim={sim}, TARGET_MA={cfg.TARGET_MA}, "
-        f"anodes={_ac_s}, clear fault: touch {cfg.CLEAR_FAULT_FILE})"
-    )
     _tp = cfg.resolved_telemetry_paths()
-    print(
-        f"[main] Telemetry: latest.json ← {_tp['latest_json']}  "
-        f"SQLite ← {_tp['sqlite_db']}  (LOG_DIR via {_tp['log_dir_source']})"
-    )
-    print(f"[main] Reference path: {ref_hw_message()}")
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "start",
+                "source": "iccp_runtime",
+                "event": "start.env",
+                "msg": "controller starting",
+                "data": {
+                    "sim": bool(sim),
+                    "target_ma": float(cfg.TARGET_MA),
+                    "active_channels": _ac_s,
+                    "clear_fault_file": str(cfg.CLEAR_FAULT_FILE),
+                    "telemetry_paths": _tp,
+                    "ref_hw_message": ref_hw_message(),
+                },
+            }
+        )
+    else:
+        print(
+            f"CoilShield starting (sim={sim}, TARGET_MA={cfg.TARGET_MA}, "
+            f"anodes={_ac_s}, clear fault: touch {cfg.CLEAR_FAULT_FILE})"
+        )
+        print(
+            f"[main] Telemetry: latest.json ← {_tp['latest_json']}  "
+            f"SQLite ← {_tp['sqlite_db']}  (LOG_DIR via {_tp['log_dir_source']})"
+        )
+        print(f"[main] Reference path: {ref_hw_message()}")
 
     if not sim and not sensors.ina219_sensors_ready():
-        print(
-            "[main] WARNING: anode INA219 hardware not initialized — no shunt/bus current for "
-            "the control loop until I²C is fixed; see docs/ina219-i2c-bringup.md"
-        )
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "warn",
+                    "cmd": "start",
+                    "source": "iccp_runtime",
+                    "event": "start.hw.warn",
+                    "msg": "anode INA219 hardware not initialized",
+                }
+            )
+        else:
+            print(
+                "[main] WARNING: anode INA219 hardware not initialized — no shunt/bus current for "
+                "the control loop until I²C is fixed; see docs/ina219-i2c-bringup.md"
+            )
 
     if sim:
         print_sim_schedule(sensors)
 
     if not args.skip_commission:
         if commissioning.needs_commissioning():
-            print("[main] No commissioning data. Starting commissioning sequence...")
-            print("[main] (use --skip-commission to bypass for bench testing)")
+            if output_mode() == "jsonl":
+                emit(
+                    {
+                        "level": "info",
+                        "cmd": "start",
+                        "source": "iccp_runtime",
+                        "event": "start.commissioning.begin",
+                        "msg": "starting commissioning sequence",
+                    }
+                )
+            else:
+                print("[main] No commissioning data. Starting commissioning sequence...")
+                print("[main] (use --skip-commission to bypass for bench testing)")
             commissioned_target = commissioning.run(
                 ref, ctrl, sim_state=sim_state, verbose=True
             )
             cfg.TARGET_MA = commissioned_target
+            if output_mode() == "jsonl":
+                emit(
+                    {
+                        "level": "info",
+                        "cmd": "start",
+                        "source": "iccp_runtime",
+                        "event": "start.commissioning.end",
+                        "msg": "commissioning finished",
+                        "data": {"target_ma": float(cfg.TARGET_MA)},
+                    }
+                )
         else:
             ref.load_native()
             cfg.TARGET_MA = commissioning.load_commissioned_target()
@@ -139,18 +192,50 @@ def run_iccp_forever(args: Namespace) -> int:
                 nat_line = f"true_native(1a)={ref.native_mv:.1f} mV"
             else:
                 nat_line = f"native_mv={ref.native_mv:.1f} mV (single baseline)"
-            print(
-                f"[main] Commissioning loaded — {nat_line}  "
-                f"shift_baseline={bls} mV{gline}  target={cfg.TARGET_MA:.3f} mA"
-            )
+            if output_mode() == "jsonl":
+                emit(
+                    {
+                        "level": "info",
+                        "cmd": "start",
+                        "source": "iccp_runtime",
+                        "event": "start.commissioning.loaded",
+                        "msg": "commissioning loaded",
+                        "data": {
+                            "native_line": nat_line,
+                            "shift_baseline_mv": bl,
+                            "galvanic_offset_mv": ref.galvanic_offset_mv,
+                            "galvanic_offset_service_recommended": bool(
+                                ref.galvanic_offset_service_recommended
+                            ),
+                            "target_ma": float(cfg.TARGET_MA),
+                        },
+                    }
+                )
+            else:
+                print(
+                    f"[main] Commissioning loaded — {nat_line}  "
+                    f"shift_baseline={bls} mV{gline}  target={cfg.TARGET_MA:.3f} mA"
+                )
     else:
         ref.load_native()
         if not commissioning.needs_commissioning():
             cfg.TARGET_MA = commissioning.load_commissioned_target()
-        print(
-            f"[main] Commissioning skipped. native_mv="
-            f"{'set' if ref.native_mv is not None else 'not set'}"
-        )
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "info",
+                    "cmd": "start",
+                    "source": "iccp_runtime",
+                    "event": "start.commissioning.skipped",
+                    "msg": "commissioning skipped",
+                    "data": {"native_mv_set": ref.native_mv is not None},
+                }
+            )
+        else:
+            print(
+                f"[main] Commissioning skipped. native_mv="
+                f"{'set' if ref.native_mv is not None else 'not set'}"
+            )
 
     outer_loop_counter = 0
     outer_loop_interval = max(1, int(cfg.LOG_INTERVAL_S / cfg.SAMPLE_INTERVAL_S))

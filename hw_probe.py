@@ -44,6 +44,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 
+from cli_events import emit, output_mode
+
 try:
     import config.settings as cfg
 except ImportError:
@@ -90,6 +92,18 @@ GPIO_HIGH_V = 3.3  # BCM logic high; gate drive is 0..3.3 V, not the 5 V anode s
 
 
 def section(title: str) -> None:
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "probe",
+                "source": "hw_probe",
+                "event": "probe.section",
+                "msg": title,
+                "data": {"title": title},
+            }
+        )
+        return
     print(f"\n{'═' * 62}")
     print(f"  {title}")
     print(f"{'═' * 62}")
@@ -182,6 +196,19 @@ def _ina_ch_indices(ch_filter: frozenset[int] | None) -> list[int]:
 
 
 def _i2c_diagnostic(e: BaseException, bus: int) -> None:
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "error",
+                "cmd": "probe",
+                "source": "hw_probe",
+                "event": "probe.i2c.diagnostic",
+                "msg": "i2c diagnostic",
+                "data": {"bus": int(bus)},
+                "err": {"type": type(e).__name__, "message": str(e)},
+            }
+        )
+        return
     print("\n  [!] I2C diagnostic:")
     print(f"      Error: {e!r}")
     try:
@@ -208,7 +235,19 @@ def scan_i2c(bus: int) -> list[int]:
     try:
         import smbus2
     except ImportError:
-        print("  [!] smbus2 not installed — pip install smbus2")
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "error",
+                    "cmd": "probe",
+                    "source": "hw_probe",
+                    "event": "probe.dependency.missing",
+                    "msg": "smbus2 not installed",
+                    "data": {"package": "smbus2"},
+                }
+            )
+        else:
+            print("  [!] smbus2 not installed — pip install smbus2")
         return []
 
     found: list[int] = []
@@ -224,11 +263,289 @@ def scan_i2c(bus: int) -> list[int]:
         finally:
             b.close()
     except OSError as e:
-        print(f"  [!] Could not open I2C bus {bus}: {e}")
-        _i2c_diagnostic(e, bus)
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "error",
+                    "cmd": "probe",
+                    "source": "hw_probe",
+                    "event": "probe.i2c.open_failed",
+                    "msg": f"could not open I2C bus {bus}",
+                    "data": {"bus": int(bus)},
+                    "err": {"type": type(e).__name__, "message": str(e)},
+                }
+            )
+        else:
+            print(f"  [!] Could not open I2C bus {bus}: {e}")
+            _i2c_diagnostic(e, bus)
     except Exception as e:
-        print(f"  [!] Could not open I2C bus {bus}: {e}")
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "error",
+                    "cmd": "probe",
+                    "source": "hw_probe",
+                    "event": "probe.i2c.open_failed",
+                    "msg": f"could not open I2C bus {bus}",
+                    "data": {"bus": int(bus)},
+                    "err": {"type": type(e).__name__, "message": str(e)},
+                }
+            )
+        else:
+            print(f"  [!] Could not open I2C bus {bus}: {e}")
     return found
+
+
+def _emit_step_start(step: str) -> None:
+    emit(
+        {
+            "level": "info",
+            "cmd": "probe",
+            "source": "hw_probe",
+            "event": "probe.step.start",
+            "msg": step,
+            "data": {"step": step},
+        }
+    )
+
+
+def _emit_step_end(step: str, *, ok: bool) -> None:
+    emit(
+        {
+            "level": "info" if ok else "warn",
+            "cmd": "probe",
+            "source": "hw_probe",
+            "event": "probe.step.end",
+            "msg": step,
+            "data": {"step": step, "ok": bool(ok)},
+        }
+    )
+
+
+def _probe_jsonl(args: argparse.Namespace, *, ads_bus: int) -> int:
+    """
+    JSONL probe path: emit structured events only (no human printing).
+    """
+    from i2c_bench import (
+        INA219_DEFAULT_CONFIG_WORD,
+        ads1115_read_single_ended,
+        ina219_read,
+        ina219_write_config,
+        mux_select_on_bus,
+    )
+
+    rc = 0
+    bus = int(args.bus)
+    shunt_ohms = float(args.shunt)
+    force_init = bool(args.init)
+    ch_filter: frozenset[int] | None = args._ch_filter  # injected in main()
+
+    # STEP 1: idle scan + optional downstream mux pings
+    step = "i2c_scan"
+    _emit_step_start(step)
+    found = scan_i2c(bus)
+    emit(
+        {
+            "level": "info",
+            "cmd": "probe",
+            "source": "hw_probe",
+            "event": "probe.i2c.scan.result",
+            "msg": "idle I2C scan",
+            "data": {
+                "bus": bus,
+                "found": found,
+                "found_hex": [hex(a) for a in found],
+                "expected_ina219": [int(a) for a in INA219_ADDRESSES],
+                "expected_ads1115": int(ADS1115_ADDRESS),
+            },
+        }
+    )
+    mux_r = mux_downstream_i2c_probe(bus)
+    if mux_r is not None:
+        emit(
+            {
+                "level": "warn" if mux_r.error else "info",
+                "cmd": "probe",
+                "source": "hw_probe",
+                "event": "probe.i2c.mux_downstream",
+                "msg": "downstream mux probe",
+                "data": {
+                    "error": mux_r.error,
+                    "ina_rows": [
+                        {"ch": ch, "tca_ch": tca, "addr": addr, "ok": ok}
+                        for (ch, tca, addr, ok) in mux_r.ina_rows
+                    ],
+                    "ads_checked": bool(mux_r.ads_checked),
+                    "ads_tca_ch": mux_r.ads_tca_ch,
+                    "ads_addr": int(mux_r.ads_addr),
+                    "ads_ok": bool(mux_r.ads_ok),
+                },
+            }
+        )
+    _emit_step_end(step, ok=bool(found))
+    if not found:
+        return 1
+
+    # STEP 2: INA219 reads (selected channels)
+    if not bool(args.skip_ina):
+        step = "ina219_reads"
+        _emit_step_start(step)
+        idxs = _ina_ch_indices(ch_filter)
+        try:
+            import smbus2
+
+            sm = smbus2.SMBus(bus)
+        except Exception as e:
+            emit(
+                {
+                    "level": "error",
+                    "cmd": "probe",
+                    "source": "hw_probe",
+                    "event": "probe.ina.open_failed",
+                    "msg": "cannot open I2C bus for INA219 reads",
+                    "data": {"bus": bus},
+                    "err": {"type": type(e).__name__, "message": str(e)},
+                }
+            )
+            return 1
+        try:
+            if force_init:
+                for ch in idxs:
+                    addr = int(INA219_ADDRESSES[ch])
+                    if not _mux_select_anode_for_probe(sm, ch):
+                        emit(
+                            {
+                                "level": "warn",
+                                "cmd": "probe",
+                                "source": "hw_probe",
+                                "event": "probe.ina.init.skipped",
+                                "msg": "mux select failed before init",
+                                "data": {"channel": ch, "addr": addr},
+                            }
+                        )
+                        continue
+                    try:
+                        ina219_write_config(sm, addr, INA219_DEFAULT_CONFIG_WORD)
+                    except OSError as e:
+                        emit(
+                            {
+                                "level": "warn",
+                                "cmd": "probe",
+                                "source": "hw_probe",
+                                "event": "probe.ina.init.failed",
+                                "msg": "INA219 init failed",
+                                "data": {"channel": ch, "addr": addr},
+                                "err": {"type": type(e).__name__, "message": str(e)},
+                            }
+                        )
+
+            for ch in idxs:
+                addr = int(INA219_ADDRESSES[ch])
+                if not _mux_select_anode_for_probe(sm, ch):
+                    emit(
+                        {
+                            "level": "error",
+                            "cmd": "probe",
+                            "source": "hw_probe",
+                            "event": "probe.ina.reading",
+                            "msg": "INA219 read failed (mux select)",
+                            "data": {"channel": ch, "addr": addr, "ok": False},
+                        }
+                    )
+                    rc = max(rc, 1)
+                    continue
+                r = ina219_read(sm, addr, shunt_ohms)
+                ok = bool(r.get("ok"))
+                emit(
+                    {
+                        "level": "info" if ok else "error",
+                        "cmd": "probe",
+                        "source": "hw_probe",
+                        "event": "probe.ina.reading",
+                        "msg": "INA219 reading",
+                        "data": {
+                            "channel": ch,
+                            "addr": addr,
+                            "ok": ok,
+                            "bus_v": r.get("bus_v"),
+                            "shunt_mv": r.get("shunt_mv"),
+                            "current_ma": r.get("current_ma"),
+                            "power_mw": r.get("power_mw"),
+                            "error": r.get("error"),
+                        },
+                    }
+                )
+                if not ok:
+                    rc = max(rc, 1)
+        finally:
+            try:
+                sm.close()
+            except Exception:
+                pass
+        _emit_step_end(step, ok=(rc == 0))
+
+    # STEP 3: ADS1115 reads
+    if not bool(args.skip_ads):
+        step = "ads1115_reads"
+        _emit_step_start(step)
+        addr = int(ADS1115_ADDRESS if args.ads1115 is None else int(args.ads1115))
+        mux_addr = getattr(cfg, "I2C_MUX_ADDRESS", None) if cfg else None
+        mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None) if cfg else None
+        try:
+            import smbus2
+
+            sm = smbus2.SMBus(int(ads_bus))
+        except Exception as e:
+            emit(
+                {
+                    "level": "error",
+                    "cmd": "probe",
+                    "source": "hw_probe",
+                    "event": "probe.ads.open_failed",
+                    "msg": "cannot open I2C bus for ADS1115 reads",
+                    "data": {"bus": int(ads_bus), "addr": addr},
+                    "err": {"type": type(e).__name__, "message": str(e)},
+                }
+            )
+            return 1
+        try:
+            mux_select_on_bus(sm, mux_addr, mux_ch)
+            vals: list[dict[str, float]] = []
+            for ch in range(4):
+                v = float(ads1115_read_single_ended(sm, addr, ch, ADS1115_FSR_V))
+                vals.append({"ain": ch, "v": v, "mv": v * 1000.0})
+                emit(
+                    {
+                        "level": "info",
+                        "cmd": "probe",
+                        "source": "hw_probe",
+                        "event": "probe.ads.reading",
+                        "msg": "ADS1115 reading",
+                        "data": {"addr": addr, "bus": int(ads_bus), "ain": ch, "v": v, "mv": v * 1000.0},
+                    }
+                )
+            _emit_step_end(step, ok=True)
+        except Exception as e:
+            emit(
+                {
+                    "level": "error",
+                    "cmd": "probe",
+                    "source": "hw_probe",
+                    "event": "probe.ads.read_failed",
+                    "msg": "ADS1115 read failed",
+                    "data": {"addr": addr, "bus": int(ads_bus), "mux_addr": mux_addr, "mux_ch": mux_ch},
+                    "err": {"type": type(e).__name__, "message": str(e)},
+                }
+            )
+            rc = max(rc, 1)
+            _emit_step_end(step, ok=False)
+        finally:
+            try:
+                sm.close()
+            except Exception:
+                pass
+
+    return int(rc)
 
 
 def _i2c_ping_device(sb: object, addr: int) -> bool:
@@ -1101,6 +1418,11 @@ def main() -> int:
         )
     except ValueError as e:
         ap.error(str(e))
+
+    # Stash for JSONL probe path (avoid re-parsing).
+    args._ch_filter = ch_filter  # type: ignore[attr-defined]
+    if output_mode() == "jsonl":
+        return _probe_jsonl(args, ads_bus=int(ads_bus))
 
     print("\n┌─────────────────────────────────────────────────────────┐")
     print("│   CoilShield hw_probe — smbus2 INA219 + ADS1115        │")

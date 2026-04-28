@@ -7,6 +7,7 @@ from typing import Any
 
 from channel_labels import anode_label
 from reference import ref_raw_legend
+from cli_events import emit, output_mode
 
 # Match print_status_table width for visual continuity in commission / probe text.
 CONSOLE_COMMISSION_WIDTH = 80
@@ -19,11 +20,34 @@ def wall_clock_s() -> str:
 
 def print_commission_header() -> None:
     """One line like ``CoilShield starting…`` in ``iccp start`` (foreground commission only)."""
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "commission",
+                "source": "console_ui",
+                "event": "commission.header",
+                "msg": "commissioning started",
+            }
+        )
+        return
     print("CoilShield commissioning (Ctrl+C to stop; writes commissioning.json)")
 
 
 def print_commission_section(title: str, *, width: int = CONSOLE_COMMISSION_WIDTH) -> None:
     """Section boundary — same idiom as rule lines in :func:`print_status_table`."""
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "commission",
+                "source": "console_ui",
+                "event": "commission.section",
+                "msg": title,
+                "data": {"title": title, "width": int(width)},
+            }
+        )
+        return
     print("─" * width)
     print(f"  {title}")
     print("─" * width)
@@ -31,6 +55,17 @@ def print_commission_section(title: str, *, width: int = CONSOLE_COMMISSION_WIDT
 
 def commission_log_main(msg: str) -> None:
     """User-facing line during commission — matches ``[main]`` in :func:`iccp_runtime.run_iccp_forever`."""
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "commission",
+                "source": "console_ui",
+                "event": "commission.log",
+                "msg": msg,
+            }
+        )
+        return
     print(f"[main] {msg}")
 
 
@@ -78,6 +113,25 @@ def commission_ina_compact(
 def print_sim_schedule(sensor_module: object) -> None:
     scale = getattr(sensor_module, "SIM_REAL_S_PER_SIM_HOUR", 10.0)
     real_minutes = (86400.0 / (3600.0 / float(scale))) / 60.0
+    if output_mode() == "jsonl":
+        cycles = getattr(sensor_module, "COOLING_CYCLES", ())
+        params = getattr(sensor_module, "ANODE_WET_PARAMS", ())
+        emit(
+            {
+                "level": "info",
+                "cmd": "start",
+                "source": "console_ui",
+                "event": "sim.schedule",
+                "msg": "sim schedule",
+                "data": {
+                    "sim_real_s_per_sim_hour": float(scale),
+                    "real_minutes_per_sim_day": float(real_minutes),
+                    "cooling_cycles": list(cycles),
+                    "anode_wet_params": list(params),
+                },
+            }
+        )
+        return
     print(
         f"[sim] 24-hour window → {real_minutes:.0f} real minutes "
         f"(SIM_TIME_SCALE={int(scale)})"
@@ -123,6 +177,42 @@ def print_status_table(
     channels: list[int] | None = None,
 ) -> None:
     try:
+        if output_mode() == "jsonl":
+            # Emit a compact structured tick instead of printing an ASCII table.
+            row_ch = channels if channels is not None else list(range(len(readings) or 0))
+            rows: list[dict[str, Any]] = []
+            for i in row_ch:
+                r = readings.get(i, {}) if isinstance(readings, dict) else {}
+                rows.append(
+                    {
+                        "ch": int(i),
+                        "state": str(ch_status.get(i, "?")) if isinstance(ch_status, dict) else "?",
+                        "duty_pct": float(duties.get(i, 0.0)) if isinstance(duties, dict) else 0.0,
+                        "ok": bool(r.get("ok")) if isinstance(r, dict) else False,
+                        "bus_v": r.get("bus_v") if isinstance(r, dict) else None,
+                        "current_ma": r.get("current") if isinstance(r, dict) else None,
+                        "sensor_error": r.get("sensor_error") if isinstance(r, dict) else None,
+                    }
+                )
+            emit(
+                {
+                    "level": "info",
+                    "cmd": "start",
+                    "source": "console_ui",
+                    "event": "start.tick",
+                    "msg": "tick",
+                    "data": {
+                        "ref_raw_mv": float(ref_raw_mv),
+                        "ref_shift_mv": float(ref_shift) if ref_shift is not None else None,
+                        "ref_band": str(ref_band),
+                        "temp_f": float(temp_f) if temp_f is not None else None,
+                        "faults": [str(f) for f in faults] if isinstance(faults, list) else [],
+                        "tick_dt_s": float(tick_dt_s) if tick_dt_s is not None else None,
+                        "channels": rows,
+                    },
+                }
+            )
+            return
         if sim_line:
             print(sim_line)
         shift_str = (

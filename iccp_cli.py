@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 
 from platform_util import running_on_raspberry_pi
+from cli_events import emit, output_mode
 
 
 def _project_root() -> Path:
@@ -110,6 +111,18 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
         return
 
     if cmd == "start":
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "info",
+                    "cmd": cmd,
+                    "source": "iccp_cli",
+                    "event": "systemd.daemon_reload.ok",
+                    "msg": "daemon-reload ok (no restart before foreground start)",
+                    "data": {"unit": unit},
+                }
+            )
+            return
         print(
             "[iccp] systemctl daemon-reload OK (no restart before foreground start — "
             "would duplicate a systemd-run controller)."
@@ -117,6 +130,18 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
         return
     if cmd == "commission":
         _run(["stop", unit])
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "info",
+                    "cmd": cmd,
+                    "source": "iccp_cli",
+                    "event": "systemd.stop.requested",
+                    "msg": "systemctl stop before commission",
+                    "data": {"unit": unit},
+                }
+            )
+            return
         print(
             f"[iccp] systemctl stop {unit} (before commission; `restart` would leave the "
             "service driving PWM)."
@@ -124,10 +149,34 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
         return
     if cmd == "probe":
         _run(["stop", unit])
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "info",
+                    "cmd": cmd,
+                    "source": "iccp_cli",
+                    "event": "systemd.stop.requested",
+                    "msg": "systemctl stop before probe",
+                    "data": {"unit": unit},
+                }
+            )
+            return
         print(f"[iccp] systemctl stop {unit} (before probe — frees PWM / I2C).")
         return
 
     if cmd in _ICCP_CLI_READ_ONLY_SYSTEMD_KEYS:
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "info",
+                    "cmd": cmd,
+                    "source": "iccp_cli",
+                    "event": "systemd.daemon_reload.ok",
+                    "msg": "daemon-reload ok (read-only command)",
+                    "data": {"unit": unit},
+                }
+            )
+            return
         print(
             "[iccp] systemctl daemon-reload OK "
             "(tui / dashboard / live / diag do not restart the service)."
@@ -135,8 +184,33 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
         return
 
     if _run(["restart", unit]) == 0:
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "info",
+                    "cmd": cmd,
+                    "source": "iccp_cli",
+                    "event": "systemd.restart.ok",
+                    "msg": "systemctl restart ok",
+                    "data": {"unit": unit},
+                }
+            )
+            return
         print(f"[iccp] systemctl daemon-reload && systemctl restart {unit}")
     else:
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "error",
+                    "cmd": cmd,
+                    "source": "iccp_cli",
+                    "event": "systemd.restart.failed",
+                    "msg": "systemctl restart failed",
+                    "data": {"unit": unit},
+                },
+                stream=sys.stdout,
+            )
+            return
         print(
             f"[iccp] systemctl restart {unit} failed (no unit? set ICCP_SYSTEMD_UNIT). "
             "Disable with ICCP_SYSTEMD_SYNC=0.",
@@ -171,15 +245,13 @@ def _print_help() -> None:
                              Field tunables: COILSHIELD_TARGET_MA, COILSHIELD_REF_ADS_SCALE,
                              COILSHIELD_ADS1115_FSR_V, optional COILSHIELD_MUX_ADDRESS for TCA rigs, …
 
-  iccp commission [--sim] [--force] [--native-only] [--no-anode-prompts]
+  iccp commission [--sim] [--force] [--native-only] [--with-prompts]
                              Self-commission (writes commissioning.json).
                              On Pi uses hardware unless --sim. Aborts if latest.json is fresh
                              unless --force (stop the iccp service first).
                              --native-only runs Phase 1 only (native baseline re-capture).
-                             Without --no-anode-prompts, waits for Enter: anodes out (Phase 1),
-                             then anodes in (before Phase 2). Disabled for sim, pipes, or
-                             COMMISSIONING_ANODE_PLACEMENT_PROMPTS=0 / ICCP_COMMISSION_NO_ANODE_PROMPTS=1,
-                             or field mode (COMMISSIONING_FIELD_MODE=1 or ICCP_COMMISSION_FIELD_MODE=1).
+                             Default is non-interactive (no Enter pauses). Use --with-prompts
+                             to restore guided anode placement pauses for an operator.
                              Phase-2 mA search: ``COMMISSIONING_RAMP_MODE`` in config — ``hybrid`` (v1: binary
                              + linear confirm), ``binary``, or ``linear``. Shunt: ``INA219_SHUNT_OHMS`` or
                              env ``COILSHIELD_INA219_SHUNT_OHMS`` (v1 = 1.0 Ω); see README.
@@ -218,6 +290,49 @@ override unit name with ICCP_SYSTEMD_UNIT=myunit.
 
 Install:  pip install -e .   (from repo root, in your venv)
 """
+    )
+
+
+def _split_human_flag(argv: list[str]) -> tuple[list[str], bool]:
+    """Strip global ``--human`` from argv; return (remaining_argv, human)."""
+    human = False
+    out: list[str] = []
+    for a in argv:
+        if a == "--human":
+            human = True
+            continue
+        out.append(a)
+    return out, human
+
+
+def _emit_cmd_begin(cmd: str, argv: list[str], root: Path) -> None:
+    emit(
+        {
+            "level": "info",
+            "cmd": cmd,
+            "source": "iccp_cli",
+            "event": "cmd.begin",
+            "msg": f"{cmd} begin",
+            "data": {
+                "argv": list(argv),
+                "project_root": str(root),
+            },
+        },
+        stream=sys.stdout,
+    )
+
+
+def _emit_cmd_end(cmd: str, rc: int, *, started_unix: float) -> None:
+    emit(
+        {
+            "level": "info",
+            "cmd": cmd,
+            "source": "iccp_cli",
+            "event": "cmd.end",
+            "msg": f"{cmd} end",
+            "data": {"exit_code": int(rc), "duration_s": round(time.time() - started_unix, 6)},
+        },
+        stream=sys.stdout,
     )
 
 
@@ -305,13 +420,51 @@ def _cmd_live() -> int:
 
     p = cfg.LOG_DIR / cfg.LATEST_JSON_NAME
     tp = cfg.resolved_telemetry_paths()
-    print(f"# Reading: {tp['latest_json']} (log_dir_source={tp['log_dir_source']})")
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "live",
+                "source": "iccp_cli",
+                "event": "live.reading",
+                "msg": "reading latest.json",
+                "data": {
+                    "latest_json": str(tp.get("latest_json")),
+                    "log_dir_source": str(tp.get("log_dir_source")),
+                },
+            }
+        )
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except Exception as e:
-        print(f"ERROR reading {p}: {e}", file=sys.stderr)
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "error",
+                    "cmd": "live",
+                    "source": "iccp_cli",
+                    "event": "live.read.failed",
+                    "msg": f"error reading {p}",
+                    "err": {"type": type(e).__name__, "message": str(e)},
+                }
+            )
+        else:
+            print(f"ERROR reading {p}: {e}", file=sys.stderr)
         return 1
-    print(json.dumps(data, indent=2))
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "live",
+                "source": "iccp_cli",
+                "event": "live.snapshot",
+                "msg": "latest snapshot",
+                "data": data,
+            }
+        )
+    else:
+        print(f"# Reading: {tp['latest_json']} (log_dir_source={tp['log_dir_source']})")
+        print(json.dumps(data, indent=2))
     return 0
 
 
@@ -347,6 +500,18 @@ def _cmd_version() -> int:
         v = md.version("coilshield-iccp")
     except Exception:
         v = "unknown (run: pip install -e . from repo root)"
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "version",
+                "source": "iccp_cli",
+                "event": "version",
+                "msg": "coilshield-iccp version",
+                "data": {"package": "coilshield-iccp", "version": v},
+            }
+        )
+        return 0
     print(f"coilshield-iccp {v}")
     return 0
 
@@ -561,6 +726,13 @@ def main() -> int:
         _print_help()
         return 0
 
+    argv, human = _split_human_flag(argv)
+    if human:
+        os.environ["ICCP_OUTPUT"] = "human"
+    else:
+        # Default: JSONL for GUI parsing.
+        os.environ.setdefault("ICCP_OUTPUT", "jsonl")
+
     cmd = argv[0]
     rest = argv[1:]
 
@@ -575,12 +747,19 @@ def main() -> int:
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
+    started = time.time()
+    if output_mode() == "jsonl":
+        _emit_cmd_begin(cmd, sys.argv[1:], root)
+
     from config.argv_log_dir import apply_coilshield_log_dir_from_argv
     from config.argv_channels import apply_coilshield_active_channels_from_argv
 
     apply_coilshield_log_dir_from_argv(argv)
     if apply_coilshield_active_channels_from_argv(argv) == 2:
-        return 2
+        rc = 2
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, rc, started_unix=started)
+        return rc
 
     _sync_systemd_for_iccp_cli(cmd)
 
@@ -588,48 +767,84 @@ def main() -> int:
         rest, force_start = _split_force_flag(rest)
         blocked = _abort_if_systemd_iccp_active_for_foreground_start(force_start)
         if blocked is not None:
-            return blocked
+            rc = int(blocked)
+            if output_mode() == "jsonl":
+                _emit_cmd_end(cmd, rc, started_unix=started)
+            return rc
         os.environ.setdefault("COILSHIELD_SIM", "0")
         sys.argv = ["main.py", "--real", "--verbose", "--skip-commission"] + rest
         import main as app
 
-        return int(app.main())
+        rc = int(app.main())
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, rc, started_unix=started)
+        return rc
 
     if cmd == "commission":
-        return _cmd_commission(rest)
+        if "--with-prompts" in rest:
+            os.environ["ICCP_COMMISSION_WITH_PROMPTS"] = "1"
+            rest = [a for a in rest if a != "--with-prompts"]
+        rc = _cmd_commission(rest)
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, int(rc), started_unix=started)
+        return rc
 
     if cmd == "probe":
         sys.argv = ["hw_probe.py"] + rest
         import hw_probe
 
-        return int(hw_probe.main())
+        rc = int(hw_probe.main())
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, rc, started_unix=started)
+        return rc
 
     if cmd == "tui":
         import tui as tui_mod
 
-        return int(tui_mod.main(rest))
+        rc = int(tui_mod.main(rest))
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, rc, started_unix=started)
+        return rc
 
     if cmd == "dashboard":
         sys.argv = ["dashboard.py"] + rest
         import dashboard as dash_mod
 
         dash_mod.main()
-        return 0
+        rc = 0
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, rc, started_unix=started)
+        return rc
 
     if cmd == "live":
-        return _cmd_live()
+        rc = _cmd_live()
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, int(rc), started_unix=started)
+        return rc
 
     if cmd == "diag":
-        return _cmd_diag(rest)
+        rc = _cmd_diag(rest)
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, int(rc), started_unix=started)
+        return rc
 
     if cmd == "clear-fault":
-        return _cmd_clear_fault(rest)
+        rc = _cmd_clear_fault(rest)
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, int(rc), started_unix=started)
+        return rc
 
     if cmd == "version":
-        return _cmd_version()
+        rc = _cmd_version()
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, int(rc), started_unix=started)
+        return rc
 
     print(f"Internal error: command {cmd!r} missing handler.", file=sys.stderr)
-    return 2
+    rc = 2
+    if output_mode() == "jsonl":
+        _emit_cmd_end(cmd, int(rc), started_unix=started)
+    return rc
 
 
 if __name__ == "__main__":
