@@ -110,6 +110,18 @@ def section(title: str) -> None:
 
 
 def pause(msg: str = "  Press Enter to continue (Ctrl+C to quit)...") -> None:
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "probe",
+                "source": "hw_probe",
+                "event": "probe.prompt.skipped",
+                "msg": "non-interactive: skipping Enter pause",
+                "data": {"hint": msg[:200]},
+            }
+        )
+        return
     try:
         input(msg)
     except KeyboardInterrupt:

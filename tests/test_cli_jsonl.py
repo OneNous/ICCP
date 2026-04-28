@@ -29,6 +29,8 @@ def test_version_default_is_jsonl(monkeypatch: pytest.MonkeyPatch, capsys: pytes
     for e in events:
         assert e.get("schema") == "iccp.cli.event.v1"
         assert isinstance(e.get("ts_unix"), (int, float))
+        for key in ("cmd", "event", "level", "source", "msg"):
+            assert key in e, f"missing {key!r} in {e!r}"
 
 
 def test_version_human_flag_preserves_text(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:

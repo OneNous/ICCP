@@ -5,10 +5,10 @@ CoilShield ``iccp`` CLI — the single supported entry point for this project.
 Every subcommand has exactly one canonical spelling. No aliases.
 
   iccp start [args ...]     Run the controller (defaults: --real --verbose --skip-commission)
-  iccp commission [--sim] [--force] [--native-only] [--no-anode-prompts]
+  iccp commission [--sim] [--force] [--native-only] [--with-prompts] [--no-anode-prompts]
                             Self-commissioning (writes commissioning.json).
                             --native-only runs Phase 1 only (native baseline re-capture).
-                            Pauses for anode in/out unless --no-anode-prompts (or non-TTY / sim).
+                            Default: non-interactive. Use --with-prompts for guided Enter pauses.
   iccp probe [args ...]     Hardware probe (see `iccp probe --help` / hw_probe.py)
   iccp tui [--poll-interval SEC] [--log-dir PATH]
                             Terminal UI (Textual)
@@ -103,11 +103,23 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
             return 1
 
     if _run(["daemon-reload"]) != 0:
-        print(
-            "[iccp] `sudo systemctl daemon-reload` failed — check sudo; disable auto-sync "
-            "with ICCP_SYSTEMD_SYNC=0",
-            file=sys.stderr,
-        )
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "error",
+                    "cmd": cmd,
+                    "source": "iccp_cli",
+                    "event": "systemd.daemon_reload.fail",
+                    "msg": "sudo systemctl daemon-reload failed",
+                    "data": {"unit": unit},
+                }
+            )
+        else:
+            print(
+                "[iccp] `sudo systemctl daemon-reload` failed — check sudo; disable auto-sync "
+                "with ICCP_SYSTEMD_SYNC=0",
+                file=sys.stderr,
+            )
         return
 
     if cmd == "start":
@@ -129,6 +141,17 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
         )
         return
     if cmd == "commission":
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "info",
+                    "cmd": cmd,
+                    "source": "iccp_cli",
+                    "event": "systemd.daemon_reload.ok",
+                    "msg": "daemon-reload ok",
+                    "data": {"unit": unit},
+                }
+            )
         _run(["stop", unit])
         if output_mode() == "jsonl":
             emit(
@@ -148,6 +171,17 @@ def _sync_systemd_for_iccp_cli(cmd: str) -> None:
         )
         return
     if cmd == "probe":
+        if output_mode() == "jsonl":
+            emit(
+                {
+                    "level": "info",
+                    "cmd": cmd,
+                    "source": "iccp_cli",
+                    "event": "systemd.daemon_reload.ok",
+                    "msg": "daemon-reload ok",
+                    "data": {"unit": unit},
+                }
+            )
         _run(["stop", unit])
         if output_mode() == "jsonl":
             emit(
@@ -325,7 +359,7 @@ def _emit_cmd_begin(cmd: str, argv: list[str], root: Path) -> None:
 def _emit_cmd_end(cmd: str, rc: int, *, started_unix: float) -> None:
     emit(
         {
-            "level": "info",
+            "level": "error" if int(rc) != 0 else "info",
             "cmd": cmd,
             "source": "iccp_cli",
             "event": "cmd.end",
@@ -749,7 +783,7 @@ def main() -> int:
 
     started = time.time()
     if output_mode() == "jsonl":
-        _emit_cmd_begin(cmd, sys.argv[1:], root)
+        _emit_cmd_begin(cmd, argv, root)
 
     from config.argv_log_dir import apply_coilshield_log_dir_from_argv
     from config.argv_channels import apply_coilshield_active_channels_from_argv
@@ -784,6 +818,8 @@ def main() -> int:
         if "--with-prompts" in rest:
             os.environ["ICCP_COMMISSION_WITH_PROMPTS"] = "1"
             rest = [a for a in rest if a != "--with-prompts"]
+        else:
+            os.environ.pop("ICCP_COMMISSION_WITH_PROMPTS", None)
         rc = _cmd_commission(rest)
         if output_mode() == "jsonl":
             _emit_cmd_end(cmd, int(rc), started_unix=started)

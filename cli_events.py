@@ -14,10 +14,10 @@ def output_mode() -> str:
     """
     Output mode for CLI-facing logs.
 
-    - "human" (default): preserve legacy human console output for library calls/tests.
-    - "jsonl": emit one JSON object per line (the `iccp` CLI sets this by default).
+    - "jsonl" (default when ``ICCP_OUTPUT`` is unset): one JSON object per line.
+    - "human": legacy operator console (``iccp … --human``).
     """
-    m = (os.environ.get("ICCP_OUTPUT") or "human").strip().lower()
+    m = (os.environ.get("ICCP_OUTPUT") or "jsonl").strip().lower()
     return "human" if m == "human" else "jsonl"
 
 
@@ -26,10 +26,13 @@ def now_ts_unix() -> float:
 
 
 def exception_to_err(e: BaseException) -> dict[str, Any]:
+    tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+    if len(tb) > 12000:
+        tb = tb[:12000] + "\n…(traceback truncated)"
     return {
         "type": type(e).__name__,
         "message": str(e),
-        "traceback": "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+        "traceback": tb,
     }
 
 
@@ -53,6 +56,7 @@ def emit(event: dict[str, Any], *, stream: TextIO | None = None) -> None:
             "schema": SCHEMA,
             "ts_unix": now_ts_unix(),
             "level": "error",
+            "cmd": "iccp",
             "source": "cli_events",
             "event": "emit.failed",
             "msg": "failed to json-encode event",

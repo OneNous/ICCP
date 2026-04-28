@@ -404,7 +404,31 @@ def _anode_placement_pause(
                 print(line)
 
         on_timeout = _on_timeout
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "commission",
+                "source": "commissioning",
+                "event": "commission.prompt.waiting",
+                "msg": f"waiting for operator ({step})",
+                "step": step,
+                "data": {"step": step, "next": next_on_enter},
+            }
+        )
     _readline_wait_enter_for_anode_prompt(on_select_timeout=on_timeout)
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info",
+                "cmd": "commission",
+                "source": "commissioning",
+                "event": "commission.prompt.received",
+                "msg": f"operator acknowledged ({step})",
+                "step": step,
+                "data": {"step": step},
+            }
+        )
 
 
 def _native_capture_fail_hint(cap_reason: str) -> str:
