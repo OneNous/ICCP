@@ -1,6 +1,13 @@
 """
 CoilShield — reference electrode (polarization shift input).
 
+**Hybrid model (shift + optional absolute mV)** — commissioning and the inner loop use
+**polarization shift** only: ``shift_mv = raw − baseline``, **positive** when protected
+(``docs/iccp-requirements.md``). When ``config.settings.CATHODE_ABSOLUTE_POTENTIAL_ENABLED``
+is True, ``polarization_safety`` also evaluates **the same raw scalar** against Ag/AgCl
+window constants after ``CATHODE_ABSOLUTE_MV_SIGN`` — see that module for wiring/sign
+discipline vs literature tables (negative mV = cathodic vs ref).
+
 **Shift (mV)** = `raw` − `baseline_mv_for_open_circuit` — matches a hand meter with **ref
 on +** and **structure/return on −**: CP makes the reading **increase** vs OCP, so shift is
 **positive** when protected.

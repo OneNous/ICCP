@@ -421,6 +421,7 @@ class ChannelState:
         self.polarize_retry_next_unix: float | None = None
         self.polarize_backoff_until_mono: float | None = None
         self.fault_reason: str = ""  # e.g. CANNOT_POLARIZE, OVERPROTECTION, REFERENCE_INVALID
+        self.fault_category: str | None = None  # FAULT_CATEGORY_*; None = legacy / transient
         self.last_shift_mv: float | None = None
 
 
@@ -791,6 +792,9 @@ class Controller:
                     self._latch_fault(
                         ch,
                         f"{anode_hw_label(ch)} OVERCURRENT: {current_ma:.4f} mA (max {self._channel_max_ma(ch)} mA)",
+                        fault_category=str(
+                            getattr(cfg, "FAULT_CATEGORY_CURRENT_CAP", "CURRENT_CAP")
+                        ),
                     )
                     state.overcurrent_streak = 0
                 continue
@@ -799,12 +803,18 @@ class Controller:
                 self._latch_fault(
                     ch,
                     f"{anode_hw_label(ch)} UNDERVOLTAGE: {bus_v:.2f} V (min {cfg.MIN_BUS_V} V)",
+                    fault_category=str(
+                        getattr(cfg, "FAULT_CATEGORY_SENSOR_FAIL", "SENSOR_FAIL")
+                    ),
                 )
                 continue
             if bus_v > cfg.MAX_BUS_V:
                 self._latch_fault(
                     ch,
                     f"{anode_hw_label(ch)} OVERVOLTAGE: {bus_v:.2f} V (max {cfg.MAX_BUS_V} V)",
+                    fault_category=str(
+                        getattr(cfg, "FAULT_CATEGORY_SENSOR_FAIL", "SENSOR_FAIL")
+                    ),
                 )
                 continue
 
@@ -1007,7 +1017,8 @@ class Controller:
                 )
             return
 
-        # Immediate hysteresis recovery for overcurrent faults.
+        # Immediate hysteresis recovery for overcurrent faults (still manual category
+        # for taxonomy, but hysteresis clear is intentional — do not use timed retry).
         # Only attempt if the sensor read succeeded this tick.
         if "OVERCURRENT" in state.latch_message and r.get("ok"):
             current_ma = float(r["current"])
@@ -1022,10 +1033,16 @@ class Controller:
                 )
                 state.status = ChannelState.OPEN
                 state.latch_message = ""
+                state.fault_category = None
                 state.overcurrent_streak = 0
                 state.fault_retry_count += 1
                 return
             # Current still elevated — don't fall through to timed retry
+            return
+
+        manual_only = getattr(cfg, "FAULT_CATEGORIES_MANUAL_CLEAR_ONLY", frozenset())
+        cat = getattr(state, "fault_category", None)
+        if cat and cat in manual_only:
             return
 
         retry_interval = getattr(cfg, "FAULT_RETRY_INTERVAL_S", 60.0)
@@ -1040,6 +1057,7 @@ class Controller:
         )
         state.status = ChannelState.OPEN
         state.latch_message = ""
+        state.fault_category = None
         state.overcurrent_streak = 0
         state.fault_retry_count += 1
 
@@ -1182,7 +1200,13 @@ class Controller:
     def _channel_max_ma(self, ch: int) -> float:
         return float(getattr(cfg, "CHANNEL_MAX_MA", {}).get(ch, cfg.MAX_MA))
 
-    def _latch_fault(self, ch: int, msg: str) -> None:
+    def _latch_fault(
+        self,
+        ch: int,
+        msg: str,
+        *,
+        fault_category: str | None = None,
+    ) -> None:
         if _shared_return_pwm():
             self._pwm.set_duty_unified(0.0)
         else:
@@ -1190,8 +1214,20 @@ class Controller:
         self._states[ch].status = ChannelState.FAULT
         self._states[ch].latch_message = msg
         self._states[ch].fault_time = time.monotonic()
+        self._states[ch].fault_category = fault_category
         # Don't reset retry count here — it accumulates across latch cycles
         self._faults.append(msg)
+
+    def latch_polarization_cutoff_all(self, msg: str) -> None:
+        """
+        Hard polarization cutoff: every **active** channel → FAULT, PWM off.
+        Uses :data:`config.settings.FAULT_CATEGORY_POLARIZATION` (manual clear only).
+        """
+        cat = str(getattr(cfg, "FAULT_CATEGORY_POLARIZATION", "POLARIZATION"))
+        for ch in range(cfg.NUM_CHANNELS):
+            if not cfg.is_channel_active(ch):
+                continue
+            self._latch_fault(ch, msg, fault_category=cat)
 
     def _check_clear_fault(self) -> None:
         if not cfg.CLEAR_FAULT_FILE.exists():
@@ -1250,6 +1286,7 @@ class Controller:
             return
         state.status = ChannelState.OPEN
         state.latch_message = ""
+        state.fault_category = None
         state.fault_retry_count = 0
         state.overcurrent_streak = 0
         state.fault_time = 0.0
@@ -1417,7 +1454,17 @@ class Controller:
                             f"shift {shift_mv:.1f} mV < {target:.0f} mV after "
                             f"{t_pol_max:.0f}s × {retry_max} retries"
                         )
-                        self._latch_fault(ch, _latch_msg)
+                        self._latch_fault(
+                            ch,
+                            _latch_msg,
+                            fault_category=str(
+                                getattr(
+                                    cfg,
+                                    "FAULT_CATEGORY_CANNOT_POLARIZE",
+                                    "CANNOT_POLARIZE",
+                                )
+                            ),
+                        )
                         _set_state(state, STATE_V2_FAULT)
                     else:
                         state.polarize_backoff_until_mono = now + retry_interval
@@ -1473,7 +1520,15 @@ class Controller:
                             f"shift {shift_mv:.1f} mV > {over_max + hy_over_fault:.0f} mV "
                             f"sustained {t_over_fault:.0f}s"
                         )
-                        self._latch_fault(ch, msg)
+                        self._latch_fault(
+                            ch,
+                            msg,
+                            fault_category=str(
+                                getattr(
+                                    cfg, "FAULT_CATEGORY_OVERPROTECTION", "OVERPROTECTION"
+                                )
+                            ),
+                        )
                         _set_state(state, STATE_V2_FAULT)
                     continue
                 # Exit when shift drops back under MAX − HYST_OVER_EXIT for T_OVER_EXIT.

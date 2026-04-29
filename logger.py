@@ -20,7 +20,8 @@ cooling_cycles: one row per completed ICCP temperature band segment (same window
   within that segment; see feed_cooling_cycle / legacy ch_status). Correlates wet dwell
   with coil cooling cycles.
   latest.json reference keys (every tick): ref_raw_mv, ref_ads_sense, ref_shift_mv
-  (instant-off mV − OCP baseline; + when protected), ref_status, ref_hw_ok,
+  (instant-off mV − OCP baseline; + when protected), ref_status, polarization_state,
+  ref_hw_ok,
   ref_hw_message, ref_hint, ref_baseline_set, ref_depol_rate_mv_s (SQLite/CSV also carry
   raw/hw_ok/hint; hw_message, baseline_set, depol rate are CSV + JSON).
 
@@ -426,6 +427,7 @@ class DataLogger:
             ("ref_hw_ok", "INTEGER"),
             ("ref_hint", "TEXT"),
             ("ref_depol_rate_mv_s", "REAL"),
+            ("polarization_state", "TEXT"),
         ):
             if name not in cols:
                 alters.append(f"ALTER TABLE readings ADD COLUMN {name} {decl}")
@@ -635,6 +637,7 @@ class DataLogger:
         ref_valid: bool | None = None,
         ref_valid_reason: str | None = None,
         t_to_system_protected_s: float | None = None,
+        polarization_state: str | None = None,
         # Phase 1a/1b galvanic calibration (docs/galvanic-offset-calibration.md)
         native_true_anodes_out_mv: float | None = None,
         native_oc_anodes_in_mv: float | None = None,
@@ -899,6 +902,7 @@ class DataLogger:
             ref_hw_ok,
             ref_hint,
             ref_depol_rate_mv_s,
+            polarization_state,
         )
         self._maybe_periodic_purge()
 
@@ -1017,6 +1021,8 @@ class DataLogger:
             if t_to_system_protected_s is not None
             else None
         )
+        if polarization_state is not None and str(polarization_state).strip() != "":
+            payload["polarization_state"] = str(polarization_state).strip()
         _comm_h: dict = {}
         try:
             _cjp = cfg.PROJECT_ROOT / "commissioning.json"
@@ -1129,6 +1135,11 @@ class DataLogger:
         )
         row["ref_depol_rate_mv_s"] = (
             ref_depol_rate_mv_s if ref_depol_rate_mv_s is not None else ""
+        )
+        row["polarization_state"] = (
+            str(polarization_state).strip()
+            if polarization_state is not None and str(polarization_state).strip() != ""
+            else ""
         )
         self._csv_rows.append(row)
 
@@ -1255,6 +1266,7 @@ class DataLogger:
         ref_hw_ok: bool | None,
         ref_hint: str | None,
         ref_depol_rate_mv_s: float | None,
+        polarization_state: str | None,
     ) -> None:
         ch_col_names = ", ".join(
             f"ch{i}_state, ch{i}_ma, ch{i}_duty, ch{i}_bus_v, ch{i}_status, "
@@ -1287,10 +1299,10 @@ class DataLogger:
         col_names = (
             f"ts,ts_unix,wet,fault_latched,faults,{ch_col_names},total_ma,"
             f"supply_v_avg,total_power_w,cross_i_cv,cross_z_cv,ref_shift_mv,ref_status,temp_f,"
-            f"ref_raw_mv,ref_hw_ok,ref_hint,ref_depol_rate_mv_s"
+            f"ref_raw_mv,ref_hw_ok,ref_hint,ref_depol_rate_mv_s,polarization_state"
         )
         n_ch_cols = 10
-        n_params = 5 + cfg.NUM_CHANNELS * n_ch_cols + 3 + 2 + 3 + 3 + 1
+        n_params = 5 + cfg.NUM_CHANNELS * n_ch_cols + 3 + 2 + 3 + 3 + 1 + 1
         placeholders = ",".join(["?"] * n_params)
         ref_hw_sql = None if ref_hw_ok is None else (1 if ref_hw_ok else 0)
         params: tuple[object, ...] = (
@@ -1312,6 +1324,12 @@ class DataLogger:
             ref_hw_sql,
             ref_hint,
             ref_depol_rate_mv_s,
+            (
+                str(polarization_state).strip()
+                if polarization_state is not None
+                and str(polarization_state).strip() != ""
+                else None
+            ),
         )
         sql = f"INSERT INTO readings ({col_names}) VALUES ({placeholders})"
         ival = float(getattr(cfg, "SQLITE_FLUSH_INTERVAL_S", 0.0) or 0.0)

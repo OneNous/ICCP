@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import config.settings as cfg
+import polarization_safety as pol_safe
 import temp as temp_mod
 from iccp_electrolyte import cell_impedance_ohm
 from channel_labels import anode_hw_label
@@ -1870,6 +1871,18 @@ def _phase2_3_ramp_lock(
         log=log if verbose else None,
         wall_deadline_mono=comm_deadline,
     )
+    if pol_safe.absolute_potential_safety_enabled(cfg) and _final_raw is not None:
+        ev = pol_safe.cathode_mv_for_absolute_limits(float(_final_raw), cfg)
+        lo = float(getattr(cfg, "PROTECTION_WINDOW_MV_LO", -1069.0))
+        hi = float(getattr(cfg, "PROTECTION_WINDOW_MV_HI", -969.0))
+        if not pol_safe.instant_off_raw_in_protection_window(float(_final_raw), cfg):
+            abs_msg = (
+                f"Phase 3 instant-off cathode mV ({ev:.1f}) outside protection window "
+                f"[{lo:.0f}, {hi:.0f}] mV (Ag/AgCl scale after CATHODE_ABSOLUTE_MV_SIGN)"
+            )
+            if bool(getattr(cfg, "COMMISSIONING_ABSOLUTE_WINDOW_STRICT", False)):
+                raise RuntimeError(abs_msg)
+            log(f"WARNING: {abs_msg}")
     # Nested per-channel hints (docs/iccp-requirements.md §8.1 Phase 3). One reference
     # electrode → one system shift; per-channel copy is for schema compatibility only.
     r_z = _sensor_readings(sim_state)

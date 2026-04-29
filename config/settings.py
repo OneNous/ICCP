@@ -121,6 +121,60 @@ REF_ADC_BACKEND = "ads1115"
 # Field default Ag/AgCl sense; legacy bench Cu was ``copper_bench`` — informational for logs/docs.
 REF_ELECTRODE_KIND = "ag_agcl"
 
+# --- Product SKU / metal profile (absolute potential envelope; see polarization_safety.py) ---
+# ``COILSHIELD_SKU=Al`` (or ``aluminum`` / ``coilshield-al``) enables cathode absolute mV limits.
+_sku_env = (os.environ.get("COILSHIELD_SKU") or "generic").strip().lower()
+METAL_SKU: str = _sku_env if _sku_env else "generic"
+# When True, ``ref_raw_mv`` is compared to ``POLARIZATION_*`` after ``CATHODE_ABSOLUTE_MV_SIGN``.
+# Auto-enabled for aluminum-like SKUs unless explicitly forced off.
+_abs_env = (os.environ.get("COILSHIELD_CATHODE_ABSOLUTE_POTENTIAL") or "").strip().lower()
+if _abs_env in ("1", "true", "yes", "on"):
+    CATHODE_ABSOLUTE_POTENTIAL_ENABLED: bool = True
+elif _abs_env in ("0", "false", "no", "off"):
+    CATHODE_ABSOLUTE_POTENTIAL_ENABLED = False
+else:
+    CATHODE_ABSOLUTE_POTENTIAL_ENABLED = METAL_SKU in (
+        "al",
+        "aluminum",
+        "coilshield-al",
+        "coilshield_al",
+    )
+# Multiply ``ref_raw_mv`` before absolute checks if wiring/inversion does not match tables.
+CATHODE_ABSOLUTE_MV_SIGN: float = 1.0
+_sign_env = (os.environ.get("COILSHIELD_CATHODE_ABSOLUTE_MV_SIGN") or "").strip()
+if _sign_env:
+    CATHODE_ABSOLUTE_MV_SIGN = float(_sign_env)
+# Allow absolute-limit checks in COILSHIELD_SIM=1 (bench harness); default off.
+CATHODE_ABSOLUTE_SAFETY_IN_SIM: bool = (
+    os.environ.get("COILSHIELD_CATHODE_ABSOLUTE_SAFETY_IN_SIM", "0").strip() == "1"
+)
+# Aluminum vs Ag/AgCl (3M KCl) — Watkins/Davie window; hard cutoff with margin.
+PROTECTION_TARGET_MV: float = -1019.0
+PROTECTION_WINDOW_MV_LO: float = -1069.0  # alkaline (more negative) bound — do not go past
+PROTECTION_WINDOW_MV_HI: float = -969.0  # pitting (less negative) bound — stay at least this negative
+POLARIZATION_HARD_CUTOFF_MV: float = -1080.0  # latch all channels; manual clear only
+POLARIZATION_FLOOR_WARNING_MV: float = -900.0  # less negative than this → unprotected warning
+POLARIZATION_FLOOR_WARNING_DURATION_S: float = 300.0
+# If True, commissioning fails Phase 3 when instant-off raw is outside the protection window.
+COMMISSIONING_ABSOLUTE_WINDOW_STRICT: bool = False
+
+# --- Fault categories (manual clear vs auto-retry) ---
+FAULT_CATEGORY_TRANSIENT: str = "TRANSIENT"
+FAULT_CATEGORY_POLARIZATION: str = "POLARIZATION"
+FAULT_CATEGORY_CURRENT_CAP: str = "CURRENT_CAP"
+FAULT_CATEGORY_SENSOR_FAIL: str = "SENSOR_FAIL"
+FAULT_CATEGORY_OVERPROTECTION: str = "OVERPROTECTION"
+FAULT_CATEGORY_CANNOT_POLARIZE: str = "CANNOT_POLARIZE"
+FAULT_CATEGORIES_MANUAL_CLEAR_ONLY: frozenset[str] = frozenset(
+    {
+        FAULT_CATEGORY_POLARIZATION,
+        FAULT_CATEGORY_CURRENT_CAP,
+        FAULT_CATEGORY_SENSOR_FAIL,
+        FAULT_CATEGORY_OVERPROTECTION,
+        FAULT_CATEGORY_CANNOT_POLARIZE,
+    }
+)
+
 # Optional TCA9548A when anodes and ADS are on different downstream ports (legacy / alternate PCBs).
 # **Default: no mux** — all INA219 + ADS1115 on the same Pi SDA/SCL; unique 7-bit addresses only.
 # To use a multiplexer, set ``I2C_MUX_ADDRESS`` and the ``I2C_MUX_CHANNEL_*`` fields in this file
@@ -334,7 +388,7 @@ PROBE_MAX_MA = 2.0
 # --- Fault auto-recovery ---
 FAULT_AUTO_CLEAR = True
 FAULT_RETRY_INTERVAL_S = 60.0
-FAULT_RETRY_MAX = 10
+FAULT_RETRY_MAX = 3
 # Consecutive over-threshold current samples before OVERCURRENT latch (1 = legacy single-tick).
 OVERCURRENT_LATCH_TICKS = 1
 
@@ -503,6 +557,9 @@ OUTER_LOOP_POTENTIAL_MIN_S: float = 5.0
 # mV target while shift stays in the in-band window (|shift−center| > tol from above).
 OUTER_LOOP_TRIM_TO_SHIFT_CENTER = True
 OUTER_LOOP_SHIFT_TRIM_TOL_MV = 3.0
+# Session / field tuning aliases (used by ``update_potential_target`` when set).
+# Optional mV deadband for future outer-loop gating (session summary; not wired yet).
+OUTER_LOOP_DEADBAND_MV: float = 30.0
 # Optional Ag/AgCl linear trim vs pan temperature (°F only): raw mV += (temp_f − anchor)×coef.
 # Anchor is ``native_temp_f`` from commissioning.json when present; else ``REF_TEMP_COMP_BASE_F``.
 # Literature often quotes mV/°C — convert once: mV_per_F = mV_per_C × (5/9). Default 0 = off.

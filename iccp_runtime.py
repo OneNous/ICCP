@@ -24,6 +24,8 @@ _last_runtime_diag_ts: float = 0.0
 _last_deep_snapshot_ts: float = 0.0
 _last_native_recapture_attempt: float = 0.0
 _last_drift_alert_ts: float = 0.0
+_floor_warn_since_mono: float | None = None
+_last_floor_runtime_alert_mono: float = 0.0
 
 
 def run_iccp_forever(args: Namespace) -> int:
@@ -41,6 +43,7 @@ def run_iccp_forever(args: Namespace) -> int:
         ref_raw_legend,
         ref_ux_hint,
     )
+    import polarization_safety as pol_safe
 
     import config.settings as cfg
     from cli_events import emit, output_mode
@@ -245,6 +248,7 @@ def run_iccp_forever(args: Namespace) -> int:
 
     global _last_runtime_diag_ts, _last_deep_snapshot_ts
     global _last_native_recapture_attempt, _last_drift_alert_ts
+    global _floor_warn_since_mono, _last_floor_runtime_alert_mono
 
     def _run_reference_startup_stabilize(s: float) -> None:
         """
@@ -381,6 +385,7 @@ def run_iccp_forever(args: Namespace) -> int:
                     i: ctrl.channel_target_ma(i) for i in range(cfg.NUM_CHANNELS)
                 },
                 t_to_system_protected_s=ctrl.t_to_system_protected_s(),
+                polarization_state="disabled",
                 native_mv=ref.baseline_mv_for_shift(),
                 native_true_anodes_out_mv=ref.native_mv,
                 native_oc_anodes_in_mv=ref.native_oc_anodes_in_mv,
@@ -452,6 +457,37 @@ def run_iccp_forever(args: Namespace) -> int:
             else:
                 readings = sensors.read_all_real()
 
+            duties_before = ctrl.duties()
+            status_before = ctrl.channel_statuses()
+            polarization_state = "disabled"
+            abs_ok = pol_safe.absolute_potential_safety_enabled(cfg) and (
+                (not sim) or bool(getattr(cfg, "CATHODE_ABSOLUTE_SAFETY_IN_SIM", False))
+            )
+            if abs_ok and ref_hw_ok():
+                ref_pre = float(
+                    ref.read(
+                        duties=duties_before,
+                        statuses=status_before,
+                        temp_f=temp_f,
+                    )
+                )
+                if pol_safe.trips_hard_polarization_cutoff(ref_pre, cfg):
+                    lim = float(getattr(cfg, "POLARIZATION_HARD_CUTOFF_MV", -1080.0))
+                    ev = pol_safe.cathode_mv_for_absolute_limits(ref_pre, cfg)
+                    ctrl.latch_polarization_cutoff_all(
+                        f"POLARIZATION CUTOFF: cathode mV ({ev:.1f}) past hard limit "
+                        f"({lim:.0f} mV vs Ag/AgCl scale) — touch clear_fault to reset"
+                    )
+                    polarization_state = "hard_cutoff"
+                else:
+                    polarization_state = (
+                        "in_window"
+                        if pol_safe.instant_off_raw_in_protection_window(ref_pre, cfg)
+                        else "outside_window"
+                    )
+            elif abs_ok and not ref_hw_ok():
+                polarization_state = "no_ref_hw"
+
             faults, fault_latched = ctrl.update(readings)
             duties = ctrl.duties()
             ch_status = ctrl.channel_statuses()
@@ -463,6 +499,16 @@ def run_iccp_forever(args: Namespace) -> int:
             ref_raw_mv, ref_shift = ref.read_raw_and_shift(
                 duties=duties, statuses=ch_status, temp_f=temp_f
             )
+            if (
+                abs_ok
+                and ref_hw_ok()
+                and polarization_state not in ("disabled", "hard_cutoff", "no_ref_hw")
+            ):
+                polarization_state = (
+                    "in_window"
+                    if pol_safe.instant_off_raw_in_protection_window(ref_raw_mv, cfg)
+                    else "outside_window"
+                )
             ref_valid, ref_valid_reason = ref.ref_valid()
             _eff_shift_t = ref.effective_shift_target_mv()
             _eff_shift_m = ref.effective_max_shift_mv()
@@ -576,6 +622,42 @@ def run_iccp_forever(args: Namespace) -> int:
                     _last_runtime_diag_ts = now
 
             runtime_alerts: list[str] = []
+            wet_path = False
+            for _ch in range(cfg.NUM_CHANNELS):
+                _r = readings.get(_ch, {})
+                if _r.get("ok") and float(_r.get("current", 0.0) or 0.0) >= float(
+                    cfg.CHANNEL_DRY_MA
+                ):
+                    wet_path = True
+                    break
+            if abs_ok and temp_in_band and ref_hw_ok() and wet_path:
+                if pol_safe.below_unprotected_floor_warning(ref_raw_mv, cfg):
+                    if _floor_warn_since_mono is None:
+                        _floor_warn_since_mono = tick_mono
+                    elif (
+                        tick_mono - _floor_warn_since_mono
+                        >= float(
+                            getattr(cfg, "POLARIZATION_FLOOR_WARNING_DURATION_S", 300.0)
+                        )
+                    ):
+                        if tick_mono - _last_floor_runtime_alert_mono >= 300.0:
+                            fl = float(
+                                getattr(cfg, "POLARIZATION_FLOOR_WARNING_MV", -900.0)
+                            )
+                            ev = pol_safe.cathode_mv_for_absolute_limits(ref_raw_mv, cfg)
+                            runtime_alerts.append(
+                                f"Cathode potential {ev:.0f} mV less negative than "
+                                f"floor {fl:.0f} mV for "
+                                f">{float(getattr(cfg, 'POLARIZATION_FLOOR_WARNING_DURATION_S', 300)):.0f}s "
+                                "while wet — increase current / verify reference (manual review)."
+                            )
+                            polarization_state = "floor_warn_sustained"
+                            _last_floor_runtime_alert_mono = tick_mono
+                else:
+                    _floor_warn_since_mono = None
+            else:
+                _floor_warn_since_mono = None
+
             if not temp_in_band:
                 tf_s = f"{temp_f}°F" if temp_f is not None else "N/A"
                 runtime_alerts.append(
@@ -677,6 +759,7 @@ def run_iccp_forever(args: Namespace) -> int:
                     ref_valid=ref_valid,
                     ref_valid_reason=ref_valid_reason,
                     t_to_system_protected_s=ctrl.t_to_system_protected_s(),
+                    polarization_state=polarization_state,
                 )
             except Exception as e:
                 print(f"[main] log.record failed: {e}", file=sys.stderr)
