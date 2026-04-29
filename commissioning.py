@@ -209,11 +209,13 @@ def _print_commission_anode_wait_line(
 
 def _commission_prompts_enabled() -> bool:
     """
-    Interactive commissioning prompts (Enter to continue) are OFF by default.
-    Enable with `iccp commission --with-prompts`.
+    Interactive commissioning prompts (Enter to continue) when stdin is a TTY.
+
+    Disable for unattended runs: ``iccp commission --no-prompts`` or
+    ``ICCP_COMMISSION_SKIP_PROMPTS=1``.
     """
-    flag = (os.environ.get("ICCP_COMMISSION_WITH_PROMPTS") or "").strip().lower()
-    if flag not in ("1", "true", "yes", "on"):
+    skip = (os.environ.get("ICCP_COMMISSION_SKIP_PROMPTS") or "").strip().lower()
+    if skip in ("1", "true", "yes", "on"):
         return False
     try:
         return bool(sys.stdin.isatty())
@@ -298,7 +300,6 @@ def _anode_placement_should_interact(
     """True when we should block on operator Enter (removed / installed anodes)."""
     import sensors
 
-    # Prompts are OFF by default; enable explicitly via `iccp commission --with-prompts`.
     if not _commission_prompts_enabled():
         return False
     if anode_placement_prompts is False:

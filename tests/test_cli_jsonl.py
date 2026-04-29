@@ -16,9 +16,21 @@ def _parse_jsonl(stdout: str) -> list[dict]:
     return out
 
 
-def test_version_default_is_jsonl(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+def test_version_default_is_human_text(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: False)
+    monkeypatch.delenv("ICCP_OUTPUT", raising=False)
     monkeypatch.setattr(sys, "argv", ["iccp", "version"])
+    rc = iccp_cli.main()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "coilshield-iccp" in out
+    assert "iccp.cli.event.v1" not in out
+
+
+def test_version_jsonl_flag_emits_events(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: False)
+    monkeypatch.delenv("ICCP_OUTPUT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["iccp", "--jsonl", "version"])
     rc = iccp_cli.main()
     assert rc == 0
     out = capsys.readouterr().out
@@ -33,6 +45,17 @@ def test_version_default_is_jsonl(monkeypatch: pytest.MonkeyPatch, capsys: pytes
             assert key in e, f"missing {key!r} in {e!r}"
 
 
+def test_version_jsonl_via_env(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: False)
+    monkeypatch.setenv("ICCP_OUTPUT", "jsonl")
+    monkeypatch.setattr(sys, "argv", ["iccp", "version"])
+    rc = iccp_cli.main()
+    assert rc == 0
+    out = capsys.readouterr().out
+    events = _parse_jsonl(out)
+    assert any(e.get("event") == "cmd.begin" for e in events)
+
+
 def test_version_human_flag_preserves_text(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: False)
     monkeypatch.setattr(sys, "argv", ["iccp", "--human", "version"])
@@ -40,6 +63,14 @@ def test_version_human_flag_preserves_text(monkeypatch: pytest.MonkeyPatch, caps
     assert rc == 0
     out = capsys.readouterr().out
     assert "coilshield-iccp" in out
-    # Human mode should not emit JSONL command lifecycle events.
     assert "iccp.cli.event.v1" not in out
 
+
+def test_human_wins_over_jsonl_when_both_flags(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    monkeypatch.setattr(iccp_cli, "running_on_raspberry_pi", lambda: False)
+    monkeypatch.setattr(sys, "argv", ["iccp", "--jsonl", "--human", "version"])
+    rc = iccp_cli.main()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "coilshield-iccp" in out
+    assert "iccp.cli.event.v1" not in out

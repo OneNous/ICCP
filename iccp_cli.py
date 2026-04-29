@@ -5,10 +5,11 @@ CoilShield ``iccp`` CLI — the single supported entry point for this project.
 Every subcommand has exactly one canonical spelling. No aliases.
 
   iccp start [args ...]     Run the controller (defaults: --real --verbose --skip-commission)
-  iccp commission [--sim] [--force] [--native-only] [--with-prompts] [--no-anode-prompts]
+  iccp commission [--sim] [--force] [--native-only] [--no-prompts] [--no-anode-prompts]
                             Self-commissioning (writes commissioning.json).
                             --native-only runs Phase 1 only (native baseline re-capture).
-                            Default: non-interactive. Use --with-prompts for guided Enter pauses.
+                            Default: guided Enter pauses when stdin is a TTY. Use --no-prompts
+                            (or ICCP_COMMISSION_SKIP_PROMPTS=1) for CI / unattended runs.
   iccp probe [args ...]     Hardware probe (see `iccp probe --help` / hw_probe.py)
   iccp tui [--poll-interval SEC] [--log-dir PATH]
                             Terminal UI (Textual)
@@ -292,13 +293,12 @@ def _print_help() -> None:
                              Field tunables: COILSHIELD_TARGET_MA, COILSHIELD_REF_ADS_SCALE,
                              COILSHIELD_ADS1115_FSR_V, optional COILSHIELD_MUX_ADDRESS for TCA rigs, …
 
-  iccp commission [--sim] [--force] [--native-only] [--with-prompts]
+  iccp commission [--sim] [--force] [--native-only] [--no-prompts]
                              Self-commission (writes commissioning.json).
                              On Pi uses hardware unless --sim. Aborts if latest.json is fresh
                              unless --force (stop the iccp service first).
                              --native-only runs Phase 1 only (native baseline re-capture).
-                             Default is non-interactive (no Enter pauses). Use --with-prompts
-                             to restore guided anode placement pauses for an operator.
+                             Default: Enter pauses on a TTY. Use --no-prompts for unattended/CI.
                              Phase-2 mA search: ``COMMISSIONING_RAMP_MODE`` in config — ``hybrid`` (v1: binary
                              + linear confirm), ``binary``, or ``linear``. Shunt: ``INA219_SHUNT_OHMS`` or
                              env ``COILSHIELD_INA219_SHUNT_OHMS`` (v1 = 1.0 Ω); see README.
@@ -336,20 +336,37 @@ On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload`` a
 override unit name with ICCP_SYSTEMD_UNIT=myunit.
 
 Install:  pip install -e .   (from repo root, in your venv)
+
+  Global output (before the subcommand): ``--human`` (plain text), ``--jsonl`` (machine
+  events). If neither is passed, default is human; set ``ICCP_OUTPUT=jsonl`` to force JSONL
+  without a flag. If both ``--human`` and ``--jsonl`` appear, ``--human`` wins.
 """
     )
 
 
-def _split_human_flag(argv: list[str]) -> tuple[list[str], bool]:
-    """Strip global ``--human`` from argv; return (remaining_argv, human)."""
-    human = False
+def _split_global_output_flags(argv: list[str]) -> tuple[list[str], str]:
+    """Strip ``--human`` / ``--jsonl``; return (remaining_argv, resolved_mode).
+
+    ``resolved_mode`` is ``\"human\"``, ``\"jsonl\"``, or ``\"\"`` meaning leave
+    ``ICCP_OUTPUT`` unset so :func:`cli_events.output_mode` defaults apply.
+    If both flags appear, ``--human`` wins.
+    """
+    saw_human = False
+    saw_jsonl = False
     out: list[str] = []
     for a in argv:
         if a == "--human":
-            human = True
+            saw_human = True
+            continue
+        if a == "--jsonl":
+            saw_jsonl = True
             continue
         out.append(a)
-    return out, human
+    if saw_human:
+        return out, "human"
+    if saw_jsonl:
+        return out, "jsonl"
+    return out, ""
 
 
 def _emit_cmd_begin(cmd: str, argv: list[str], root: Path) -> None:
@@ -773,12 +790,14 @@ def main() -> int:
         _print_help()
         return 0
 
-    argv, human = _split_human_flag(argv)
-    if human:
+    argv, out_mode = _split_global_output_flags(argv)
+    if out_mode == "human":
         os.environ["ICCP_OUTPUT"] = "human"
+    elif out_mode == "jsonl":
+        os.environ["ICCP_OUTPUT"] = "jsonl"
     else:
-        # Default: JSONL for GUI parsing.
-        os.environ.setdefault("ICCP_OUTPUT", "jsonl")
+        # Default human for SSH/scripts; GUI/automation sets ICCP_OUTPUT=jsonl or uses --jsonl.
+        os.environ.setdefault("ICCP_OUTPUT", "human")
 
     cmd = argv[0]
     rest = argv[1:]
@@ -828,11 +847,13 @@ def main() -> int:
         return rc
 
     if cmd == "commission":
-        if "--with-prompts" in rest:
-            os.environ["ICCP_COMMISSION_WITH_PROMPTS"] = "1"
-            rest = [a for a in rest if a != "--with-prompts"]
+        # Back-compat: --with-prompts was required when defaults were non-interactive; now a no-op.
+        rest = [a for a in rest if a != "--with-prompts"]
+        if "--no-prompts" in rest:
+            os.environ["ICCP_COMMISSION_SKIP_PROMPTS"] = "1"
+            rest = [a for a in rest if a != "--no-prompts"]
         else:
-            os.environ.pop("ICCP_COMMISSION_WITH_PROMPTS", None)
+            os.environ.pop("ICCP_COMMISSION_SKIP_PROMPTS", None)
         rc = _cmd_commission(rest)
         if output_mode() == "jsonl":
             _emit_cmd_end(cmd, int(rc), started_unix=started)

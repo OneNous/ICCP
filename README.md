@@ -212,6 +212,8 @@ Verify:
 .venv/bin/iccp --help
 ```
 
+**CLI output:** By default, `iccp` prints **human** text (tags, sections) for SSH and scripts. For **JSONL** events (schema `iccp.cli.event.v1`), use `iccp --jsonl <subcommand>`, or set **`ICCP_OUTPUT=jsonl`** for that process (ICCP-APP Pi Console does this for preset runs). **`iccp --human`** forces plain text even if the environment asked for JSONL. If both `--human` and `--jsonl` are passed, **`--human` wins**.
+
 Use every session either:
 
 ```bash

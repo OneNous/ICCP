@@ -14,10 +14,11 @@ def output_mode() -> str:
     """
     Output mode for CLI-facing logs.
 
-    - "jsonl" (default when ``ICCP_OUTPUT`` is unset): one JSON object per line.
-    - "human": legacy operator console (``iccp … --human``).
+    - "human" (default when ``ICCP_OUTPUT`` is unset): operator console text.
+    - "jsonl": one JSON object per line — use ``iccp --jsonl``, or set ``ICCP_OUTPUT=jsonl``
+      (e.g. ICCP-APP Pi Console), or export before the command.
     """
-    m = (os.environ.get("ICCP_OUTPUT") or "jsonl").strip().lower()
+    m = (os.environ.get("ICCP_OUTPUT") or "human").strip().lower()
     return "human" if m == "human" else "jsonl"
 
 
