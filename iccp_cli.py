@@ -36,7 +36,20 @@ import time
 from pathlib import Path
 
 from platform_util import running_on_raspberry_pi
-from cli_events import emit, output_mode
+
+try:
+    from cli_events import emit, output_mode
+except ModuleNotFoundError:
+    _root = Path(__file__).resolve().parent
+    sys.stderr.write(
+        "CoilShield: missing Python module `cli_events` (ships next to `iccp_cli.py`).\n"
+        "  Fix: update this install from git, then reinstall so the file is present:\n"
+        f"    cd {_root}\n"
+        "    git pull && pip install -e .\n"
+        "  If you installed a wheel/sdist: rebuild from current repo `pyproject.toml` and\n"
+        "    pip install --upgrade .\n"
+    )
+    raise SystemExit(1) from None
 
 
 def _project_root() -> Path:
