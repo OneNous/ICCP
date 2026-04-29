@@ -16,6 +16,11 @@ Optional pan-temperature trim (°F only): ``native_temp_f`` in `commissioning.js
 `REF_TEMP_COMP_MV_PER_F` adjusts raw mV vs that anchor; if ``native_temp_f`` is missing,
 `REF_TEMP_COMP_BASE_F` (default 77 °F ≈ 25 °C) is the anchor.
 
+On transient ADC or I²C failure, :meth:`ReferenceElectrode.read` reuses the last good
+pre-trim sample (re-applying the current temperature trim each tick) so ``ref_raw_mv`` in
+telemetry does not fall back to **0.0 mV** (which reads like a real electrode value).
+:meth:`ref_valid` still goes invalid after repeated failures.
+
 SIM_MODE: COILSHIELD_SIM=1 uses simulated readings (no hardware).
 """
 
@@ -832,6 +837,9 @@ class ReferenceElectrode:
         self.native_measured_at: str | None = None
         self.native_measured_unix: float | None = None
         self._last_raw_mv: float = 0.0
+        # Last successful ADC scalar **before** ref_temp_adjust_mv; reused on transient
+        # read failure so telemetry does not show 0.0 mV (misread as a real electrode value).
+        self._last_good_mv_pre_temp: float | None = None
         # Rolling window for ref_valid stability check (W_REF seconds).
         self._ref_history: list[tuple[float, float]] = []
         self._consecutive_failures: int = 0
@@ -1078,12 +1086,24 @@ class ReferenceElectrode:
         temp_f: float | None = None,
     ) -> float:
         if SIM_MODE:
-            mv = _read_raw_mv_sim(duties or {}, statuses or {})
+            mv_pre = _read_raw_mv_sim(duties or {}, statuses or {})
             read_ok = True
         else:
-            mv = _read_raw_mv_hw()
-            read_ok = not _REF_LAST_READ_FAILED
-        mv = self.ref_temp_adjust_mv(mv, temp_f)
+            try:
+                mv_pre = _read_raw_mv_hw()
+                read_ok = not _REF_LAST_READ_FAILED
+            except RuntimeError:
+                mv_pre = 0.0
+                read_ok = False
+
+        if read_ok:
+            mv = self.ref_temp_adjust_mv(mv_pre, temp_f)
+            self._last_good_mv_pre_temp = float(mv_pre)
+        elif self._last_good_mv_pre_temp is not None:
+            mv = self.ref_temp_adjust_mv(self._last_good_mv_pre_temp, temp_f)
+        else:
+            mv = self.ref_temp_adjust_mv(mv_pre, temp_f)
+
         self._last_raw_mv = mv
         # Track rolling window and failure count for ref_valid() / REFERENCE_INVALID.
         now = time.monotonic()
@@ -1257,6 +1277,13 @@ class ReferenceElectrode:
             raw = self.read(duties, statuses, temp_f=temp_f)
         except RuntimeError as e:
             print(e)
+            if self._last_good_mv_pre_temp is not None:
+                raw = self.ref_temp_adjust_mv(self._last_good_mv_pre_temp, temp_f)
+                self._last_raw_mv = raw
+                bl = self.baseline_mv_for_shift()
+                if bl is None:
+                    return raw, None
+                return raw, round(raw - bl, 2)
             return 0.0, None
         bl = self.baseline_mv_for_shift()
         if bl is None:

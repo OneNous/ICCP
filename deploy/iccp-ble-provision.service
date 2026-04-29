@@ -1,0 +1,40 @@
+# CoilShield — BLE Wi‑Fi provisioning (EXAMPLE)
+#
+# Install:
+#   sudo mkdir -p /etc/iccp
+#   sudo touch /etc/iccp/ble_provision.enable   # remove after successful setup
+#   sudo cp deploy/iccp-ble-provision.service /etc/systemd/system/
+#   Edit User/Group/ExecStart to your venv ``iccp-ble-provision``.
+#   sudo systemctl daemon-reload
+#   sudo systemctl start iccp-ble-provision
+#
+# Security: provisioning is only active while this unit runs and the flag file
+# exists (unless ICCP_BLE_PROVISIONING=1 is set). Remove ``ble_provision.enable``
+# after pairing. Wi‑Fi credentials use LE encrypted writes; still treat BLE as
+# a sensitive surface.
+#
+# Coexistence: BLE advertising + ``iccp start`` on the same Pi is usually fine;
+# avoid running two GATT servers. Stop this unit when done.
+
+[Unit]
+Description=CoilShield ICCP BLE Wi-Fi provisioning
+After=bluetooth.target
+Wants=bluetooth.target
+# Require this file before the unit starts (factory / field touch).
+# For bench without a flag file: comment out the next line and set
+# Environment=ICCP_BLE_PROVISIONING=1 in [Service].
+ConditionPathExists=/etc/iccp/ble_provision.enable
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=ICCP_BLE_WINDOW_S=600
+Environment=ICCP_WIFI_IFACE=wlan0
+# Optional: absolute telemetry dir for post-register scripts on same image
+# Environment=COILSHIELD_LOG_DIR=/var/lib/iccp/logs
+ExecStart=/home/onenous/coilshield/.venv/bin/iccp-ble-provision --iface wlan0
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

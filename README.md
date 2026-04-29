@@ -23,6 +23,8 @@ Every supported operation goes through the single `iccp` console script (install
 
 Full reference: [docs/iccp-cli-reference.md](docs/iccp-cli-reference.md).
 
+**Pi edge (BLE Wi‑Fi provisioning, HTTPS device register, MQTT commission + telemetry):** [docs/pi-edge-deploy.md](docs/pi-edge-deploy.md) — optional `pip install -e ".[ble,cloud]"`; scripts `iccp-ble-provision`, `iccp-cloud-register`, `iccp-commission-mqtt`, `iccp-telemetry-mqtt`, **`iccp-edge-doctor`** (readiness / `--json` / `--strict`). Wi‑Fi: `wpa_cli` or `nmcli` (`COILSHIELD_WIFI_BACKEND`); MQTT: `ICCP_IOT_ENDPOINT` or `ICCP_MQTT_HOST`, optional merge from **`cloud.conf`** (`ICCP_MERGE_CLOUD_CONF`); optional commission **spool** and telemetry **inotify** (Linux). Bootstrap: `deploy/bootstrap-iccp-edge.sh`, TLS layout: `deploy/aws-iot/README.md`.
+
 **External desktop / Command Center apps:** the dashboard exposes read-only JSON under **`/api/*`**
 (including **`/api/meta`** and **`/api/live`**) with **CORS** enabled for cross-origin `fetch` to an
 SSH-forwarded `http://127.0.0.1:<port>`. Control actions stay on **`iccp`** / **`systemctl`** over

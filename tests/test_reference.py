@@ -146,3 +146,27 @@ def test_ref_temp_uses_base_f_without_native_temp_in_json(
     ref = ReferenceElectrode()
     ref.native_temp_f = None
     assert ref.ref_temp_adjust_mv(100.0, 78.0) == pytest.approx(101.0)
+
+
+def test_read_holds_last_good_after_i2c_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Transient ref ADC failures must not replace ref_raw with 0.0 in telemetry."""
+    monkeypatch.setattr(ref_mod, "SIM_MODE", False)
+    ref = ReferenceElectrode()
+    ref.native_mv = 300.0
+    n = [0]
+
+    def fake_hw() -> float:
+        n[0] += 1
+        if n[0] % 2 == 1:
+            ref_mod._REF_LAST_READ_FAILED = False
+            return 310.0
+        ref_mod._REF_LAST_READ_FAILED = True
+        return 0.0
+
+    monkeypatch.setattr(ref_mod, "_read_raw_mv_hw", fake_hw)
+    assert ref.read() == pytest.approx(310.0)
+    assert ref.read() == pytest.approx(310.0)
+    assert ref.read() == pytest.approx(310.0)
+    raw, shift = ref.read_raw_and_shift()
+    assert raw == pytest.approx(310.0)
+    assert shift == pytest.approx(10.0)

@@ -1,0 +1,31 @@
+# CoilShield — HTTPS device registration (EXAMPLE)
+#
+# One-shot or oneshot+timer: POST /devices/register and write /etc/iccp/cloud.conf.
+# Requires ICCP_CLOUD_API_URL (or ICCP_CLOUD_REGISTER_URL) in the environment.
+#
+# Install:
+#   sudo mkdir -p /etc/iccp /etc/iccp/aws-iot
+#   sudo cp deploy/iccp-cloud-register.service /etc/systemd/system/
+#   Edit Environment= lines and ExecStart (venv path).
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now iccp-cloud-register.service
+#
+# Optional: systemd EncryptedCredential= for ICCP_CLOUD_REGISTER_TOKEN (see
+# docs/pi-edge-deploy.md).
+
+[Unit]
+Description=CoilShield ICCP cloud device registration
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Environment=ICCP_CLOUD_API_URL=https://api.example.com
+# Environment=ICCP_CLOUD_REGISTER_TOKEN_FILE=/etc/iccp/register.token
+ExecStart=/home/onenous/coilshield/.venv/bin/iccp-cloud-register
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

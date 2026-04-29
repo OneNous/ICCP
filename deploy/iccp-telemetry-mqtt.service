@@ -1,0 +1,32 @@
+# CoilShield — MQTT telemetry sidecar (EXAMPLE)
+#
+# Publishes curated ``latest.json`` snapshots on ``LOG_INTERVAL_S`` cadence.
+# Match COILSHIELD_LOG_DIR with the ``iccp`` controller service.
+#
+# Install:
+#   sudo cp deploy/iccp-telemetry-mqtt.service /etc/systemd/system/
+#   Edit User, WorkingDirectory, ExecStart, Environment=COILSHIELD_LOG_DIR, ICCP_IOT_*.
+#   sudo systemctl daemon-reload && sudo systemctl enable --now iccp-telemetry-mqtt
+
+[Unit]
+Description=CoilShield ICCP MQTT telemetry (latest.json sidecar)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=onenous
+Group=onenous
+WorkingDirectory=/home/onenous/coilshield
+Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
+Environment=ICCP_TELEMETRY_INTERVAL_S=120
+Environment=ICCP_IOT_ENDPOINT=xxxxxxxxxx-ats.iot.us-east-1.amazonaws.com
+# Environment=ICCP_IOT_CA_PATH=/etc/iccp/aws-iot/AmazonRootCA1.pem
+# Environment=ICCP_IOT_CERT_PATH=/etc/iccp/aws-iot/device.pem.crt
+# Environment=ICCP_IOT_KEY_PATH=/etc/iccp/aws-iot/private.pem.key
+ExecStart=/home/onenous/coilshield/.venv/bin/iccp-telemetry-mqtt
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

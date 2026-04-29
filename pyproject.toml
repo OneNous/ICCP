@@ -18,12 +18,27 @@ dependencies = [
     "adafruit-circuitpython-ina3221>=1.0.0",
 ]
 
+[project.optional-dependencies]
+ble = [
+    "dbus-python>=1.3.2",
+    "PyGObject>=3.42.0",
+]
+cloud = [
+    "paho-mqtt>=1.6.3",
+    "inotify-simple>=2.0; sys_platform == 'linux'",
+]
+
 [project.scripts]
 iccp = "iccp_cli:main"
+iccp-ble-provision = "pi_edge.ble_provision:main"
+iccp-cloud-register = "pi_edge.cloud_register:main"
+iccp-commission-mqtt = "pi_edge.commission_mqtt_bridge:main"
+iccp-telemetry-mqtt = "pi_edge.telemetry_mqtt_sidecar:main"
+iccp-edge-doctor = "pi_edge.edge_doctor:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["config*"]
+include = ["config*", "pi_edge*"]
 
 [tool.setuptools]
 py-modules = [
@@ -40,6 +55,7 @@ py-modules = [
     "sensors",
     "reference",
     "commissioning",
+    "ble_provision",
     "platform_util",
     "logger",
     "dashboard",

@@ -1006,6 +1006,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-bottom: 4px;
   }
   .ch-ma small { font-size: 13px; font-weight: 400; color: var(--csp-text-muted); }
+  .ch-ma-idle {
+    color: var(--csp-accent);
+    letter-spacing: 0.02em;
+  }
+  .ch-ma-sub { font-size: 12px; font-weight: 500; color: var(--csp-text-muted); }
   .ch-meta { margin-top: 4px; }
 
   .section {
@@ -1754,6 +1759,44 @@ function setAlertNoneVisible(show) {
   if (el) el.style.display = show ? '' : 'none';
 }
 
+function _dashChReadingOk(ch) {
+  let readingOk = ch.reading_ok;
+  if (readingOk === undefined) readingOk = ch.status !== 'ERR';
+  return readingOk;
+}
+
+/** True when every channel reads OK and |mA| is below the INA noise floor (outputs at rest, not “broken”). */
+function _dashAllChannelsIdleNoise(d) {
+  if (!d.channels) return false;
+  for (let i = 0; i < NUM_CH; i++) {
+    const ch = d.channels[String(i)] || {};
+    if (!_dashChReadingOk(ch)) return false;
+    const maNum = Number(ch.ma);
+    if (!Number.isFinite(maNum) || Math.abs(maNum) >= MA_NOISE_FLOOR) return false;
+  }
+  return true;
+}
+
+function _dashChannelMaHtml(stale, ch, maDisp) {
+  if (stale) return '— <small>mA</small>';
+  const readingOk = _dashChReadingOk(ch);
+  const stt = ch.status || '';
+  if (stt === 'ERR' || !readingOk) {
+    const n = Number(ch.ma);
+    return Number.isFinite(n)
+      ? `${n.toFixed(3)} <small>mA</small>`
+      : '— <small>mA</small>';
+  }
+  if (maDisp == null || !Number.isFinite(maDisp)) {
+    return '— <small>mA</small>';
+  }
+  if (Math.abs(maDisp) < MA_NOISE_FLOOR) {
+    const t = maDisp.toFixed(4);
+    return `<span class="ch-ma-idle" title="Measured ${t} mA (below display floor)">Idle</span> <small class="ch-ma-sub">(sensor OK)</small>`;
+  }
+  return `${maDisp.toFixed(3)} <small>mA</small>`;
+}
+
 function _dashFeedTrustStale(d) {
   const age = d.feed_age_s;
   const thr = d.feed_stale_threshold_s ?? 3;
@@ -1826,13 +1869,13 @@ async function fetchLive() {
     if (fcp) {
       if (trust) {
         fcp.className = 'feed-pill ok';
-        fcp.textContent = 'Trusted channel metrics';
+        fcp.textContent = 'Live data';
       } else if (inc) {
         fcp.className = 'feed-pill degraded';
-        fcp.textContent = 'Degraded (incomplete)';
+        fcp.textContent = 'Partial snapshot';
       } else {
         fcp.className = 'feed-pill stale';
-        fcp.textContent = 'Not trusted (mtime / json ts)';
+        fcp.textContent = 'Not updating';
       }
     }
     const ft = document.getElementById('fc-thr');
@@ -1869,8 +1912,8 @@ async function fetchLive() {
       if (typeof age === 'number' && Number.isFinite(age)) {
         const jaStr = (typeof jPayloadAge === 'number' && Number.isFinite(jPayloadAge))
           ? (Number(jPayloadAge).toFixed(1) + 's') : '—';
-        const tag = trust ? 'OK' : (inc ? 'Degraded' : 'Not trusted');
-        fls.textContent = tag + ' · mtime ' + age.toFixed(1) + 's · JSON ts ' + jaStr
+        const tag = trust ? 'OK' : (inc ? 'Partial' : 'Stale');
+        fls.textContent = tag + ' · file ' + age.toFixed(1) + 's · sample age ' + jaStr
           + (typeof thr === 'number' ? ' (thr ≤ ' + thr.toFixed(1) + 's)' : '');
         fls.style.color = trust ? 'var(--green)' : (inc ? 'var(--amber)' : 'var(--red)');
       } else {
@@ -1957,13 +2000,30 @@ async function fetchLive() {
           : 'Not live · Σ V×I (control proxy)';
       }
     } else {
-      document.getElementById('kpi-total-ma').textContent =
-        lastMaStr != null ? `${lastMaStr} mA` : '—';
-      document.getElementById('kpi-total-cap').textContent =
-        `Live · sum of channel mA${tgtSuffix}`;
-      document.getElementById('kpi-total-pw').textContent =
-        (lastPwNum != null && Number.isFinite(lastPwNum)) ? fmtPowerW(lastPwNum) : '—';
-      if (pwCapEl) pwCapEl.textContent = 'Live · Σ V×I (control proxy)';
+      const idleAll = _dashAllChannelsIdleNoise(d);
+      if (idleAll) {
+        document.getElementById('kpi-total-ma').textContent = 'Idle';
+        document.getElementById('kpi-total-cap').textContent =
+          `Outputs at rest (|I| < ${MA_NOISE_FLOOR.toFixed(3)} mA per channel) · sensors OK${tgtSuffix}`;
+        const pwTiny = lastPwNum != null && Number.isFinite(lastPwNum) && Math.abs(lastPwNum) < 5e-5;
+        const pwShow = pwTiny
+          ? '~0 W'
+          : ((lastPwNum != null && Number.isFinite(lastPwNum)) ? fmtPowerW(lastPwNum) : '—');
+        document.getElementById('kpi-total-pw').textContent = pwShow;
+        if (pwCapEl) {
+          pwCapEl.textContent = pwTiny
+            ? 'At rest · Σ V×I (negligible while idle)'
+            : 'Live · Σ V×I (control proxy)';
+        }
+      } else {
+        document.getElementById('kpi-total-ma').textContent =
+          lastMaStr != null ? `${lastMaStr} mA` : '—';
+        document.getElementById('kpi-total-cap').textContent =
+          `Live · sum of channel mA${tgtSuffix}`;
+        document.getElementById('kpi-total-pw').textContent =
+          (lastPwNum != null && Number.isFinite(lastPwNum)) ? fmtPowerW(lastPwNum) : '—';
+        if (pwCapEl) pwCapEl.textContent = 'Live · Σ V×I (control proxy)';
+      }
     }
     document.getElementById('kpi-wet-ch').textContent =
       `${d.wet_channels != null ? d.wet_channels : '—'} / ${NUM_CH}`;
@@ -2083,13 +2143,8 @@ async function fetchLive() {
       stateEl.textContent = stName;
       stateEl.className = 'ch-state state-' + stName;
       const maNum = Number(ch.ma);
-      const maDisp = Number.isFinite(maNum) ? maNum : 0;
-      if (stale) {
-        document.getElementById(`ma-${i}`).innerHTML = '— <small>mA</small>';
-      } else {
-        document.getElementById(`ma-${i}`).innerHTML =
-          `${maDisp.toFixed(3)} <small>mA</small>`;
-      }
+      const maDisp = Number.isFinite(maNum) ? maNum : null;
+      document.getElementById(`ma-${i}`).innerHTML = _dashChannelMaHtml(stale, ch, maDisp);
       const tgtEl = document.getElementById(`tgt-${i}`);
       if (tgtEl) {
         tgtEl.textContent = (ch.target_ma != null && ch.target_ma !== '')
@@ -2155,12 +2210,9 @@ async function fetchLive() {
 
       const zf = document.getElementById(`zero-flag-${i}`);
       const busOk = Number.isFinite(busV);
-      if (!stale && readingOk && Math.abs(maDisp) < MA_NOISE_FLOOR && busOk && Math.abs(busV) < 0.05) {
+      if (!stale && readingOk && maDisp != null && Math.abs(maDisp) < MA_NOISE_FLOOR && busOk && Math.abs(busV) >= 0.05) {
         zf.style.display = 'inline-block';
-        zf.textContent = `Live: |I| < ${MA_NOISE_FLOOR.toFixed(3)} mA and ~0 V bus (below sensor noise floor; path open / supply off / INA219 idle)`;
-      } else if (!stale && readingOk && Math.abs(maDisp) < MA_NOISE_FLOOR) {
-        zf.style.display = 'inline-block';
-        zf.textContent = `Live: |I| < ${MA_NOISE_FLOOR.toFixed(3)} mA (below sensor noise floor; sensor OK — check wet state and bus voltage)`;
+        zf.textContent = 'Bus voltage present with near-zero current — if unexpected, check wet path / bath.';
       } else {
         zf.style.display = 'none';
         zf.textContent = '';

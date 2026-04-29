@@ -303,6 +303,33 @@ def build_header_text(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _ina_noise_floor_ma() -> float:
+    return float(getattr(cfg, "INA219_CURRENT_NOISE_FLOOR_MA", 0.03) or 0.03)
+
+
+def _tui_all_channels_idle(data: dict) -> bool:
+    """Same idea as the web dashboard: every channel OK and |mA| below INA noise floor."""
+    chmap = data.get("channels") if isinstance(data.get("channels"), dict) else {}
+    floor = _ina_noise_floor_ma()
+    for i in range(cfg.NUM_CHANNELS):
+        row = chmap.get(str(i), {})
+        if not isinstance(row, dict) or not row:
+            return False
+        st = str(row.get("status") or "")
+        ro_ok = row.get("reading_ok")
+        if ro_ok is None:
+            ro_ok = st != "ERR"
+        if not ro_ok or st == "ERR":
+            return False
+        try:
+            ma_f = float(row.get("ma") or 0)
+        except (TypeError, ValueError):
+            return False
+        if abs(ma_f) >= floor:
+            return False
+    return True
+
+
 def build_kpi_strip(data: dict) -> tuple[str, str, str, str, str]:
     """Returns (feed_banner, kpi_meta, kpi_feed, kpi_temp, kpi_ma)."""
     tp = data.get("telemetry_paths")
@@ -347,7 +374,11 @@ def build_kpi_strip(data: dict) -> tuple[str, str, str, str, str]:
         temp = data.get("temp_f")
         temp_s = f"{float(temp):.1f}°F" if isinstance(temp, (int, float)) else "—"
         tma = data.get("total_ma")
-        ma_s = _fmt_float(tma, 3) + " mA" if tma is not None else "—"
+        staleish = _disk_feed_stale(data) or _json_ts_stale(data)
+        if not staleish and _tui_all_channels_idle(data):
+            ma_s = "Σ idle"
+        else:
+            ma_s = _fmt_float(tma, 3) + " mA" if tma is not None else "—"
 
     return banner, meta, feed, f"Temp {temp_s}", f"Σ {ma_s}"
 
@@ -383,9 +414,15 @@ def channel_rows(data: dict) -> list[tuple[str, ...]]:
         bus_v = row.get("bus_v")
         duty = row.get("duty")
         z = row.get("impedance_ohm")
+        st = str(row.get("status") or "")
+        ro_ok = row.get("reading_ok")
+        if ro_ok is None:
+            ro_ok = st != "ERR"
+        floor = _ina_noise_floor_ma()
         if row.get("status") == "ERR" or not row:
             z_s = "—"
             imp_disp = "—"
+            ma_disp = _fmt_float(ma, 2)
         else:
             try:
                 ma_f = float(ma or 0)
@@ -398,12 +435,20 @@ def channel_rows(data: dict) -> list[tuple[str, ...]]:
             except (TypeError, ValueError):
                 z_s = "—"
                 imp_disp = "—"
+            try:
+                ma_f2 = float(ma or 0)
+                if ro_ok and abs(ma_f2) < floor:
+                    ma_disp = "idle"
+                else:
+                    ma_disp = _fmt_float(ma, 2)
+            except (TypeError, ValueError):
+                ma_disp = "—"
         out.append(
             (
                 str(i + 1),
                 state[:12],
                 _fmt_float(bus_v, 3),
-                _fmt_float(ma, 2),
+                ma_disp,
                 _fmt_float(duty, 2),
                 imp_disp,
                 _fmt_float(row.get("cell_voltage_v"), 3),

@@ -1232,15 +1232,9 @@ def _pump_control(
                 duties=duties, statuses=st, temp_f=tf
             )
             ref_raw_for_progress = _raw
-            ref_valid, ref_valid_reason = reference.ref_valid()
-            controller.advance_shift_fsm(
-                readings,
-                shift_mv=ref_shift,
-                ref_valid=ref_valid,
-                ref_valid_reason=ref_valid_reason,
-                shift_target_mv=reference.effective_shift_target_mv(),
-                shift_max_mv=reference.effective_max_shift_mv(),
-            )
+            # Do not call advance_shift_fsm() here: it can drive PWM back to 0% every tick
+            # (e.g. STATE_V2_OVERPROTECTED duty ramp-down) while Phase 2/3 are trying to
+            # regulate toward cfg.TARGET_MA. Runtime iccp start still runs update + shift FSM.
         if need_progress and cl is not None:
             now = time.monotonic()
             if now - last_progress_announce >= float(progress_interval_s):

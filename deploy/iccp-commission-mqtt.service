@@ -1,0 +1,21 @@
+# CoilShield — MQTT commission JSONL bridge (EXAMPLE)
+#
+# Wraps ``iccp commission …`` with ICCP_OUTPUT=jsonl and publishes each line.
+#
+# ExecStart example:
+#   /home/pi/coilshield/.venv/bin/iccp-commission-mqtt -- commission --force
+#
+# Set ICCP_IOT_* the same as telemetry. Prefer a oneshot or manual run for commissioning.
+
+[Unit]
+Description=CoilShield ICCP commission → MQTT (oneshot example)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=onenous
+Environment=ICCP_IOT_ENDPOINT=xxxxxxxxxx-ats.iot.us-east-1.amazonaws.com
+ExecStart=/home/onenous/coilshield/.venv/bin/iccp-commission-mqtt -- commission --force
+
+[Install]
+WantedBy=multi-user.target
