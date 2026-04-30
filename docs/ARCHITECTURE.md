@@ -16,4 +16,4 @@ Python modules and `pi_edge/` live under [`src/`](../src/) per `claude.md` and `
 
 ## Generated types
 
-[`src/generated/schema_types.py`](../src/generated/schema_types.py) is a placeholder until monorepo codegen is wired (see [.claude/schemas.md](../.claude/schemas.md)).
+[`src/generated/schema_types.py`](../src/generated/schema_types.py) is a placeholder until monorepo codegen is wired (see [.claude/schemas.md](../.claude/schemas.md) and [`codegen/README.md`](../codegen/README.md)).

@@ -1,3 +1,6 @@
+# Pi runtime — see pyproject.toml for full metadata and extras:
+#   pip install -e ".[ble,cloud]"   # BLE + MQTT edge
+#   pip install -e ".[supabase]" # Supabase client + dotenv (iccp supabase-ping)
 RPi.GPIO>=0.7.0
 flask>=3.0.0
 textual>=1.0.0

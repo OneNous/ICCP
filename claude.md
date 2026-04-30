@@ -41,6 +41,7 @@ coilshield-firmware/
 ├── config/
 │   └── settings.py                  // Tunables, addresses, thresholds (+ argv_*.py)
 ├── schemas/                         // Synced manually from coilshield/schemas/
+├── codegen/                         // Monorepo codegen scripts → src/generated/
 ├── static/                          // Dashboard vendored fonts (repo root)
 ├── deploy/                          // Extra systemd examples (sidecars, bootstrap)
 ├── tests/                           // Unit tests
@@ -49,7 +50,8 @@ coilshield-firmware/
 ├── claude.md                        // This file
 ├── .claude/                         // Sub-rule files
 ├── README.md
-└── requirements.txt
+├── requirements.txt
+└── coilshield-session-summary.md    // Historical pointer (see Reference Documents)
 ```
 
 ## How to Use This Document

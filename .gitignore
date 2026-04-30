@@ -2,6 +2,9 @@ build/
 .env
 .env.*
 !.env.example
+# Local SSH material — never commit
+/pi
+/pi.pub
 __pycache__/
 *.py[cod]
 .venv/

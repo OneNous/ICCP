@@ -25,7 +25,7 @@ Python firmware. Runs on Raspberry Pi 3. Already substantially built and bench-v
 
 - **Disable the polarization safety cutoff.** Period. Even for testing. Use `COILSHIELD_SIM=1` instead.
 - **Push code to a Pi connected to a real coil** without explicit owner confirmation. Bench testing only by default.
-- **Refactor `control.py`, `sensors.py`, `commissioning.py`, or `logger.py`** — these work and have been bench-tested. Touch them only when there's a concrete bug or feature to add. Don't "modernize" or "clean up."
+- **Refactor `src/control.py`, `src/sensors.py`, `src/commissioning.py`, or `src/logger.py`** — these work and have been bench-tested. Touch them only when there's a concrete bug or feature to add. Don't "modernize" or "clean up."
 - **Change schemas.** Schemas come from the monorepo. Modify there, sync here.
 - **Add a dependency.** Every package on a Pi is a maintenance burden. Justify before adding.
 - **Replace systemd with anything else.** It works.

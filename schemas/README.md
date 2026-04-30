@@ -6,7 +6,7 @@ Per [`claude.md`](../claude.md) **rule 2**: JSON (and similar) schemas that defi
 
 1. Change the canonical schema in `coilshield/schemas/` (monorepo).
 2. Sync the updated file(s) into this directory (same relative names when possible).
-3. Regenerate Python types if your pipeline uses `codegen/` → `src/generated/schema_types.py` (see [.claude/schemas.md](../.claude/schemas.md)).
+3. Regenerate Python types via [`codegen/`](../codegen/) → `src/generated/schema_types.py` (see [.claude/schemas.md](../.claude/schemas.md)).
 
 ## Current copies
 
