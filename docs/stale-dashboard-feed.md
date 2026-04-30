@@ -27,7 +27,7 @@ If `stat` shows an old mtime and `systemctl` shows **inactive** or **failed**, i
 
 1. Pick **one** absolute telemetry directory (example: `/home/onenous/coilshield/logs`).
 2. Set the **same** value everywhere:
-   - **systemd:** uncomment or add `Environment=COILSHIELD_LOG_DIR=/abs/path/logs` in both [`deploy/iccp.service`](../deploy/iccp.service) and [`deploy/dashboard.service`](../deploy/dashboard.service) (copy examples into `/etc/systemd/system/…`, then `daemon-reload` and restart both units).
+   - **systemd:** uncomment or add `Environment=COILSHIELD_LOG_DIR=/abs/path/logs` in both [`systemd/coilshield.service`](../systemd/coilshield.service) and [`deploy/dashboard.service`](../deploy/dashboard.service) (copy examples into `/etc/systemd/system/…`, then `daemon-reload` and restart both units).
    - **Manual:** `export COILSHIELD_LOG_DIR=/abs/path/logs` before both processes, **or** pass **`--log-dir /abs/path/logs`** to both **`iccp start`** and **`iccp dashboard`** (see [`config/argv_log_dir.py`](../config/argv_log_dir.py)).
 3. Restart the controller, then confirm **`stat`** updates every tick (~`SAMPLE_INTERVAL_S`).
 4. Clear faults only after the loop is healthy: `iccp clear-fault`.

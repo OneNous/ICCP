@@ -30,7 +30,7 @@ MMO anodes go to the fin side through a **non-conductive** wicking path (e.g. sp
 
 ## Operator CLI (canonical)
 
-The supported entry points are **subcommands** (see [iccp_cli.py](../iccp_cli.py)):
+The supported entry points are **subcommands** (see [iccp_cli.py](../src/iccp_cli.py)):
 
 ```bash
 # Run the controller (after venv / install)
@@ -46,7 +46,7 @@ Do **not** rely on `iccp -start` or `iccp --commission` — those forms are not 
 
 ## Boot on a Raspberry Pi
 
-Use the example unit in [deploy/iccp.service](../deploy/iccp.service): adjust `User`, `WorkingDirectory`, and `ExecStart` to your venv path. Set `COILSHIELD_LOG_DIR` if you want a fixed absolute telemetry directory for dashboards.
+Use the example unit in [systemd/coilshield.service](../systemd/coilshield.service) (canonical per `claude.md`; [deploy/iccp.service](../deploy/iccp.service) is a compatibility copy): adjust `User`, `WorkingDirectory`, and `ExecStart` to your venv path. Set `COILSHIELD_LOG_DIR` if you want a fixed absolute telemetry directory for dashboards.
 
 ## I²C / mux
 

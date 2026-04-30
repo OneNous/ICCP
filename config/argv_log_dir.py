@@ -1,11 +1,11 @@
 """
 Set COILSHIELD_LOG_DIR from argv before ``import config.settings`` (LOG_DIR is fixed at import).
 
-Used by main.py, iccp_cli.py, dashboard.py, and tui.py so telemetry paths match without relying on
+Used by ``src/main.py``, ``src/iccp_cli.py``, ``src/dashboard.py``, and ``src/tui.py`` so telemetry paths match without relying on
 shell environment alone.
 
 Dashboard / TUI: if neither ``--log-dir`` nor COILSHIELD_LOG_DIR/ICCP_LOG_DIR is set, Linux builds
-can copy the telemetry directory from a running ``iccp start`` (or ``main.py``) process so the UI
+can copy the telemetry directory from a running ``iccp start`` (or ``src/main``) process so the UI
 tracks the live controller without hand-matching systemd Environment= lines.
 """
 

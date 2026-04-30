@@ -6,7 +6,7 @@ Accepted (planning / architecture).
 
 ## Context
 
-CoilShield’s controller is **local-first** on a Raspberry Pi: [`logger.py`](../../logger.py) writes SQLite and `latest.json` every control tick. A future product line needs **remote visibility** for two different audiences: **operators** (OEM, installers, support) and **homeowners or facility users** (non-engineering).
+CoilShield’s controller is **local-first** on a Raspberry Pi: [`logger.py`](../src/../logger.py) writes SQLite and `latest.json` every control tick. A future product line needs **remote visibility** for two different audiences: **operators** (OEM, installers, support) and **homeowners or facility users** (non-engineering).
 
 ## Decision
 

@@ -2,7 +2,7 @@
 
 **Repo default** in [`config/settings.py`](../config/settings.py) is **no multiplexer** — all **INA219** and **ADS1115** on the same **SDA/SCL** (unique 7-bit addresses: default INAs **0x40, 0x41, 0x44, 0x45**, ADS **0x48**). A **TCA9548A** is optional: set `I2C_MUX_ADDRESS` and the `I2C_MUX_CHANNEL_*` fields, or `COILSHIELD_MUX_ADDRESS=0x70` plus matching channel config, only if your PCB still uses a mux.
 
-**Related:** [architecture-channel-i2c-reference.md](architecture-channel-i2c-reference.md) (channel index ↔ address ↔ mux, ref vs anode code paths, import order). If import-time INA init fails, [`sensors.py`](../sensors.py) leaves `_sensors` empty until I²C is healthy; the runtime also **retries** full INA init on a throttle (`INA219_REINIT_MIN_INTERVAL_S` in `config/settings.py`) on each `read_all_real` tick — see also [`ina219-datasheet-notes.md`](ina219-datasheet-notes.md).
+**Related:** [architecture-channel-i2c-reference.md](architecture-channel-i2c-reference.md) (channel index ↔ address ↔ mux, ref vs anode code paths, import order). If import-time INA init fails, [`sensors.py`](../src/sensors.py) leaves `_sensors` empty until I²C is healthy; the runtime also **retries** full INA init on a throttle (`INA219_REINIT_MIN_INTERVAL_S` in `config/settings.py`) on each `read_all_real` tick — see also [`ina219-datasheet-notes.md`](ina219-datasheet-notes.md).
 
 **Read timeout / hang:** The Python `pi-ina219` path has no per-call wall-clock timeout. Stuck SCL, a wedged device, or a bad mux can block `read_all_real` until the kernel I²C layer returns (Linux exposes `i2c` adapter timeout via module params / `i2c_timeout` on some drivers — check `dmesg` and your kernel docs). Firmware already **reopens** `/dev/i2c-N` on some mux EIO paths (`I2C_MUX_SMBUS_REOPEN_ON_SELECT_EIO`); a full bus hang may still require process restart or power cycle.
 
@@ -54,7 +54,7 @@
 - **Power:** 3.3V on the mux VCC and each INA during CP activity (loads and PWM can expose marginal supplies).
 - **Narrow the fault:** if only certain ports EIO, suspect that **downstream** branch, strap, or INA, not the Pi alone.
 
-**Why probe can work while the controller/commissioning does not:** `iccp probe` uses **smbus2** for raw I²C (mux select, INA/ADS pokes) via [`hw_probe.py`](../hw_probe.py). `iccp start` and `iccp commission` **import** [`sensors.py`](../sensors.py), which runs **`pi-ina219`** `INA219.configure()` at import time. If that throws, you get **`[sensors] Hardware init failed: ...`**, an empty in-memory sensor list, and anode paths report **`no hardware`** even when probe’s STEP 1/1b was green. That is a **sensors** import / library init path — not a second, hidden config file with different mux values.
+**Why probe can work while the controller/commissioning does not:** `iccp probe` uses **smbus2** for raw I²C (mux select, INA/ADS pokes) via [`hw_probe.py`](../src/hw_probe.py). `iccp start` and `iccp commission` **import** [`sensors.py`](../src/sensors.py), which runs **`pi-ina219`** `INA219.configure()` at import time. If that throws, you get **`[sensors] Hardware init failed: ...`**, an empty in-memory sensor list, and anode paths report **`no hardware`** even when probe’s STEP 1/1b was green. That is a **sensors** import / library init path — not a second, hidden config file with different mux values.
 
 **Narrow the failure (address vs mux vs config source vs import):**
 

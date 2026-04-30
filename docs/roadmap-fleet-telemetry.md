@@ -1,6 +1,6 @@
 # Roadmap — fleet backend vs consumer app (not in this repo)
 
-The on-device controller ([`iccp_runtime.py`](../iccp_runtime.py), [`logger.py`](../logger.py)) is **local-first**: SQLite + `latest.json`, optional Wi-Fi on the Pi for SSH only.
+The on-device controller ([`iccp_runtime.py`](../src/iccp_runtime.py), [`logger.py`](../src/logger.py)) is **local-first**: SQLite + `latest.json`, optional Wi-Fi on the Pi for SSH only.
 
 A future product line may add **two separate systems**:
 

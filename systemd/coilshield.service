@@ -1,0 +1,39 @@
+# CoilShield firmware — systemd unit (canonical example)
+#
+# This file is the canonical unit under systemd/ per claude.md. deploy/iccp.service
+# is kept in sync for backwards-compatible paths in older docs and scripts.
+#
+# INSTALL (on the Pi) — pick a unit name on disk (examples):
+#   sudo cp systemd/coilshield.service /etc/systemd/system/coilshield.service
+#   # or, if you still use the historical name:
+#   sudo cp systemd/coilshield.service /etc/systemd/system/iccp.service
+#
+# Then edit User, Group, WorkingDirectory, and ExecStart if they differ.
+#   - WorkingDirectory = repo root (where commissioning.json / clear_fault live)
+#   - ExecStart = full path to venv's `iccp` after:  pip install -e .
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now coilshield
+#   # or: sudo systemctl enable --now iccp
+#
+# Strongly recommended: absolute telemetry dir so dashboard + controller always agree:
+#   Environment=COILSHIELD_LOG_DIR=/home/you/iccp/logs
+
+[Unit]
+Description=CoilShield ICCP controller (firmware)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=onenous
+Group=onenous
+WorkingDirectory=/home/onenous/coilshield
+ExecStart=/home/onenous/coilshield/.venv/bin/iccp start
+Restart=on-failure
+RestartSec=10
+Environment=COILSHIELD_SIM=0
+# Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
+
+[Install]
+WantedBy=multi-user.target

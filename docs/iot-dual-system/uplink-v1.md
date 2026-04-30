@@ -53,7 +53,7 @@ Carries a **copy** of the fields needed for fleet analytics. v1 is a **curated**
 
 **Mapping from SQLite `readings` (optional for agent)**
 
-- Full historical backfill is **not** required for v1. If implemented, map columns `chK_*` and system columns per [`logger.py`](../../logger.py) `_write_db` / row builder; `ts` / `ts_unix` for timestamps.
+- Full historical backfill is **not** required for v1. If implemented, map columns `chK_*` and system columns per [`logger.py`](../src/../logger.py) `_write_db` / row builder; `ts` / `ts_unix` for timestamps.
 
 **Fields intentionally not in v1**
 

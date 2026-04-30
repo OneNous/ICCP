@@ -17,4 +17,4 @@ This folder is the **implementation of the product roadmap** for a future “dua
 
 **In scope for this documentation:** cross-team contracts and system design. **Out of scope:** cloud service code (not in this repository per [roadmap-fleet-telemetry.md](../roadmap-fleet-telemetry.md)).
 
-**Related in-repo:** [iccp-requirements.md](../iccp-requirements.md) §9 (`latest.json` contract, dual-write policy); §10 (fleet/remote still **out of scope** for the real-time control loop). Implementation touchpoints: [`logger.py`](../../logger.py), [`iccp_runtime.py`](../../iccp_runtime.py), [`config/settings.py`](../../config/settings.py) (`resolved_telemetry_paths`).
+**Related in-repo:** [iccp-requirements.md](../iccp-requirements.md) §9 (`latest.json` contract, dual-write policy); §10 (fleet/remote still **out of scope** for the real-time control loop). Implementation touchpoints: [`logger.py`](../src/../logger.py), [`iccp_runtime.py`](../src/../iccp_runtime.py), [`config/settings.py`](../../config/settings.py) (`resolved_telemetry_paths`).

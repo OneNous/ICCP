@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -374,7 +375,10 @@ def test_log_dir_argv_applies_before_settings_import(tmp_path: Path) -> None:
     subprocess.check_call(
         [sys.executable, "-c", code],
         cwd=str(root),
-        env={**os.environ, "PYTHONPATH": str(root)},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join([str(root / "src"), str(root)]),
+        },
     )
 
 

@@ -27,6 +27,10 @@ cloud = [
     "paho-mqtt>=1.6.3",
     "inotify-simple>=2.0; sys_platform == 'linux'",
 ]
+supabase = [
+    "supabase>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
 
 [project.scripts]
 iccp = "iccp_cli:main"
@@ -36,9 +40,13 @@ iccp-commission-mqtt = "pi_edge.commission_mqtt_bridge:main"
 iccp-telemetry-mqtt = "pi_edge.telemetry_mqtt_sidecar:main"
 iccp-edge-doctor = "pi_edge.edge_doctor:main"
 
+[tool.setuptools.package-dir]
+"" = "src"
+"config" = "config"
+
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["config*", "pi_edge*"]
+where = ["src", "."]
+include = ["pi_edge*", "config*", "generated*"]
 
 [tool.setuptools]
 py-modules = [
@@ -55,11 +63,16 @@ py-modules = [
     "sensors",
     "reference",
     "commissioning",
-    "ble_provision",
+    "ble_provisioning",
     "platform_util",
     "logger",
     "dashboard",
     "leds",
     "temp",
     "tui",
+    "polarization_safety",
+    "channel_labels",
+    "iccp_electrolyte",
+    "cloud_sync",
+    "tech_api",
 ]

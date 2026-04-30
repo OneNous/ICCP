@@ -5,7 +5,7 @@
 ## What stays “firmware” truth
 
 - **Path resolution:** `resolved_telemetry_paths()` in [`config/settings.py`](../../config/settings.py) — returns absolute paths, including `latest_json` and the SQLite DB name under the **same** `LOG_DIR`.  
-- **Staleness / freshness:** the dashboard and TUI use `ts` / `ts_unix` in `latest.json` and, where implemented, `telemetry_incomplete` and `last_valid_channel_snapshot_ts*` (see [`logger.py`](../../logger.py) `recovery_touch_latest` / `record`).  
+- **Staleness / freshness:** the dashboard and TUI use `ts` / `ts_unix` in `latest.json` and, where implemented, `telemetry_incomplete` and `last_valid_channel_snapshot_ts*` (see [`logger.py`](../src/../logger.py) `recovery_touch_latest` / `record`).  
 - **Control cadence:** `SAMPLE_INTERVAL_S` in `config.settings` (single source for how often `Logger.record` is expected to run when the loop is healthy).
 
 ## Stable export for fleet v1 (subset)
@@ -21,12 +21,12 @@ Uplink v1 should mirror the **envelope** + **system** + **channel** map describe
 | Desired product field | In firmware today? | v1 approach |
 | -------------------- | ------------------ | ----------- |
 | **Humidity** | No first-class field | Omitted; add in firmware + `uplink_schema_version` bump when a sensor exists, or BFF `unknown` |
-| **Energy per cycle** (condenser cycle) | **Partial:** `chN_energy_today_j` in `latest.json` and daily energy accumulation in [`logger.py`](../../logger.py) | Use **calendar-day** or rolling integrals; define “cycle” in product, not in v1 DTOs |
+| **Energy per cycle** (condenser cycle) | **Partial:** `chN_energy_today_j` in `latest.json` and daily energy accumulation in [`logger.py`](../src/../logger.py) | Use **calendar-day** or rolling integrals; define “cycle” in product, not in v1 DTOs |
 | **“Protected” for consumer** | `all_protected` + FSM in channels | Use spec-v2 and legacy fields; document the **business** rule in the BFF ([bff-consumer.md](bff-consumer.md)) |
 
 ## What firmware will **not** do (for this initiative)
 
-- **No** MQTT, HTTPS, or long-lived sockets inside [`iccp_runtime.py`](../../iccp_runtime.py) or the `Logger` hot path.  
+- **No** MQTT, HTTPS, or long-lived sockets inside [`iccp_runtime.py`](../src/../iccp_runtime.py) or the `Logger` hot path.  
 - **No** “fleet remote management” inside the process that owns PWM (see [iccp-requirements.md](../iccp-requirements.md) §10).  
 - **No** embedding customer PII into `latest.json` or SQLite.
 

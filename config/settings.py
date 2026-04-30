@@ -826,3 +826,16 @@ def resolved_telemetry_paths() -> dict[str, str]:
         "sqlite_db": str((logd / SQLITE_DB_NAME).resolve()),
         "log_dir_source": src,
     }
+
+
+# --- Supabase (optional; set via environment or repo-root ``.env`` loaded before import) ---
+# Prefer ``SUPABASE_SERVICE_ROLE_KEY`` (dashboard name) or ``SUPABASE_SERVICE_KEY`` (.claude naming).
+# Never log these values. On Pi, prefer systemd ``EnvironmentFile`` over a world-readable ``.env``.
+SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").strip()
+SUPABASE_SERVICE_KEY = (
+    (os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    or (os.environ.get("SUPABASE_SERVICE_KEY") or "").strip()
+)
+SUPABASE_ANON_KEY = (os.environ.get("SUPABASE_ANON_KEY") or "").strip()
+SUPABASE_PROJECT_REF = (os.environ.get("SUPABASE_PROJECT_REF") or "").strip()
+SUPABASE_CONFIGURED = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)

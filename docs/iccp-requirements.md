@@ -64,7 +64,7 @@ Only when all four hold does the per-channel state become `Protected` (see Secti
 
 ### 3.1 Definition
 
-`native_mv` is the measured reference potential at the pan/coil sense point (volts at the ADS1115 AIN node × scale, per [reference.py](../reference.py) `ReferenceElectrode.read()`) when **all anodes have been fully de-energized long enough for the cell to relax to its free-corrosion potential**.
+`native_mv` is the measured reference potential at the pan/coil sense point (volts at the ADS1115 AIN node × scale, per [reference.py](../src/reference.py) `ReferenceElectrode.read()`) when **all anodes have been fully de-energized long enough for the cell to relax to its free-corrosion potential**.
 
 `native_mv` is a **single shared scalar**, not a per-channel array (decision Q1 in the Decisions log). The rig has exactly one reference electrode, and the shift math uses `instant-off` to remove channel-specific IR artifact before the sample is taken — there is no channel-specific "native" the sensor can distinguish. Every channel's `shift_mv` derives from the same `native_mv`. The `state_v2` FSM is still **per channel** in software (supervision, timers, and `latest.json`), but that is an **operational proxy**: local overpotential and wetting can differ by anode while shift is one shared measurement from the reference.
 
@@ -72,11 +72,11 @@ Only when all four hold does the per-channel state become `Protected` (see Secti
 
 All of these must hold for the full capture window, not just at the start:
 
-1. **All anode gates at hard LOW**, not soft-PWM 0%. Hardware-equivalent of `controller.enter_static_gate_off()` (see [control.py](../control.py) `PWMBank.enter_static_gate_off`).
+1. **All anode gates at hard LOW**, not soft-PWM 0%. Hardware-equivalent of `controller.enter_static_gate_off()` (see [control.py](../src/control.py) `PWMBank.enter_static_gate_off`).
 2. **Shunt currents confirmed at rest.** Every INA219 reads `|I| < I_REST_MA` (proposed default `0.3` mA; today `COMMISSIONING_OC_CONFIRM_I_MA = 1.0` mA is too loose — see sidebar) for `T_REST_CONFIRM` seconds continuously.
 3. **Reference stable.** Rolling std-dev of the reference over a window `W_REF = 10` s below `NATIVE_STABILITY_MV` (proposed default `3` mV) for `T_RELAX` seconds (default `60` s **[interim — revisit after first bench soak]**).
 4. **Slope gate.** Linear slope over the capture window ≤ `NATIVE_SLOPE_MV_PER_MIN` (proposed default `2` mV/min). If the reference is still drifting faster than that, the cell has not relaxed.
-5. **Temperature recorded.** `pan_temp_f` from the DS18B20 is captured alongside the native so `REF_TEMP_COMP_MV_PER_F` has a valid anchor point (see [reference.py](../reference.py) `ref_temp_adjust_mv`).
+5. **Temperature recorded.** `pan_temp_f` from the DS18B20 is captured alongside the native so `REF_TEMP_COMP_MV_PER_F` has a valid anchor point (see [reference.py](../src/reference.py) `ref_temp_adjust_mv`).
 
 ### 3.3 Capture procedure
 
@@ -94,7 +94,7 @@ Required:
 - **Scheduled re-capture** every `NATIVE_RECAPTURE_S` wall-clock seconds (default `86_400` s = daily). On re-capture, the controller pauses active CP, runs the §3.3 procedure, and resumes. This is the primary cadence.
 - **On-demand re-capture** via `iccp commission --native-only` — Phase 1 only, no current ramp (Phase 2/3 skipped).
 - **Drift-triggered warning** (not a forced re-capture): if `|ref_mv − last_native_mv|` exceeds `NATIVE_DRIFT_TRIGGER_MV` (default `50` mV) during sustained `Protected` state, log a warning in `system_alerts` so the operator can run `iccp commission --native-only` at a chosen moment. A forced drift re-capture would pre-empt active CP on a potentially noisy signal; the scheduled daily cadence is the authoritative re-capture path.
-- Writes to `commissioning.json` are atomic (see [reference.py](../reference.py) `_atomic_write_json_same_dir`) and include a `native_measured_at` ISO timestamp and `native_temp_f`. This is already the case today.
+- Writes to `commissioning.json` are atomic (see [reference.py](../src/reference.py) `_atomic_write_json_same_dir`) and include a `native_measured_at` ISO timestamp and `native_temp_f`. This is already the case today.
 
 ### 3.5 Bench acceptance test (field-verifiable)
 
@@ -108,7 +108,7 @@ Documented, runnable by a technician:
 
 ### 3.6 Today (current behavior)
 
-> [See [commissioning.py](../commissioning.py) `run()` and `_verify_phase1_drive_off()`, and [config/settings.py](../config/settings.py) lines ~289–320.]
+> [See [commissioning.py](../src/commissioning.py) `run()` and `_verify_phase1_drive_off()`, and [config/settings.py](../config/settings.py) lines ~289–320.]
 >
 > - Phase 1 calls `controller.all_outputs_off()`, optionally `enter_static_gate_off()` (static LOW gate, good), then `_pump_control` for `COMMISSIONING_SETTLE_S` = **60 s** (probably too short for relaxation — no stability gate, just a fixed wait).
 > - `_verify_phase1_drive_off` checks PWM duties are 0% and shunt `|I|` < `COMMISSIONING_OC_CONFIRM_I_MA` = **1.0 mA** within `COMMISSIONING_PHASE1_OFF_CONFIRM_TIMEOUT_S` = **3 s**. The stricter `COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA` = **1.0 mA** gates Phase 1 *after* settle. There is no stability gate on the *reference* reading itself — slope and std-dev are not checked.
@@ -159,7 +159,7 @@ stateDiagram-v2
 
 ### 4.3 Required invariants
 
-- **Per-channel independence.** One channel in `Fault` must not pull any other channel out of `Protected`. `INA219_FAILSAFE_ALL_OFF` (see [control.py](../control.py) lines ~412–448) is scoped to **bus-level I²C failures only** — `OSError` with `errno 5` or equivalent OS-level failures that indicate the I²C bus itself is unhealthy (decision Q8 in the Decisions log). A per-channel INA219 read failure that is *not* bus-level faults that channel alone and leaves siblings regulating. Bus-level failures still trigger the system-level `HARDWARE_I2C` fail-safe in §6.1.
+- **Per-channel independence.** One channel in `Fault` must not pull any other channel out of `Protected`. `INA219_FAILSAFE_ALL_OFF` (see [control.py](../src/control.py) lines ~412–448) is scoped to **bus-level I²C failures only** — `OSError` with `errno 5` or equivalent OS-level failures that indicate the I²C bus itself is unhealthy (decision Q8 in the Decisions log). A per-channel INA219 read failure that is *not* bus-level faults that channel alone and leaves siblings regulating. Bus-level failures still trigger the system-level `HARDWARE_I2C` fail-safe in §6.1.
 - **`any_wet` becomes `any_active`** — informational only; set when any channel is `Polarizing`, `Protected`, or `Overprotected`. Neither the UI nor any safety gate reads it as "the system is protecting."
 - **`all_protected`** is the only system-level protection assertion (per §2.2: dry `Off` enabled channels do not block it).
 - **Hysteresis values are spec'd, not guessed.** Every transition out of `Protected` uses an explicit hysteresis constant listed in Section 8.
@@ -179,12 +179,12 @@ stateDiagram-v2
 
 ### 4.5 Today (current behavior)
 
-> [See [control.py](../control.py) `Controller.update()` and `classify_path()`.]
+> [See [control.py](../src/control.py) `Controller.update()` and `classify_path()`.]
 >
 > - States are `OPEN / REGULATE / PROTECTING / FAULT`. Driven by shunt current and impedance classification (`PATH_OPEN / PATH_WEAK / PATH_STRONG` — lines 93–136).
 > - `PROTECTING` is entered when `path == PATH_STRONG` **and** `|current - target| < PROTECTING_ENTER_DELTA_MA` (= 0.2 mA) for `PROTECTING_ENTER_HOLD_TICKS` (= 3 ticks = 1.5 s) — lines 524–548.
 > - **`PROTECTING` is asserted from shunt thresholds, not from potential shift.** A channel can be `PROTECTING` while `shift_mv` is zero or `None` (no baseline).
-> - The outer loop ([control.py](../control.py) `update_potential_target`) nudges `TARGET_MA` by `±TARGET_MA_STEP` when shift is below `0.8 × TARGET_SHIFT_MV` or above `MAX_SHIFT_MV`, and — when `OUTER_LOOP_TRIM_TO_SHIFT_CENTER` is True (default in `config/settings.py`) — also trims toward `TARGET_SHIFT_MV` while shift stays in that OK window (see `OUTER_LOOP_SHIFT_TRIM_TOL_MV`). This *affects* the current setpoint but does **not** gate state transitions on shift.
+> - The outer loop ([control.py](../src/control.py) `update_potential_target`) nudges `TARGET_MA` by `±TARGET_MA_STEP` when shift is below `0.8 × TARGET_SHIFT_MV` or above `MAX_SHIFT_MV`, and — when `OUTER_LOOP_TRIM_TO_SHIFT_CENTER` is True (default in `config/settings.py`) — also trims toward `TARGET_SHIFT_MV` while shift stays in that OK window (see `OUTER_LOOP_SHIFT_TRIM_TOL_MV`). This *affects* the current setpoint but does **not** gate state transitions on shift.
 > - `any_wet()` returns `any(status == PROTECTING)` (line 729). `wet_channels` in `latest.json` is that count; the dashboard / UI treat this as "the system is protecting."
 > - **No `CANNOT_POLARIZE` timeout.** A channel can sit in `REGULATE` forever at high duty with zero shift; there is no failure path for "we are energizing but not polarizing."
 > - **No `Overprotected` state.** Over-shift nudges `TARGET_MA` down but does not change FSM state or raise a fault; dashboard will not flag it beyond a band label.
@@ -208,7 +208,7 @@ Per tick (at `SAMPLE_INTERVAL_S` = 0.5 s today):
 
 ### 5.2 Duty limits
 
-- **Vcell hard cap.** `duty_pct ≤ 100 × VCELL_HARD_MAX_V / bus_v` — already implemented as `duty_pct_cap_for_vcell` ([control.py](../control.py) lines 82–90). Keep.
+- **Vcell hard cap.** `duty_pct ≤ 100 × VCELL_HARD_MAX_V / bus_v` — already implemented as `duty_pct_cap_for_vcell` ([control.py](../src/control.py) lines 82–90). Keep.
 - **Regulate ceiling.** `PWM_MAX_DUTY` (default 80%). Keep.
 - **Protect ceiling.** `DUTY_PROTECT_MAX` (default 80%). Keep; document that it is a ceiling applied in `Polarizing`, `Protected`, and `Overprotected`, and that it is never the reason `Protected` is reached.
 - **Asymmetric ramp.** `PWM_STEP_{UP,DOWN}_{REGULATE,PROTECTING}` and per-channel overrides — keep. Document the effective `%/s` = step / `SAMPLE_INTERVAL_S`.
@@ -219,7 +219,7 @@ When `shift_mv > MAX_SHIFT_MV` on channel `c`, channel `c`'s inner loop runs **u
 
 ### 5.4 Today (current behavior)
 
-> [See [control.py](../control.py) lines 529–609 and [config/settings.py](../config/settings.py) `TARGET_MA_STEP`, `MAX_SHIFT_MV`.]
+> [See [control.py](../src/control.py) lines 529–609 and [config/settings.py](../config/settings.py) `TARGET_MA_STEP`, `MAX_SHIFT_MV`.]
 >
 > - The inner loop regulates shunt current to `TARGET_MA`. `TARGET_MA` is nudged ±`TARGET_MA_STEP` (default 0.02 mA) by `update_potential_target` when shift is outside `[0.8·TARGET_SHIFT_MV, MAX_SHIFT_MV]`, and (by default) trimmed toward `TARGET_SHIFT_MV` when shift is inside that window but off-center.
 > - No `polarization_deficit_mv`, no per-channel gain. The system is a current-regulator with a slow *bias* on its setpoint from the outer loop.
@@ -235,7 +235,7 @@ When `shift_mv > MAX_SHIFT_MV` on channel `c`, channel `c`'s inner loop runs **u
 |---|---|---|---|
 | `OVERCURRENT` | `shunt_i_ma[c] > CHANNEL_MAX_I_MA[c]` for `OVERCURRENT_LATCH_TICKS` | Auto-clear under hysteresis (today's behavior); per-channel only. | Per channel. |
 | `OVERPROTECTION` | `shift_mv > MAX_SHIFT_MV + HYST_OVER_FAULT_MV` for `T_OVER_FAULT` on channel `c` | Auto-clear on return below `MAX_SHIFT_MV - HYST_OVER_EXIT_MV`. Distinct from the `Overprotected` *state*: the state handles normal overshoot under potential control (§5.3); the fault triggers only after sustained overshoot past the wider `HYST_OVER_FAULT_MV` margin, indicating real runaway (decision Q9). | Per channel. |
-| `CANNOT_POLARIZE` | Channel remains in `Polarizing` at `>= PWM_MAX_DUTY × CANNOT_POLARIZE_DUTY_FRAC` for `T_POLARIZE_MAX` with `shift_mv < TARGET_SHIFT_MV` | Auto-retry up to `POLARIZE_RETRY_MAX` (default `3`) with `POLARIZE_RETRY_INTERVAL_S` = `T_POLARIZE_MAX` (default `1800` s) between attempts, then permanent latch — mirrors the `OVERCURRENT`-with-hysteresis pattern in [control.py](../control.py) lines 630–637. The retry interval is deliberately longer than `FAULT_RETRY_INTERVAL_S` (60 s) because polarization is a slow phenomenon (decision Q4). | Per channel. |
+| `CANNOT_POLARIZE` | Channel remains in `Polarizing` at `>= PWM_MAX_DUTY × CANNOT_POLARIZE_DUTY_FRAC` for `T_POLARIZE_MAX` with `shift_mv < TARGET_SHIFT_MV` | Auto-retry up to `POLARIZE_RETRY_MAX` (default `3`) with `POLARIZE_RETRY_INTERVAL_S` = `T_POLARIZE_MAX` (default `1800` s) between attempts, then permanent latch — mirrors the `OVERCURRENT`-with-hysteresis pattern in [control.py](../src/control.py) lines 630–637. The retry interval is deliberately longer than `FAULT_RETRY_INTERVAL_S` (60 s) because polarization is a slow phenomenon (decision Q4). | Per channel. |
 | `REFERENCE_INVALID` | Reference read fails, or rolling std-dev > `REF_NOISE_REJECT_MV` for `T_REF_BAD`, or native re-capture fails after `NATIVE_CAPTURE_RETRIES`. | Latched. Gates LOW on **all** channels (system-level fail-safe). | System. |
 | `HARDWARE_I2C` | Anode INA219 read fails **at the bus level** (`OSError` / `errno 5` or equivalent) — not a per-channel transient that `_ina219_idle_benign_ch` classifies as benign. | Auto-clear when reads recover for `T_I2C_OK`. Forces all PWM to 0 while active via `INA219_FAILSAFE_ALL_OFF` (scoped to bus-level failures per §4.3, decision Q8). Per-channel, non-bus INA219 read failures fault only the affected channel. | System. |
 | `OFF_VERIFY_FAILED` | Phase 1 shunt-rest precondition fails after settle (today's `COMMISSIONING_PHASE1_NATIVE_ABORT_I_MA` path). | Latched until operator clears. | System. |
@@ -244,7 +244,7 @@ When `shift_mv > MAX_SHIFT_MV` on channel `c`, channel `c`'s inner loop runs **u
 ### 6.2 `clear_fault` semantics
 
 - `clear_fault` supports both per-channel and system-level clear (decision Q7 in the Decisions log):
-  - The existing `CLEAR_FAULT_FILE` file-touch mechanism clears **all channels** (current behavior, [control.py](../control.py) `_check_clear_fault` line 757). Kept as the systemd-friendly path.
+  - The existing `CLEAR_FAULT_FILE` file-touch mechanism clears **all channels** (current behavior, [control.py](../src/control.py) `_check_clear_fault` line 757). Kept as the systemd-friendly path.
   - The CLI gains `iccp clear-fault --channel N` for per-channel clearing. No second file (e.g. `clear_fault_ch1`) is added — the CLI is the authoritative per-channel path.
 - Clearing a fault transitions the channel to `Off`, not to `Probing`. The operator re-enables via the normal boot path so the channel observes its boundary conditions from scratch.
 - Clearing resets `fault_retry_count` (and `polarize_retry_count` for `CANNOT_POLARIZE`). This matches today.
@@ -256,13 +256,13 @@ On any of the following, **all gates LOW, every channel → `Off`, `all_protecte
 - Unhandled Python exception in the control loop.
 - Loss of reference for more than `T_REF_BAD` (triggers `REFERENCE_INVALID`).
 - Complete I²C bus loss on the anode bank (triggers `HARDWARE_I2C` system-level).
-- `SIGTERM` / `SIGINT` to the process (graceful shutdown should always flush gates LOW; see `Controller.cleanup()` at the bottom of [control.py](../control.py)).
+- `SIGTERM` / `SIGINT` to the process (graceful shutdown should always flush gates LOW; see `Controller.cleanup()` at the bottom of [control.py](../src/control.py)).
 
 "Fail-safe" here means the anode drive stops. It does not mean the structure is protected. That is the point.
 
 ### 6.4 Today (current behavior)
 
-> - Fault types emitted by [control.py](../control.py): `OVERCURRENT` (lines 482–491), `UNDERVOLTAGE` (493–498), `OVERVOLTAGE` (499–504), `READ ERROR` (460–475 — not a first-class fault code, just a string). No `CANNOT_POLARIZE`, `OVERPROTECTION`, or `REFERENCE_INVALID` today.
+> - Fault types emitted by [control.py](../src/control.py): `OVERCURRENT` (lines 482–491), `UNDERVOLTAGE` (493–498), `OVERVOLTAGE` (499–504), `READ ERROR` (460–475 — not a first-class fault code, just a string). No `CANNOT_POLARIZE`, `OVERPROTECTION`, or `REFERENCE_INVALID` today.
 > - `FAULT_AUTO_CLEAR = True` with `FAULT_RETRY_INTERVAL_S = 60 s` and `FAULT_RETRY_MAX = 10`: after `FAULT_RETRY_MAX` retries a permanent latch tag is appended (lines 630–637).
 > - `OVERCURRENT` has immediate hysteresis recovery (`OVERCURRENT_RECOVERY_THRESHOLD = 0.9 × MAX_MA`) — lines 641–658.
 > - `clear_fault` is all-channels-at-once via the `CLEAR_FAULT_FILE` touch (line 757–772).
@@ -309,7 +309,7 @@ If the follow-up architecture work shows placement cannot resolve per-channel sh
 
 **Phase 1 — native baseline.** Exactly as specified in §3 (stability gates, slope gate, median, retries). Writes `native_mv`, `native_temp_f`, `native_measured_at` to `commissioning.json`.
 
-**Phase 2 — per-channel polarization sweep (serialized).** Channels are swept **one at a time**, not in parallel (decision Q10 in the Decisions log): with a single shared reference, an active channel's drive biases a sibling's measurement during ramp, so serialized sweep is provably correct at the cost of wall-clock time. For each enabled channel `c`, with all other channels held at hard-LOW gates: raise `i_target[c]` by `COMMISSIONING_RAMP_STEP_MA` (fine step `COMMISSIONING_RAMP_FINE_STEP_MA` when within `COMMISSIONING_RAMP_FINE_NEAR_SHIFT_FRAC` of target). At each step, instant-off + OC-curve measurement per the existing [reference.py](../reference.py) `collect_oc_decay_samples` path. Record the *first* `(duty, i_ma)` at which `shift >= TARGET_SHIFT_MV` holds for `T_POL_STABLE`. Parallel sweep may be revisited once bench data shows cross-channel bias during ramp is negligible.
+**Phase 2 — per-channel polarization sweep (serialized).** Channels are swept **one at a time**, not in parallel (decision Q10 in the Decisions log): with a single shared reference, an active channel's drive biases a sibling's measurement during ramp, so serialized sweep is provably correct at the cost of wall-clock time. For each enabled channel `c`, with all other channels held at hard-LOW gates: raise `i_target[c]` by `COMMISSIONING_RAMP_STEP_MA` (fine step `COMMISSIONING_RAMP_FINE_STEP_MA` when within `COMMISSIONING_RAMP_FINE_NEAR_SHIFT_FRAC` of target). At each step, instant-off + OC-curve measurement per the existing [reference.py](../src/reference.py) `collect_oc_decay_samples` path. Record the *first* `(duty, i_ma)` at which `shift >= TARGET_SHIFT_MV` holds for `T_POL_STABLE`. Parallel sweep may be revisited once bench data shows cross-channel bias during ramp is negligible.
 
 **Phase 3 — persist hints.** Write per-channel into `commissioning.json`:
 
@@ -335,7 +335,7 @@ If the follow-up architecture work shows placement cannot resolve per-channel sh
 
 ### 8.2 Today (current behavior)
 
-> [See [commissioning.py](../commissioning.py) `run()`.]
+> [See [commissioning.py](../src/commissioning.py) `run()`.]
 >
 > - Phase 0 does not exist as a named step; I²C errors surface as runtime read errors once Phase 1 starts.
 > - Phase 1: `all_off()` → static gate LOW → `COMMISSIONING_SETTLE_S` settle → off-verify → 30×2 s averaging. Mean, no slope/std-dev gate, no retry. See §3.6 for the full delta.
@@ -397,7 +397,7 @@ Until the cutover, no new UI reads `wet`, `wet_channels`, or `ref_status` bands 
 
 ### 9.4 Today (current behavior)
 
-> [See [logger.py](../logger.py) `record()` lines 507–781 and [config/settings.py](../config/settings.py) `LATEST_JSON_NAME`.]
+> [See [logger.py](../src/logger.py) `record()` lines 507–781 and [config/settings.py](../config/settings.py) `LATEST_JSON_NAME`.]
 >
 > - Per-channel fields present today: `state`, `ma`, `duty`, `bus_v`, `target_ma`, `impedance_ohm`, `cell_voltage_v`, `power_w`, `z_delta_ohm`, `status`, `sensor_error`, plus derived (`z_std_ohm`, `sigma_proxy_s`, `fqi_raw_s`, `fqi_smooth_s`, `z_rate_ohm_s`, `dV_dI_ohm`, `efficiency_ma_per_pct`, `surface_hint`, `coulombs_today_c`, `energy_today_j`).
 > - Per-channel fields **missing** vs §9.1: `shift_mv` (only exists at top level as `ref_shift_mv`), `native_mv` (only via `ref_baseline_set` bool), `ref_mv` (only top-level `ref_raw_mv`), `t_in_state_s`, `fault`, `fault_reason`. Faults today are free-form strings in a top-level `faults` list.

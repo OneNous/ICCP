@@ -1,25 +1,20 @@
-# CoilShield ICCP — systemd unit (EXAMPLE)
+# CoilShield ICCP — systemd unit (compatibility path)
+#
+# Canonical example (edit there first): systemd/coilshield.service
+# This copy exists so older docs and scripts that reference deploy/iccp.service
+# still point at a valid unit. Keep [Unit]/[Service]/[Install] identical to systemd/coilshield.service.
 #
 # INSTALL (on the Pi):
-#   1. Copy this file:  sudo cp deploy/iccp.service /etc/systemd/system/iccp.service
-#   2. Edit User, Group, WorkingDirectory, and ExecStart if they differ (defaults: onenous, ~/coilshield).
-#      - WorkingDirectory = repo root (where commissioning.json / clear_fault live)
-#      - ExecStart = full path to venv's `iccp` after:  pip install -e .
-#   3. sudo systemctl daemon-reload
-#   4. sudo systemctl enable --now iccp
+#   sudo cp deploy/iccp.service /etc/systemd/system/iccp.service
+#   # preferred canonical path:
+#   sudo cp systemd/coilshield.service /etc/systemd/system/iccp.service
 #
-# Example paths (user onenous @ 0neNous-pi, repo ~/coilshield — edit if yours differs):
-#   User=onenous
-#   Group=onenous
-#   WorkingDirectory=/home/onenous/coilshield
-#   ExecStart=/home/onenous/coilshield/.venv/bin/iccp start
-#
-# Strongly recommended: absolute telemetry dir so dashboard + controller always agree:
-#   Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
-# Or pass on ExecStart: .../iccp start --log-dir /home/onenous/coilshield/logs
+# Then edit User, Group, WorkingDirectory, and ExecStart if they differ.
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now iccp
 
 [Unit]
-Description=CoilShield ICCP controller
+Description=CoilShield ICCP controller (firmware)
 After=network-online.target
 Wants=network-online.target
 

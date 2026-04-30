@@ -20,10 +20,11 @@ Every subcommand has exactly one canonical spelling. No aliases.
   iccp clear-fault [--channel N]
                             Clear all channels (no --channel) or only channel N (0-based).
   iccp version              Print coilshield-iccp package version
+  iccp supabase-ping        Verify Supabase URL + service key (optional ``[supabase]`` extra)
   iccp --help / -h / help  Usage (all commands + quick guide)
 
 On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload`` unless
-``ICCP_SYSTEMD_SYNC=0``. ``tui`` / ``dashboard`` / ``live`` / ``diag`` stop there.
+``ICCP_SYSTEMD_SYNC=0``. ``tui`` / ``dashboard`` / ``live`` / ``diag`` / ``supabase-ping`` stop there.
 ``commission`` / ``probe`` run ``stop <unit>``. ``start`` only ``daemon-reload``
 (never ``restart`` — avoids two controllers). Everything else runs ``restart <unit>``.
 """
@@ -41,9 +42,10 @@ from platform_util import running_on_raspberry_pi
 try:
     from cli_events import emit, output_mode
 except ModuleNotFoundError:
-    _root = Path(__file__).resolve().parent
+    _here = Path(__file__).resolve().parent
+    _root = _here.parent if (_here.parent / "config" / "settings.py").exists() else _here
     sys.stderr.write(
-        "CoilShield: missing Python module `cli_events` (ships next to `iccp_cli.py`).\n"
+        "CoilShield: missing Python module `cli_events` (ships under `src/` next to `iccp_cli.py`).\n"
         "  Fix: update this install from git, then reinstall so the file is present:\n"
         f"    cd {_root}\n"
         "    git pull && pip install -e .\n"
@@ -54,7 +56,22 @@ except ModuleNotFoundError:
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parent
+    """Repository root (contains ``config/``, ``src/``, ``static/``, …)."""
+    here = Path(__file__).resolve().parent
+    if (here.parent / "config" / "settings.py").exists():
+        return here.parent
+    return here
+
+
+def _maybe_load_dotenv() -> None:
+    """Load ``<repo>/.env`` when ``python-dotenv`` is installed (does not override existing env)."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    p = _project_root() / ".env"
+    if p.is_file():
+        load_dotenv(p, override=False)
 
 
 _ICCP_CLI_COMMANDS: frozenset[str] = frozenset(
@@ -68,12 +85,13 @@ _ICCP_CLI_COMMANDS: frozenset[str] = frozenset(
         "diag",
         "clear-fault",
         "version",
+        "supabase-ping",
     }
 )
 
 # Subcommands that only read telemetry / show UI — never restart the controller.
 _ICCP_CLI_READ_ONLY_SYSTEMD_KEYS: frozenset[str] = frozenset(
-    {"tui", "dashboard", "live", "diag"}
+    {"tui", "dashboard", "live", "diag", "supabase-ping"}
 )
 
 
@@ -325,11 +343,14 @@ def _print_help() -> None:
                              Without --channel: touch the all-channel fault-clear file.
                              With --channel N (0-based): write an atomic JSON side file
                              that clears only channel N on the next controller tick.
-  iccp version               Show coilshield-iccp version.
+  iccp version               Show coilshield-iccp package version.
+  iccp supabase-ping         Load ``.env`` (if present) and verify Supabase URL + service key
+                             (Storage list-buckets). Requires: pip install -e ".[supabase]"
+
   iccp --help / -h / help   This list (and guide above).
 
 On a Raspberry Pi, recognized subcommands run ``sudo systemctl daemon-reload`` automatically.
-``tui`` / ``dashboard`` / ``live`` / ``diag`` stop there (read-only). ``commission`` /
+``tui`` / ``dashboard`` / ``live`` / ``diag`` / ``supabase-ping`` stop there (read-only). ``commission`` /
 ``probe`` run ``stop iccp`` first. Foreground ``start`` runs ``daemon-reload`` only (never
 ``restart``) — if the iccp unit is already ``active``, ``start`` exits unless you pass
 ``--force``. Other subcommands run ``restart iccp``. Disable with ICCP_SYSTEMD_SYNC=0;
@@ -580,6 +601,31 @@ def _cmd_version() -> int:
     return 0
 
 
+def _cmd_supabase_ping() -> int:
+    """Verify Supabase credentials (never prints keys)."""
+    import cloud_sync
+
+    cloud_sync.load_dotenv_if_present()
+    ok, msg = cloud_sync.supabase_ping()
+    if output_mode() == "jsonl":
+        emit(
+            {
+                "level": "info" if ok else "error",
+                "cmd": "supabase-ping",
+                "source": "iccp_cli",
+                "event": "supabase.ping",
+                "msg": msg,
+                "data": {"ok": ok},
+            }
+        )
+        return 0 if ok else 1
+    host = cloud_sync.supabase_url()
+    if host:
+        print(f"SUPABASE_URL={host!r}")
+    print(("OK: " if ok else "FAIL: ") + msg)
+    return 0 if ok else 1
+
+
 def _split_force_flag(rest: list[str]) -> tuple[list[str], bool]:
     """Strip ``--force`` from argv; return (remaining_argv, force)."""
     force = False
@@ -785,6 +831,7 @@ def _cmd_commission(rest: list[str]) -> int:
 def main() -> int:
     argv = sys.argv[1:]
     root = _project_root()
+    _maybe_load_dotenv()
 
     if not argv or argv[0] in ("-h", "--help", "help"):
         _print_help()
@@ -810,8 +857,10 @@ def main() -> int:
         return 2
 
     os.chdir(root)
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
+    src = root / "src"
+    for p in (str(src), str(root)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
 
     started = time.time()
     if output_mode() == "jsonl":
@@ -906,6 +955,12 @@ def main() -> int:
 
     if cmd == "version":
         rc = _cmd_version()
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, int(rc), started_unix=started)
+        return rc
+
+    if cmd == "supabase-ping":
+        rc = _cmd_supabase_ping()
         if output_mode() == "jsonl":
             _emit_cmd_end(cmd, int(rc), started_unix=started)
         return rc

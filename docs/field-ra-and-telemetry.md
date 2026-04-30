@@ -18,7 +18,7 @@ For bench wiring, measurement sign conventions, and installation notes (bond poi
 
 | | **Field / design \(R_a\)** | **Logged `chN_impedance_ohm` (this firmware)** |
 | --- | --- | --- |
-| **What it is** | Low-frequency **anode-to-electrolyte** resistance used in **pipeline, offshore, and buried** design: resistivity \(\rho\), geometry, stand-off, ground beds, anode **groups**, life/consumption. | **`bus_v / I`** on the **driven electrical branch** (INA219 shunt path) — a **bench/coil** diagnostic, same definition as in [`logger`](../logger.py) and [iccp-vs-coilshield.md](iccp-vs-coilshield.md). |
+| **What it is** | Low-frequency **anode-to-electrolyte** resistance used in **pipeline, offshore, and buried** design: resistivity \(\rho\), geometry, stand-off, ground beds, anode **groups**, life/consumption. | **`bus_v / I`** on the **driven electrical branch** (INA219 shunt path) — a **bench/coil** diagnostic, same definition as in [`logger`](../src/logger.py) and [iccp-vs-coilshield.md](iccp-vs-coilshield.md). |
 | **Where the names show up** | Textbooks and standards often cite **closed-form** models (e.g. **Dwight**-style single anodes, **Sunde** for **multiple** vertical anodes) in **consistent units** — for **amp-level** field sizing and life checks. | **Not** those formulas. The code does not implement Dwight, Sunde, or any other **soil/water** resistance model. |
 | **“From settings”** | \(R_a\) is **not** read from `config/settings.py` or `commissioning.json`. Those files hold **targets, limits, and hardware mapping** — not a precomputed field \(R_a\). | Derived each tick from **measured** bus V and shunt current. |
 

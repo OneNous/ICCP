@@ -79,7 +79,8 @@ from telemetry_queries import (
     history_payload as _telemetry_history_payload,
 )
 
-_DASHBOARD_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DASHBOARD_DIR = _REPO_ROOT
 app = Flask(
     __name__,
     static_folder=str(_DASHBOARD_DIR / "static"),

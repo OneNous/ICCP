@@ -12,12 +12,12 @@ For a line-by-line mapping of common ICCP claims to code paths, see [iccp-vs-coi
 
 | Area | Role | Primary files |
 |------|------|----------------|
-| Main loop | Sensor read → control tick → reference shift → periodic outer loop / logging | [`main.py`](../main.py) |
-| Inner ICCP control | FSM (`DORMANT` / `PROBING` / `PROTECTING` / `FAULT`), incremental PWM vs `TARGET_MA`, faults | [`control.py`](../control.py) |
-| Anode sensing | Per-channel shunt current + bus V (INA219) | [`sensors.py`](../sensors.py), [`config/settings.py`](../config/settings.py) `INA219_*` |
-| Reference sensing | Dedicated INA219 → mV-like scalar; `native_mv`, `shift_mv`, `protection_status` | [`reference.py`](../reference.py), `REF_INA219_*` in settings |
-| Commissioning | Native baseline, ramp until shift ≥ `TARGET_SHIFT_MV`, write `commissioning.json` | [`commissioning.py`](../commissioning.py) |
-| Telemetry | SQLite / CSV / `latest.json`; electrical proxies for impedance / cell V | [`logger.py`](../logger.py) |
+| Main loop | Sensor read → control tick → reference shift → periodic outer loop / logging | [`main.py`](../src/main.py) |
+| Inner ICCP control | FSM (`DORMANT` / `PROBING` / `PROTECTING` / `FAULT`), incremental PWM vs `TARGET_MA`, faults | [`control.py`](../src/control.py) |
+| Anode sensing | Per-channel shunt current + bus V (INA219) | [`sensors.py`](../src/sensors.py), [`config/settings.py`](../config/settings.py) `INA219_*` |
+| Reference sensing | Dedicated INA219 → mV-like scalar; `native_mv`, `shift_mv`, `protection_status` | [`reference.py`](../src/reference.py), `REF_INA219_*` in settings |
+| Commissioning | Native baseline, ramp until shift ≥ `TARGET_SHIFT_MV`, write `commissioning.json` | [`commissioning.py`](../src/commissioning.py) |
+| Telemetry | SQLite / CSV / `latest.json`; electrical proxies for impedance / cell V | [`logger.py`](../src/logger.py) |
 
 ---
 

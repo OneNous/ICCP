@@ -5,9 +5,13 @@ Impressed-current cathodic protection monitor/controller for HVAC-style coils.
 
 **How this maps to “standard ICCP”:** the inner loop regulates **shunt current** toward `TARGET_MA`; the **reference** path defaults to **ADS1115** (legacy: **INA219**) for **polarization shift** vs a commissioned baseline and **nudges** `TARGET_MA`—still not the same as holding structure potential to an industry criterion (e.g. −0.85 V CSE). See [docs/iccp-comparison.md](docs/iccp-comparison.md) for diagrams, **external standards links**, and [docs/iccp-vs-coilshield.md](docs/iccp-vs-coilshield.md) for a line-by-line mapping to the code. **Field design \(R_a\)** (textbook/soil) vs **logged `impedance_ohm`:** [docs/field-ra-and-telemetry.md](docs/field-ra-and-telemetry.md). **Field install (bond, liquid line, reference, CLI):** [docs/installation-field-wiring.md](docs/installation-field-wiring.md). **Post–v1 / fleet software roadmap** (adaptive loops, EQI, field temp comp, etc.): [docs/post-v1-software-waves.md](docs/post-v1-software-waves.md).
 
+## AI / agent hub
+
+Coding agents and contributors: read [`claude.md`](claude.md) first (safety rules, validation phase, repo contract). Then load task-specific rules from [`.claude/`](.claude/) as listed in that file’s table. Canonical **systemd** example: [`systemd/coilshield.service`](systemd/coilshield.service). Architecture / decisions / hardware / calibration entrypoints: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DECISIONS.md](docs/DECISIONS.md), [docs/HARDWARE.md](docs/HARDWARE.md), [docs/CALIBRATION.md](docs/CALIBRATION.md).
+
 ## One CLI, one way
 
-Every supported operation goes through the single `iccp` console script (installed by `pip install -e .`). Direct execution of `python3 main.py`, `python3 tui.py`, `python3 hw_probe.py`, or `python3 dashboard.py` prints a redirect and exits. The `coilshield-tui` console script has been removed — use **`iccp tui`**.
+Every supported operation goes through the single `iccp` console script (installed by `pip install -e .`). Direct execution of `python3 src/main.py`, `python3 src/tui.py`, `python3 src/hw_probe.py`, or `python3 src/dashboard.py` prints a redirect and exits. The `coilshield-tui` console script has been removed — use **`iccp tui`**.
 
 | You want to… | Run |
 |--------------|-----|
@@ -20,8 +24,11 @@ Every supported operation goes through the single `iccp` console script (install
 | Print or request diagnostic snapshot | `iccp diag [--request]` |
 | Clear fault latch | `iccp clear-fault` |
 | Package version | `iccp version` |
+| Verify Supabase credentials | `iccp supabase-ping` (after `pip install -e ".[supabase]"`) |
 
 Full reference: [docs/iccp-cli-reference.md](docs/iccp-cli-reference.md).
+
+**Supabase:** copy [`.env.example`](.env.example) to **`.env`** in the repo root (same level as `config/`) and set `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`. The file is **gitignored**. Install clients with `pip install -e ".[supabase]"`, then run **`iccp supabase-ping`** — it loads `.env` if present and checks the project using Storage (list buckets). Runtime config is also exposed as `config.settings.SUPABASE_*` (read from the environment after dotenv load in the CLI). On a Pi, prefer **`EnvironmentFile=`** in systemd over a world-readable `.env`. See [.claude/cloud-sync.md](.claude/cloud-sync.md) for batching, queues, and safety rules before pushing telemetry from the control loop.
 
 **Pi edge (BLE Wi‑Fi provisioning, HTTPS device register, MQTT commission + telemetry):** [docs/pi-edge-deploy.md](docs/pi-edge-deploy.md) — optional `pip install -e ".[ble,cloud]"`; scripts `iccp-ble-provision`, `iccp-cloud-register`, `iccp-commission-mqtt`, `iccp-telemetry-mqtt`, **`iccp-edge-doctor`** (readiness / `--json` / `--strict`). Wi‑Fi: `wpa_cli` or `nmcli` (`COILSHIELD_WIFI_BACKEND`); MQTT: `ICCP_IOT_ENDPOINT` or `ICCP_MQTT_HOST`, optional merge from **`cloud.conf`** (`ICCP_MERGE_CLOUD_CONF`); optional commission **spool** and telemetry **inotify** (Linux). Bootstrap: `deploy/bootstrap-iccp-edge.sh`, TLS layout: `deploy/aws-iot/README.md`.
 
@@ -206,7 +213,7 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-On a Mac or other non-Pi machine, `pip install -e .` may fail while building **RPi.GPIO** — that is expected. Use a Raspberry Pi for the full install, or run `PYTHONPATH=~/coilshield python3 iccp_cli.py --help` from the repo root to sanity-check the CLI without installing GPIO wheels.
+On a Mac or other non-Pi machine, `pip install -e .` may fail while building **RPi.GPIO** — that is expected. Use a Raspberry Pi for the full install, or run `PYTHONPATH=~/coilshield/src:~/coilshield python3 src/iccp_cli.py --help` from the repo root to sanity-check the CLI without installing GPIO wheels.
 
 Verify:
 
@@ -244,10 +251,10 @@ Ensure `~/.local/bin` is on your `PATH` for login shells (many Pi images already
 
 ### Upgrading an existing Pi install
 
-The `iccp -start` / `iccp watch` / `iccp monitor` / `coilshield-tui` entry points and direct `python3 main.py` / `tui.py` / `hw_probe.py` / `dashboard.py` invocations have been removed. Use `iccp <subcommand>` for everything. After pulling this change on a Pi where the systemd unit was installed from an older `deploy/iccp.service`:
+The `iccp -start` / `iccp watch` / `iccp monitor` / `coilshield-tui` entry points and direct `python3 src/main.py` / `src/tui.py` / `src/hw_probe.py` / `src/dashboard.py` invocations have been removed. Use `iccp <subcommand>` for everything. After pulling this change on a Pi where the systemd unit was installed from an older path, use the canonical unit ([`systemd/coilshield.service`](systemd/coilshield.service); [`deploy/iccp.service`](deploy/iccp.service) is a synced copy for older docs):
 
 ```bash
-sudo cp deploy/iccp.service /etc/systemd/system/iccp.service
+sudo cp systemd/coilshield.service /etc/systemd/system/iccp.service
 sudo systemctl daemon-reload
 sudo systemctl restart iccp
 ```

@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coilshield.local/schema/uplink-envelope-v1.json",
+  "title": "CoilShield uplink envelope v1 (device to fleet)",
+  "type": "object",
+  "required": [
+    "uplink_schema_version",
+    "event_id",
+    "event_type",
+    "device_id",
+    "emitted_at",
+    "sequence",
+    "source",
+    "sample",
+    "payload"
+  ],
+  "properties": {
+    "uplink_schema_version": { "const": 1, "description": "Bump for breaking envelope changes" },
+    "event_id": {
+      "type": "string",
+      "minLength": 8,
+      "description": "UUID or unique id per send for idempotent ingest"
+    },
+    "event_type": { "type": "string", "enum": ["telemetry_snapshot", "heartbeat", "log_batch"] },
+    "device_id": { "type": "string", "minLength": 1, "description": "Logical device identity (OEM namespaced)" },
+    "emitted_at": { "type": "string", "format": "date-time", "description": "When the agent serialized this message (UTC RFC 3339)" },
+    "sequence": { "type": "integer", "description": "Monotonically increasing per device" },
+    "source": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "const": "iccp", "description": "Emitter family" },
+        "latest_json_path": { "type": "string" },
+        "log_dir_resolved": { "type": "string" },
+        "iccp_version": { "type": "string" },
+        "package_version": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "sample": {
+      "type": "object",
+      "required": ["mode", "tick_ts_unix"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["raw_tick", "throttled_1s", "throttled_60s", "on_change"] },
+        "policy": { "type": "string", "description": "Human-readable policy name or build id" },
+        "interval_s": { "type": "number" },
+        "tick_ts_unix": { "type": "number", "description": "Copied from latest.json ts_unix for snapshots" }
+      },
+      "additionalProperties": true
+    },
+    "queue": {
+      "type": "object",
+      "properties": {
+        "queued_at": { "type": "string", "format": "date-time" },
+        "replay_of_event_id": { "type": "string" },
+        "spool_bytes": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "payload": {
+      "oneOf": [
+        { "title": "empty", "type": "object", "maxProperties": 0 },
+        { "$ref": "#/$defs/telemetrySnapshot" }
+      ]
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "telemetrySnapshot": {
+      "type": "object",
+      "title": "telemetrySnapshot",
+      "description": "Curated mirror of local telemetry. Keys align with latest.json where possible.",
+      "required": ["system", "channels"],
+      "properties": {
+        "system": { "$ref": "#/$defs/systemBlock" },
+        "channels": {
+          "type": "object",
+          "description": "Keys are stringified channel indices '0'..'NUM_CHANNELS-1'",
+          "additionalProperties": { "$ref": "#/$defs/channelBlock" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "systemBlock": {
+      "type": "object",
+      "properties": {
+        "ts": { "type": "string" },
+        "ts_unix": { "type": "number" },
+        "wet": { "type": "boolean" },
+        "wet_channels": { "type": "integer" },
+        "all_protected": { "type": "boolean" },
+        "any_active": { "type": "boolean" },
+        "any_overprotected": { "type": "boolean" },
+        "fault_latched": { "type": "boolean" },
+        "faults": { "type": "array", "items": { "type": "string" } },
+        "system_alerts": { "type": "array", "items": { "type": "string" } },
+        "telemetry_incomplete": { "type": "boolean" },
+        "ref_raw_mv": { "type": "number" },
+        "ref_shift_mv": { "type": "number" },
+        "ref_status": { "type": "string" },
+        "ref_hw_ok": { "type": "boolean" },
+        "ref_baseline_set": { "type": "boolean" },
+        "ref_valid": { "type": "boolean" },
+        "temp_f": { "type": "number" },
+        "total_ma": { "type": "number" },
+        "supply_v_avg": { "type": "number" },
+        "total_power_w": { "type": "number" },
+        "cross": {
+          "type": "object",
+          "properties": { "i_cv": { "type": ["number", "null"] }, "z_cv": { "type": ["number", "null"] } }
+        },
+        "native_mv": { "type": "number" },
+        "native_age_s": { "type": "number" },
+        "t_to_system_protected_s": { "type": "number" }
+      },
+      "additionalProperties": true
+    },
+    "channelBlock": {
+      "type": "object",
+      "properties": {
+        "state": { "type": "string" },
+        "state_v2": { "type": "string" },
+        "ma": { "type": "number" },
+        "duty": { "type": "number" },
+        "target_ma": { "type": "number" },
+        "bus_v": { "type": "number" },
+        "impedance_ohm": { "type": "number" },
+        "cell_voltage_v": { "type": "number" },
+        "power_w": { "type": "number" },
+        "status": { "type": "string" },
+        "sensor_error": { "type": "string" },
+        "shift_mv": { "type": "number" },
+        "fault": { "type": "boolean" },
+        "fault_reason": { "type": "string" },
+        "coulombs_today_c": { "type": "number" },
+        "energy_today_j": { "type": "number" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

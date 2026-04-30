@@ -66,7 +66,8 @@ except ImportError as e:  # pragma: no cover - import guard for Pi without textu
 
 from telemetry_queries import db_path, trends_table_rows
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = _REPO_ROOT
 _TCSS_FILE = Path(__file__).resolve().with_suffix(".tcss")
 LATEST_PATH = cfg.LOG_DIR / cfg.LATEST_JSON_NAME
 

@@ -7,10 +7,12 @@ import sys
 if "COILSHIELD_SIM" not in os.environ:
     os.environ["COILSHIELD_SIM"] = "1"
 
-# Project root on sys.path for `import config`, `import sensors`
+# Project root + src/ on sys.path for `import config`, `import sensors`, …
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+SRC = os.path.join(ROOT, "src")
+for p in (SRC, ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 # Isolated anode selection would bake into ACTIVE_CHANNEL_INDICES at import — clear for tests.
 os.environ.pop("COILSHIELD_ACTIVE_CHANNELS", None)

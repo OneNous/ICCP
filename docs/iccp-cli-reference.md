@@ -126,6 +126,18 @@ Use **`iccp --help`** (or **`iccp -h`**) for the built-in short summary.
 
 ---
 
+## `iccp supabase-ping`
+
+**What it does:** Loads **`.env`** from the repo root when `python-dotenv` is installed (without overriding variables already set), then calls Supabase with the **service role** key and runs a cheap check (`storage.list_buckets()`).
+
+**When to use it:** After copying **`.env.example`** to **`.env`** and filling `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`, or after setting those in the environment on a Pi.
+
+**Install:** `pip install -e ".[supabase]"` (adds `supabase` and `python-dotenv`).
+
+**Notes:** Read-only for systemd (`daemon-reload` only, same as `live` / `diag`). Never prints the service key. See [.claude/cloud-sync.md](../.claude/cloud-sync.md) before wiring telemetry pushes.
+
+---
+
 ## `iccp --help` · `iccp -h`
 
 **What it does:** Prints the static help text from **`iccp_cli._print_help()`**.
@@ -142,7 +154,7 @@ On a Raspberry Pi, recognized **`iccp`** subcommands run **`sudo systemctl daemo
 |----------|------------------------|
 | **`start`** | No further `systemctl` (no `restart`) |
 | **`commission`**, **`probe`** | `systemctl stop <unit>` |
-| **`tui`**, **`dashboard`**, **`live`**, **`diag`** | No further `systemctl` (read-only; no `restart`) |
+| **`tui`**, **`dashboard`**, **`live`**, **`diag`**, **`supabase-ping`** | No further `systemctl` (read-only; no `restart`) |
 | **`version`**, **`clear-fault`** | `systemctl restart <unit>` |
 
 Override unit name with **`ICCP_SYSTEMD_UNIT`** (default **`iccp`**). Disable all of this with **`ICCP_SYSTEMD_SYNC=0`** (CI, laptops, or no passwordless sudo).
@@ -153,7 +165,7 @@ More context: README (Commissioning → **CLI vs systemd**), [mosfet-off-verific
 
 ## Direct script execution is not supported
 
-`python3 main.py`, `python3 tui.py`, `python3 hw_probe.py`, and `python3 dashboard.py` each print a redirect and exit with status 2. The only supported way to run the project is through `iccp`. The Python modules remain importable — that is how the CLI drives them — but they are not user-facing entry points.
+`python3 src/main.py`, `python3 src/tui.py`, `python3 src/hw_probe.py`, and `python3 src/dashboard.py` each print a redirect and exit with status 2. The only supported way to run the project is through `iccp`. The Python modules remain importable — that is how the CLI drives them — but they are not user-facing entry points.
 
 The previous `coilshield-tui` console script has also been removed. Use **`iccp tui`**.
 
@@ -164,7 +176,7 @@ The previous `coilshield-tui` console script has also been removed. Use **`iccp 
 After pulling this change on a Pi where the old `iccp -start` systemd unit is installed:
 
 ```bash
-sudo cp deploy/iccp.service /etc/systemd/system/iccp.service
+sudo cp systemd/coilshield.service /etc/systemd/system/iccp.service
 sudo systemctl daemon-reload
 sudo systemctl restart iccp
 ```

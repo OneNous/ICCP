@@ -6,7 +6,7 @@
 
 | Concern | Owner | Rule |
 | ------- | ----- | ---- |
-| I2C, PWM, FSM, `Logger.record` | `iccp` / [`iccp_runtime.py`](../../iccp_runtime.py) | **No** network I/O, **no** cloud libraries in this process. |
+| I2C, PWM, FSM, `Logger.record` | `iccp` / [`iccp_runtime.py`](../src/../iccp_runtime.py) | **No** network I/O, **no** cloud libraries in this process. |
 | Read `latest.json` / read-only SQLite, MQTT/HTTPS, queue | **separate** `coilshield-uplink` (name TBD) or `systemd` oneshot + timer | May crash/restart without affecting ICCP. |
 
 ## Recommended systemd layout
@@ -31,7 +31,7 @@
 | Auth failure to fleet (401/403) | Local spool; optional agent status file for support | None |
 | Agent OOM / crash | systemd restarts; gap in cloud series | None |
 
-**Distinguish:** “**telemetry_incomplete** / recovery merge” in [`logger.py`](../../logger.py) (partial write) vs “**uplink** failed but controller healthy”—only the latter is agent-only.
+**Distinguish:** “**telemetry_incomplete** / recovery merge” in [`logger.py`](../src/../logger.py) (partial write) vs “**uplink** failed but controller healthy”—only the latter is agent-only.
 
 ## Sequencing and backpressure
 

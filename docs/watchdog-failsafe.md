@@ -16,10 +16,10 @@ The application process can hang (I2C stall, deadlock) while GPIO may still ener
 
 ## Python exit path (best-effort)
 
-- **SIGINT / SIGTERM:** [`iccp_runtime.run_iccp_forever`](../iccp_runtime.py) calls `Controller.all_outputs_off()` and [`DataLogger.flush()`](../logger.py) before exit.
+- **SIGINT / SIGTERM:** [`iccp_runtime.run_iccp_forever`](../src/iccp_runtime.py) calls `Controller.all_outputs_off()` and [`DataLogger.flush()`](../src/logger.py) before exit.
 - **Normal shutdown:** `atexit` runs the same **GPIO off + flush** path so buffered SQLite `readings` and CSV are less likely to be lost.
 - **Hard crash (SIGSEGV, OOM killer, power loss):** not fixable in Python; **watchdog** + **hardware** failsafe if you add it.
 
 ## Commissioning crash recovery
 
-See `commissioning_complete` in `commissioning.json`: a full successful `iccp commission` sets this to `true`. If the file is partial (no flag or `false`), [`needs_commissioning()`](../commissioning.py) treats the install as incomplete so the next boot re-runs commissioning. Legacy files without the key but with `native_mv` and `commissioned_target_ma` are accepted with a one-time stderr notice.
+See `commissioning_complete` in `commissioning.json`: a full successful `iccp commission` sets this to `true`. If the file is partial (no flag or `false`), [`needs_commissioning()`](../src/commissioning.py) treats the install as incomplete so the next boot re-runs commissioning. Legacy files without the key but with `native_mv` and `commissioned_target_ma` are accepted with a one-time stderr notice.

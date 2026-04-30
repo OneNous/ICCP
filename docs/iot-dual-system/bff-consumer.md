@@ -31,4 +31,4 @@
 
 ## Relationship to `iccp` dashboard
 
-- The **on-LAN** [`dashboard.py`](../../dashboard.py) and TUI are **installers/owners with direct file access**—different trust boundary from the BFF. Do not equate the two in security design.
+- The **on-LAN** [`dashboard.py`](../src/../dashboard.py) and TUI are **installers/owners with direct file access**—different trust boundary from the BFF. Do not equate the two in security design.
