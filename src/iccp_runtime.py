@@ -70,6 +70,12 @@ def run_iccp_forever(args: Namespace) -> int:
     def _signal_pwm_off(signum: int, _frame) -> None:
         """Best-effort: drive anodes off before exit (SIGKILL cannot be caught)."""
         try:
+            import cloud_worker
+
+            cloud_worker.stop_and_join(timeout_s=5.0)
+        except Exception:
+            pass
+        try:
             ctrl.all_outputs_off()
         except Exception:
             pass
@@ -85,6 +91,12 @@ def run_iccp_forever(args: Namespace) -> int:
     signal.signal(signal.SIGINT, _signal_pwm_off)
 
     def _atexit_failsafe() -> None:
+        try:
+            import cloud_worker
+
+            cloud_worker.stop_and_join(timeout_s=5.0)
+        except Exception:
+            pass
         try:
             ctrl.all_outputs_off()
         except Exception:
@@ -404,6 +416,13 @@ def run_iccp_forever(args: Namespace) -> int:
 
     _bootstrap_latest()
 
+    try:
+        import cloud_worker
+
+        cloud_worker.start_background_sync()
+    except Exception:
+        pass
+
     if args.verbose:
         _n = float(getattr(cfg, "OUTER_LOOP_POTENTIAL_MIN_S", 5.0) or 0.0)
         nudge_s = (
@@ -443,13 +462,42 @@ def run_iccp_forever(args: Namespace) -> int:
                         if temp_f is not None and temp_f < temp_mod.TEMP_MIN_F
                         else "too hot — heat mode?"
                     )
-                    print(
-                        f"[main] THERMAL PAUSE {temp_f}°F outside "
-                        f"[{temp_mod.TEMP_MIN_F}–{temp_mod.TEMP_MAX_F}°F]: {reason}"
-                    )
+                    if output_mode() == "jsonl":
+                        emit(
+                            {
+                                "level": "warn",
+                                "cmd": "start",
+                                "source": "iccp_runtime",
+                                "event": "thermal.pause",
+                                "msg": "thermal pause — pan temp outside band",
+                                "data": {
+                                    "temp_f": temp_f,
+                                    "min_f": float(temp_mod.TEMP_MIN_F),
+                                    "max_f": float(temp_mod.TEMP_MAX_F),
+                                    "reason": reason,
+                                },
+                            }
+                        )
+                    else:
+                        print(
+                            f"[main] THERMAL PAUSE {temp_f}°F outside "
+                            f"[{temp_mod.TEMP_MIN_F}–{temp_mod.TEMP_MAX_F}°F]: {reason}"
+                        )
                     _thermal_paused = True
             elif _thermal_paused:
-                print(f"[main] Temp restored ({temp_f}°F) — resuming.")
+                if output_mode() == "jsonl":
+                    emit(
+                        {
+                            "level": "info",
+                            "cmd": "start",
+                            "source": "iccp_runtime",
+                            "event": "thermal.resume",
+                            "msg": "thermal resume — pan temp back in band",
+                            "data": {"temp_f": temp_f},
+                        }
+                    )
+                else:
+                    print(f"[main] Temp restored ({temp_f}°F) — resuming.")
                 _thermal_paused = False
 
             if sim:
@@ -882,6 +930,12 @@ def run_iccp_forever(args: Namespace) -> int:
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
+        try:
+            import cloud_worker
+
+            cloud_worker.stop_and_join(timeout_s=5.0)
+        except Exception:
+            pass
         log.close()
         leds.shutdown()
         ctrl.cleanup()

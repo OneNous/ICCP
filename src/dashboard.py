@@ -87,6 +87,11 @@ app = Flask(
     static_url_path="/static",
 )
 
+if getattr(cfg, "TECH_API_ENABLED", False):
+    from tech_api import tech_bp
+
+    app.register_blueprint(tech_bp)
+
 
 @app.before_request
 def _dashboard_api_cors_preflight() -> Response | None:

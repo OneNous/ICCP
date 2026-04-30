@@ -13,9 +13,12 @@ The firmware has multiple logging surfaces. Know which one to use for what:
 | BLE diagnostic | `bled.log` | BLE pairing, advertising, characteristic operations |
 | Tech API access | `tech_api.log` | Every authenticated HTTP request |
 | systemd journal | `journalctl -u coilshield` | Process startup, shutdown, exceptions |
-| Debug print | NONE | Don't use |
+| JSONL supervisor | `cli_events.emit()` when `ICCP_OUTPUT_MODE=jsonl` | Machine-readable lines from `iccp_runtime` (thermal pause/resume, start banner data, etc.) |
+| Human CLI / TUI / dashboard | `stdout` / Rich | Interactive UX only — not the durability path for controller telemetry |
 
-**Never use bare `print()` for production code.** It's not searchable, not structured, not durable across reboots.
+**Policy (validation phase):** Do **not** add `print()` on the hot control path for “logs” that operators must retain. Controller truth remains `logger.py` sinks (`latest.json`, SQLite, CSV). For automation-friendly process logs, use `cli_events.emit()` when `output_mode() == "jsonl"` (see `iccp_runtime` thermal events). `print()` remains acceptable for interactive `iccp` / TUI / dashboard and for **stderr**-gated BLE debug in `pi_edge/` (reduce churn there until BLE work is active).
+
+The older rule “never use bare print” applies to **production durability** and **steady-state controller noise** — not to removing all human-facing stdout from the CLI.
 
 ## State Persistence
 

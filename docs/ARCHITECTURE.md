@@ -17,3 +17,12 @@ Python modules and `pi_edge/` live under [`src/`](../src/) per `claude.md` and `
 ## Generated types
 
 [`src/generated/schema_types.py`](../src/generated/schema_types.py) is a placeholder until monorepo codegen is wired (see [.claude/schemas.md](../.claude/schemas.md) and [`codegen/README.md`](../codegen/README.md)).
+
+## Logging: stdout vs durable telemetry
+
+- **Durable path:** `logger.DataLogger.record()` → SQLite (`coilshield.db` by default), atomic `latest.json`, CSV, fault log. Anything required for history, dashboards, or cloud enqueue belongs here or in explicit log files.
+- **Supervisor / JSONL:** When `ICCP_OUTPUT_MODE=jsonl`, `iccp_runtime` should emit structured lines via `cli_events.emit()` (thermal pause/resume, start metadata) instead of ad-hoc `print()` so log aggregators get parseable events without scraping human tables.
+- **Human UX:** `print()` / Rich output in `iccp_cli`, `dashboard` (non-API), `tui`, and commissioning prompts stay on stdout; they are not a substitute for `logger` sinks.
+- **BLE / edge:** `pi_edge/` may use stderr for verbose traces; gate with env flags where possible.
+
+See also [.claude/cross-cutting.md](../.claude/cross-cutting.md) (logging table).

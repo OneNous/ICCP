@@ -839,3 +839,25 @@ SUPABASE_SERVICE_KEY = (
 SUPABASE_ANON_KEY = (os.environ.get("SUPABASE_ANON_KEY") or "").strip()
 SUPABASE_PROJECT_REF = (os.environ.get("SUPABASE_PROJECT_REF") or "").strip()
 SUPABASE_CONFIGURED = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+
+# --- Cloud sync (Supabase queue; default OFF — claude rules 3/5) ---
+CLOUD_SYNC_ENABLED = bool(int(os.environ.get("COILSHIELD_CLOUD_SYNC", "0") or "0"))
+CLOUD_QUEUE_DB_NAME = (os.environ.get("COILSHIELD_CLOUD_QUEUE_DB") or "cloud_queue.db").strip()
+CLOUD_BATCH_SIZE = min(50, max(1, int(os.environ.get("COILSHIELD_CLOUD_BATCH", "50") or "50")))
+CLOUD_SYNC_INTERVAL_S = float(os.environ.get("COILSHIELD_CLOUD_SYNC_INTERVAL_S", "60") or "60")
+CLOUD_HEALTH_CHECK_INTERVAL_S = float(
+    os.environ.get("COILSHIELD_CLOUD_HEALTH_INTERVAL_S", "300") or "300"
+)
+CLOUD_PENDING_QUEUE_MAX_DAYS = int(
+    os.environ.get("COILSHIELD_CLOUD_PENDING_MAX_DAYS", "30") or "30"
+)
+CLOUD_REQUEST_TIMEOUT_S = float(os.environ.get("COILSHIELD_CLOUD_TIMEOUT_S", "30") or "30")
+CLOUD_TELEMETRY_TABLE = (
+    os.environ.get("COILSHIELD_CLOUD_TELEMETRY_TABLE") or "telemetry_snapshots"
+).strip()
+
+# --- Tech app HTTP API (local Flask blueprint `/tech`; default OFF) ---
+TECH_API_ENABLED = bool(int(os.environ.get("COILSHIELD_TECH_API", "0") or "0"))
+# Raw secret bytes: hex string (even length), e.g. 64 hex chars = 32 bytes. Until BLE bond store exists.
+TECH_BOND_KEY_HEX = (os.environ.get("COILSHIELD_TECH_BOND_KEY") or "").strip()
+TECH_HMAC_MAX_SKEW_S = float(os.environ.get("COILSHIELD_TECH_HMAC_SKEW_S", "300") or "300")

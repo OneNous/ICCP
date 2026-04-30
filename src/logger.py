@@ -1057,7 +1057,14 @@ class DataLogger:
         payload["telemetry_seq"] = int(self._telemetry_seq)
         payload["writer_pid"] = os.getpid()
         payload["telemetry_incomplete"] = False
-        _atomic_write_same_dir(self._latest_path, json.dumps(payload))
+        _payload_json = json.dumps(payload)
+        _atomic_write_same_dir(self._latest_path, _payload_json)
+        try:
+            import cloud_worker
+
+            cloud_worker.enqueue_telemetry_snapshot(_payload_json)
+        except Exception:
+            pass
 
         pre_sig = self._fault_signature
         sig = tuple(faults)

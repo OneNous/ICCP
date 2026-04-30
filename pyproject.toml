@@ -74,5 +74,6 @@ py-modules = [
     "channel_labels",
     "iccp_electrolyte",
     "cloud_sync",
+    "cloud_worker",
     "tech_api",
 ]
