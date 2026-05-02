@@ -690,6 +690,11 @@ I_REST_MA: float = 0.3                      # |I| ceiling for “at rest” (str
 T_REST_CONFIRM: float = 3.0                 # s the rest gate must hold
 # max−min of ref samples in capture_native() must be ≤ this (mV) over T_RELAX; not std-dev
 NATIVE_STABILITY_MV: float = 30.0           # peak-to-peak ceiling during native capture [interim]
+# Phase 1 only: override peak-to-peak gate in ``reference.capture_native()`` (mV).
+# ``None`` → use ``NATIVE_STABILITY_MV``. Condensate / bench refs often wander tens of mV over
+# ``T_RELAX`` while the median is still useful; without a looser ceiling, ``unstable_p2p`` retries
+# forever (log shows “0 sample(s) so far” each retry).
+COMMISSIONING_NATIVE_CAPTURE_STABILITY_MV: float | None = 100.0
 W_REF: float = 10.0                        # s — stability window (spec §3.2)
 NATIVE_SLOPE_MV_PER_MIN: float = 2.0
 NATIVE_RECAPTURE_S: float = 24 * 3600.0     # daily scheduled re-capture (§3.4)

@@ -1163,7 +1163,11 @@ class ReferenceElectrode:
         retries = max(0, int(getattr(cfg, "NATIVE_CAPTURE_RETRIES", 2)))
         t_relax = max(1.0, float(getattr(cfg, "T_RELAX", 30.0)))
         interval = max(0.05, float(getattr(cfg, "NATIVE_SAMPLE_INTERVAL_S", 2.0)))
-        stab = max(0.1, float(getattr(cfg, "NATIVE_STABILITY_MV", 5.0)))
+        _stab_ov = getattr(cfg, "COMMISSIONING_NATIVE_CAPTURE_STABILITY_MV", None)
+        if _stab_ov is not None:
+            stab = max(0.1, float(_stab_ov))
+        else:
+            stab = max(0.1, float(getattr(cfg, "NATIVE_STABILITY_MV", 5.0)))
         slope_limit = max(0.0, float(getattr(cfg, "NATIVE_SLOPE_MV_PER_MIN", 2.0)))
         rest_confirm_s = max(0.0, float(getattr(cfg, "T_REST_CONFIRM", 3.0)))
         if static_gate_low is not None:
