@@ -20,7 +20,7 @@ Per [`claude.md`](../claude.md): log **architectural** choices here with date, a
 
 **Context:** `.claude/cloud-sync.md` and `.claude/tech-api.md` describe target behavior; validation phase requires defaults **off** and no control-path coupling.
 
-**Consequences:** Optional `pip install -e ".[supabase]"` on devices that upload; Pi must set env before enabling sync. Tech app must set bond key on bench. See [`SECURITY.md`](SECURITY.md) for key rotation if history ever contained secrets.
+**Consequences:** Optional `pip install -e ".[supabase]"` on devices that upload; Pi must set env before enabling sync. Tech app must set bond key on bench. See [`SECURITY.md`](../SECURITY.md) for key rotation if history ever contained secrets.
 
 ### 2026-04-30 — Credential exposure and git history
 

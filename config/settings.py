@@ -853,8 +853,10 @@ CLOUD_PENDING_QUEUE_MAX_DAYS = int(
 )
 CLOUD_REQUEST_TIMEOUT_S = float(os.environ.get("COILSHIELD_CLOUD_TIMEOUT_S", "30") or "30")
 CLOUD_TELEMETRY_TABLE = (
-    os.environ.get("COILSHIELD_CLOUD_TELEMETRY_TABLE") or "telemetry_snapshots"
+    os.environ.get("COILSHIELD_CLOUD_TELEMETRY_TABLE") or "telemetry_points"
 ).strip()
+# Also insert a slim ``public.readings`` row per snapshot (Command Center / charts). Off by default.
+CLOUD_SYNC_READINGS = bool(int(os.environ.get("COILSHIELD_CLOUD_READINGS", "0") or "0"))
 
 # --- Tech app HTTP API (local Flask blueprint `/tech`; default OFF) ---
 TECH_API_ENABLED = bool(int(os.environ.get("COILSHIELD_TECH_API", "0") or "0"))

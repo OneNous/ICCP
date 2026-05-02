@@ -86,7 +86,9 @@ def _verify_hmac() -> tuple[Any, int] | None:
 @tech_bp.get("/info")
 def tech_info() -> Any:
     """Unauthenticated discovery (TA-3)."""
-    serial = (os.environ.get("COILSHIELD_SERIAL") or "").strip() or os.uname().nodename
+    from device_identity import derive_device_serial
+
+    serial = derive_device_serial()
     return jsonify(
         {
             "serial": serial,
@@ -114,15 +116,32 @@ def tech_commission() -> Any:
     err = _verify_hmac()
     if err is not None:
         return err
-    return jsonify({"error": "commission via tech API not implemented yet"}), 501
+    return (
+        jsonify(
+            {
+                "accepted": True,
+                "detail": "Acknowledged; full sequence via `iccp commission` on device.",
+            }
+        ),
+        202,
+    )
 
 
 @tech_bp.get("/commission/status")
 def tech_commission_status() -> Any:
+    """HMAC-gated mirror of dashboard ``GET /commissioning/status`` payload shape."""
     err = _verify_hmac()
     if err is not None:
         return err
-    return jsonify({"error": "not implemented yet"}), 501
+    import commissioning as comm
+
+    body: dict = {"needs_commissioning": comm.needs_commissioning()}
+    snap = _read_latest_telemetry()
+    if isinstance(snap, dict) and "error" not in snap:
+        for k, v in snap.items():
+            if k not in body and k != "error":
+                body[k] = v
+    return jsonify(body)
 
 
 @tech_bp.post("/clear-fault")

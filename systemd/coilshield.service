@@ -1,23 +1,9 @@
-# CoilShield firmware — systemd unit (canonical example)
+# CoilShield ICCP controller — canonical systemd unit (flash-and-go install).
 #
-# This file is the canonical unit under systemd/ per claude.md. deploy/iccp.service
-# is kept in sync for backwards-compatible paths in older docs and scripts.
-#
-# INSTALL (on the Pi) — pick a unit name on disk (examples):
-#   sudo cp systemd/coilshield.service /etc/systemd/system/coilshield.service
-#   # or, if you still use the historical name:
-#   sudo cp systemd/coilshield.service /etc/systemd/system/iccp.service
-#
-# Then edit User, Group, WorkingDirectory, and ExecStart if they differ.
-#   - WorkingDirectory = repo root (where commissioning.json / clear_fault live)
-#   - ExecStart = full path to venv's `iccp` after:  pip install -e .
-#
-#   sudo systemctl daemon-reload
-#   sudo systemctl enable --now coilshield
-#   # or: sudo systemctl enable --now iccp
-#
-# Strongly recommended: absolute telemetry dir so dashboard + controller always agree:
-#   Environment=COILSHIELD_LOG_DIR=/home/you/iccp/logs
+# Installed by deploy/bench-install.sh into /etc/systemd/system/coilshield.service.
+# All paths and the runtime user come from the bench installer; do not hand-edit
+# this file on the Pi. To change runtime config (Supabase URL, anon key, sim mode),
+# edit /etc/coilshield/env and `sudo systemctl restart coilshield`.
 
 [Unit]
 Description=CoilShield ICCP controller (firmware)
@@ -26,14 +12,20 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=onenous
-Group=onenous
-WorkingDirectory=/home/onenous/coilshield
-ExecStart=/home/onenous/coilshield/.venv/bin/iccp start
+User=coilshield
+Group=coilshield
+WorkingDirectory=/opt/coilshield
+EnvironmentFile=/etc/coilshield/env
+ExecStart=/opt/coilshield/.venv/bin/iccp start
 Restart=on-failure
 RestartSec=10
-Environment=COILSHIELD_SIM=0
-# Environment=COILSHIELD_LOG_DIR=/home/onenous/coilshield/logs
+
+# Hardware buses + cloud queue + serial cache live under these paths; firmware must
+# not need write access elsewhere on the system root.
+ReadWritePaths=/var/lib/coilshield /etc/coilshield
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target

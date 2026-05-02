@@ -1,0 +1,29 @@
+# CoilShield commands poller — turns rows in public.commands into local actions.
+#
+# Installed by deploy/bench-install.sh. Polls Supabase every COMMANDS_POLL_INTERVAL_S
+# seconds (clamped 10..30 by the CLI) using either the per-device JWT from
+# /etc/coilshield/cloud.conf (production) or SUPABASE_SERVICE_ROLE_KEY (bench/dev).
+
+[Unit]
+Description=CoilShield commands poller (Supabase -> Pi)
+After=network-online.target coilshield.service
+Wants=network-online.target
+PartOf=coilshield.service
+
+[Service]
+Type=simple
+User=coilshield
+Group=coilshield
+WorkingDirectory=/opt/coilshield
+EnvironmentFile=/etc/coilshield/env
+ExecStart=/opt/coilshield/.venv/bin/iccp-commands-poll
+Restart=on-failure
+RestartSec=15
+
+ReadWritePaths=/var/lib/coilshield /etc/coilshield
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

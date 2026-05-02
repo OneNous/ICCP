@@ -1,7 +1,10 @@
-"""128-bit GATT UUIDs for CoilShield BLE provisioning (vendor-specific)."""
+"""128-bit GATT UUIDs for CoilShield BLE provisioning — must match packages/api-contract/ble-protocol.md."""
 
-# Custom 128-bit UUIDs (RFC 4122 variant 1, version 4 style layout — unique namespace).
-PROVISIONING_SERVICE = "12345678-1234-5678-1234-56789abc0001"
-CHAR_WIFI_SSID = "12345678-1234-5678-1234-56789abc0002"
-CHAR_WIFI_PASSWORD = "12345678-1234-5678-1234-56789abc0003"
-CHAR_STATUS = "12345678-1234-5678-1234-56789abc0004"
+# Frozen: technician iOS/Android + Pi BlueZ GATT + pi-ble bench stub.
+PROVISIONING_SERVICE = "e3310000-62ec-4c38-baf1-ae1bd4f6788d"
+CHAR_DEVICE_INFO = "e3310001-62ec-4c38-baf1-ae1bd4f6788d"
+CHAR_WIFI_CREDENTIALS = "e3310002-62ec-4c38-baf1-ae1bd4f6788d"
+CHAR_STATUS = "e3310003-62ec-4c38-baf1-ae1bd4f6788d"
+CHAR_COMMAND = "e3310004-62ec-4c38-baf1-ae1bd4f6788d"
+CHAR_TELEMETRY = "e3310005-62ec-4c38-baf1-ae1bd4f6788d"
+CHAR_WIFI_SCAN_RESULTS = "e3310006-62ec-4c38-baf1-ae1bd4f6788d"

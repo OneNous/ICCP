@@ -1,0 +1,13 @@
+{
+  "ts": "2026-04-30T12:00:00",
+  "ts_unix": 1714478400,
+  "telemetry_seq": 7,
+  "total_ma": 3.5,
+  "shift_mv": -12.5,
+  "channels": [
+    { "ma": 0.9, "state": "OPEN" },
+    { "ma": 0.8, "state": "OPEN" },
+    { "ma": 0.7, "state": "OPEN" },
+    { "ma": 0.6, "state": "OPEN" }
+  ]
+}

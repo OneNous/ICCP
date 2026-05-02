@@ -1,5 +1,7 @@
 # CoilShield (ICCP)
 
+> **In `coilshield-spine`:** This directory is the **vendored ICCP / Pi firmware** tree (ported from the standalone repo). **Canonical SQL** for the monorepo remains at repo root **`schemas/`**; refresh copies under `device-firmware/schemas/*.sql` with **`pnpm sync:schemas:firmware`** from the monorepo root. **`pi-ble/`** is spine-owned validation/smoke scaffolding (BLE helpers, commands poller, Supabase smoke) layered alongside the packaged `src/` tree. **BLE/LAN/commands smoke:** [`docs/FIRMWARE_APP_INTEGRATION_CHECKLIST.md`](../../docs/FIRMWARE_APP_INTEGRATION_CHECKLIST.md) (monorepo root).
+
 Impressed-current cathodic protection monitor/controller for HVAC-style coils.  
 **Defaults:** see `TARGET_MA` (default **0.5 mA** aluminum-conservative; raise for bench), `CHANNEL_WET_THRESHOLD_MA`, and anode limits in `config/settings.py` (commissioning writes `commissioned_target_ma`). **INA219 shunt:** v1 hardware uses **1.0** Ω in `INA219_SHUNT_OHMS` (legacy **0.1** Ω breakouts still work). Override without editing the file: **`COILSHIELD_INA219_SHUNT_OHMS`**. Wrong shunt → wrong mA and LSB-based floors.
 

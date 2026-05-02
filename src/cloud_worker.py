@@ -139,12 +139,10 @@ def _bump_retry(conn: sqlite3.Connection, ids: list[int], err: str) -> None:
 
 
 def _create_supabase_client() -> Any:
-    """Indirection for tests (patch this instead of ``supabase.create_client``)."""
-    from supabase import create_client
-
+    """Indirection for tests (patch ``cloud_sync._create_supabase_client`` or this)."""
     import cloud_sync
 
-    return create_client(cloud_sync.supabase_url(), cloud_sync.supabase_service_key())
+    return cloud_sync._create_supabase_client()
 
 
 def _process_once() -> None:
@@ -153,7 +151,8 @@ def _process_once() -> None:
     if not cloud_sync.is_supabase_configured():
         return
     batch = int(getattr(cfg, "CLOUD_BATCH_SIZE", 50) or 50)
-    table = str(getattr(cfg, "CLOUD_TELEMETRY_TABLE", "telemetry_snapshots"))
+    table = str(getattr(cfg, "CLOUD_TELEMETRY_TABLE", "telemetry_points"))
+    tnorm = table.strip().lower()
     try:
         conn = _connect()
     except Exception:
@@ -165,8 +164,7 @@ def _process_once() -> None:
         if not rows:
             conn.commit()
             return
-        upload_ids: list[int] = []
-        parsed: list[dict[str, Any]] = []
+        staged: list[tuple[int, dict[str, Any]]] = []
         bad_ids: list[int] = []
         for rid, payload in rows:
             try:
@@ -174,13 +172,37 @@ def _process_once() -> None:
                 if not isinstance(obj, dict):
                     bad_ids.append(rid)
                 else:
-                    upload_ids.append(rid)
-                    parsed.append(obj)
+                    staged.append((rid, obj))
             except (json.JSONDecodeError, TypeError, ValueError):
                 bad_ids.append(rid)
         if bad_ids:
             _delete_ids(conn, bad_ids)
-        if not parsed:
+        if not staged:
+            conn.commit()
+            return
+        upload_ids: list[int] = []
+        upload_rows: list[dict[str, Any]] = []
+        readings_rows: list[dict[str, Any]] = []
+        drop_ids: list[int] = []
+        sync_readings = bool(getattr(cfg, "CLOUD_SYNC_READINGS", False))
+        for rid, obj in staged:
+            if tnorm == "telemetry_points":
+                row = cloud_sync.telemetry_points_row_from_latest(obj)
+                if row is None:
+                    drop_ids.append(rid)
+                else:
+                    upload_ids.append(rid)
+                    upload_rows.append(row)
+                    if sync_readings:
+                        rr = cloud_sync.readings_row_from_latest(obj)
+                        if rr is not None:
+                            readings_rows.append(rr)
+            else:
+                upload_ids.append(rid)
+                upload_rows.append(obj)
+        if drop_ids:
+            _delete_ids(conn, drop_ids)
+        if not upload_rows:
             conn.commit()
             return
         try:
@@ -189,7 +211,7 @@ def _process_once() -> None:
             conn.rollback()
             return
         try:
-            client.table(table).insert(parsed).execute()
+            client.table(table).insert(upload_rows).execute()
         except Exception as e:
             policy = _classify_insert_error(e)
             err_s = f"{type(e).__name__}: {e}"
@@ -199,6 +221,16 @@ def _process_once() -> None:
                 _bump_retry(conn, upload_ids, err_s)
             conn.commit()
             return
+        if tnorm == "telemetry_points" and readings_rows:
+            try:
+                client.table("readings").insert(readings_rows).execute()
+            except Exception as e_read:
+                print(
+                    f"[cloud_worker] readings insert failed (telemetry already stored): "
+                    f"{type(e_read).__name__}: {e_read}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         _delete_ids(conn, upload_ids)
         conn.commit()
     except Exception:

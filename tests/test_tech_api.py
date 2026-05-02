@@ -96,3 +96,81 @@ def test_status_ok_with_hmac(app_and_client):
     assert r.status_code == 200
     body = r.get_json()
     assert body["latest"]["telemetry_seq"] == 42
+
+
+def test_commission_status_matches_dashboard_merge_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``GET /tech/commission/status`` mirrors ``GET /commissioning/status`` telemetry merge."""
+    import importlib
+    import json
+
+    import commissioning
+    import config.settings as cfg
+    import tech_api
+
+    key_hex = "01" * 32
+    monkeypatch.setenv("COILSHIELD_TECH_BOND_KEY", key_hex)
+    monkeypatch.setenv("COILSHIELD_LOG_DIR", str(tmp_path))
+    importlib.reload(cfg)
+    golden = json.loads(
+        (
+            Path(__file__).resolve().parent / "fixtures" / "lan_commissioning_status_golden.json"
+        ).read_text(encoding="utf-8")
+    )
+    (tmp_path / "latest.json").write_text(json.dumps(golden), encoding="utf-8")
+    importlib.reload(tech_api)
+    monkeypatch.setattr(commissioning, "needs_commissioning", lambda: True)
+
+    app = Flask(__name__)
+    app.register_blueprint(tech_api.tech_bp)
+    client = app.test_client()
+    key = bytes.fromhex(key_hex)
+    ts = int(time.time())
+    sig = _sign(key, ts, b"")
+    r = client.get(
+        "/tech/commission/status",
+        headers={
+            "X-CoilShield-Signature": sig,
+            "X-CoilShield-Timestamp": str(ts),
+            "X-CoilShield-Tech-ID": "test-install",
+        },
+    )
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body is not None
+    assert body.get("needs_commissioning") is True
+    assert body.get("telemetry_seq") == golden["telemetry_seq"]
+    assert body.get("shift_mv") == golden["shift_mv"]
+
+
+def test_commission_post_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    key_hex = "01" * 32
+    monkeypatch.setenv("COILSHIELD_TECH_BOND_KEY", key_hex)
+    monkeypatch.setenv("COILSHIELD_LOG_DIR", str(tmp_path))
+    import importlib
+
+    import config.settings as cfg
+    import tech_api
+
+    importlib.reload(cfg)
+    (tmp_path / "latest.json").write_text("{}", encoding="utf-8")
+    importlib.reload(tech_api)
+    app = Flask(__name__)
+    app.register_blueprint(tech_api.tech_bp)
+    client = app.test_client()
+    key = bytes.fromhex(key_hex)
+    ts = int(time.time())
+    sig = _sign(key, ts, b"")
+    r = client.post(
+        "/tech/commission",
+        headers={
+            "X-CoilShield-Signature": sig,
+            "X-CoilShield-Timestamp": str(ts),
+            "X-CoilShield-Tech-ID": "test-install",
+        },
+    )
+    assert r.status_code == 202
+    body = r.get_json()
+    assert body is not None
+    assert body.get("accepted") is True

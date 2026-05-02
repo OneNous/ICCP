@@ -1,0 +1,35 @@
+# CoilShield BLE provisioning — advertises Wi-Fi + install-code GATT service.
+#
+# Auto-disables itself once the Pi has a per-device JWT bound to a row in
+# public.devices: the cloud bootstrap removes /etc/coilshield/ble_provision.enable,
+# and ConditionPathExists below silently no-ops the next start. Re-touch the file
+# (or run `sudo coilshield reprovision`) to re-enable advertising.
+
+[Unit]
+Description=CoilShield BLE provisioning + install-code GATT service
+After=bluetooth.service network.target
+Wants=bluetooth.service
+ConditionPathExists=/etc/coilshield/ble_provision.enable
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/coilshield
+EnvironmentFile=/etc/coilshield/env
+# Soft rfkill can hide the adapter from BlueZ until unblocked (common fresh images).
+ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
+ExecStartPre=-/sbin/rfkill unblock bluetooth
+# BlueZ DBus + nmcli writes both require root; keep this unit narrowly scoped to
+# provisioning only (no controller, no telemetry). Entry point wraps
+# ``ble_gatt_bluez.run_ble_provision_server`` (see ``pi_edge/ble_provision.py``).
+ExecStart=/opt/coilshield/.venv/bin/iccp-ble-provision --window-s 0
+Restart=on-failure
+RestartSec=10
+
+ReadWritePaths=/etc/coilshield /var/lib/coilshield
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

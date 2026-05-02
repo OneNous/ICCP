@@ -86,12 +86,13 @@ _ICCP_CLI_COMMANDS: frozenset[str] = frozenset(
         "clear-fault",
         "version",
         "supabase-ping",
+        "commands-poll",
     }
 )
 
 # Subcommands that only read telemetry / show UI — never restart the controller.
 _ICCP_CLI_READ_ONLY_SYSTEMD_KEYS: frozenset[str] = frozenset(
-    {"tui", "dashboard", "live", "diag", "supabase-ping"}
+    {"tui", "dashboard", "live", "diag", "supabase-ping", "commands-poll"}
 )
 
 
@@ -346,6 +347,10 @@ def _print_help() -> None:
   iccp version               Show coilshield-iccp package version.
   iccp supabase-ping         Load ``.env`` (if present) and verify Supabase URL + service key
                              (Storage list-buckets). Requires: pip install -e ".[supabase]"
+
+  iccp commands-poll [--serial S] [--interval SEC] [--once]
+                             Poll Supabase ``commands`` for this device (service role env).
+                             Same as ``iccp-commands-poll``; run under systemd beside ``iccp``.
 
   iccp --help / -h / help   This list (and guide above).
 
@@ -961,6 +966,15 @@ def main() -> int:
 
     if cmd == "supabase-ping":
         rc = _cmd_supabase_ping()
+        if output_mode() == "jsonl":
+            _emit_cmd_end(cmd, int(rc), started_unix=started)
+        return rc
+
+    if cmd == "commands-poll":
+        import commands_poller_shim as cps
+
+        sys.argv = ["commands_poller_shim"] + rest
+        rc = int(cps.main())
         if output_mode() == "jsonl":
             _emit_cmd_end(cmd, int(rc), started_unix=started)
         return rc

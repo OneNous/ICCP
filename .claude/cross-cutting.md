@@ -27,7 +27,7 @@ The firmware survives reboots. State that must persist across reboots:
 - WiFi credentials (in `wpa_supplicant.conf`, managed by OS)
 - BLE bonding keys (in `/var/lib/coilshield/bonded_devices.json` and `/var/lib/bluetooth/`)
 - Device identity (in `/etc/coilshield/env`)
-- Pending cloud uploads (in `/var/lib/coilshield/local.sqlite`)
+- Pending cloud uploads (sidecar SQLite under `LOG_DIR`, e.g. `cloud_queue.db` — see `cloud_worker.py` and `docs/DECISIONS.md`)
 - Wet session history (in `/var/lib/coilshield/local.sqlite`)
 - Latch fault state (in `/var/lib/coilshield/fault_state.json`)
 

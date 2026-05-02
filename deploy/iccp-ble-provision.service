@@ -33,6 +33,8 @@ Environment=ICCP_BLE_WINDOW_S=600
 Environment=ICCP_WIFI_IFACE=wlan0
 # Optional: absolute telemetry dir for post-register scripts on same image
 # Environment=COILSHIELD_LOG_DIR=/var/lib/iccp/logs
+ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
+ExecStartPre=-/sbin/rfkill unblock bluetooth
 ExecStart=/home/onenous/coilshield/.venv/bin/iccp-ble-provision --iface wlan0
 Restart=no
 

@@ -93,26 +93,35 @@ if getattr(cfg, "TECH_API_ENABLED", False):
     app.register_blueprint(tech_bp)
 
 
-@app.before_request
-def _dashboard_api_cors_preflight() -> Response | None:
-    """Allow browser/Electron renderers on another origin to call read-only ``/api/*`` GET APIs."""
-    if request.method != "OPTIONS":
-        return None
-    if not str(request.path).startswith("/api/"):
-        return None
+def _cors_preflight_response(methods: str) -> Response:
     r = make_response("", 204)
     r.headers["Access-Control-Allow-Origin"] = "*"
-    r.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    r.headers["Access-Control-Allow-Methods"] = methods
     r.headers["Access-Control-Allow-Headers"] = "Content-Type"
     r.headers["Access-Control-Max-Age"] = "86400"
     return r
 
 
+@app.before_request
+def _dashboard_api_cors_preflight() -> Response | None:
+    """Allow browser/Electron renderers on another origin to call read-only ``/api/*`` GET APIs."""
+    if request.method != "OPTIONS":
+        return None
+    path = str(request.path)
+    if path.startswith("/api/"):
+        return _cors_preflight_response("GET, OPTIONS")
+    if path.startswith("/commissioning/"):
+        return _cors_preflight_response("GET, POST, OPTIONS")
+    return None
+
+
 @app.after_request
 def _dashboard_api_cors_headers(resp: Response) -> Response:
-    if str(request.path).startswith("/api/"):
+    path = str(request.path)
+    if path.startswith("/api/") or path.startswith("/commissioning/"):
         resp.headers.setdefault("Access-Control-Allow-Origin", "*")
-        resp.headers.setdefault("Access-Control-Allow-Methods", "GET, OPTIONS")
+        m = "GET, OPTIONS" if path.startswith("/api/") else "GET, POST, OPTIONS"
+        resp.headers.setdefault("Access-Control-Allow-Methods", m)
     return resp
 
 
@@ -165,6 +174,41 @@ def _latest() -> dict:
         return json.loads(LATEST_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {"error": "no data yet — is the controller (iccp start) running?"}
+
+
+@app.route("/health", methods=["GET"])
+@app.route("/api/health", methods=["GET"])
+def http_health():
+    """Minimal liveness for technician ``DeviceLanClient.probeHealth()``."""
+    return jsonify({"ok": True}), 200
+
+
+@app.route("/commissioning/status", methods=["GET"])
+def commissioning_http_status():
+    """Technician app LAN path (no HMAC) — merges ``latest.json`` for ``LanLivePayload`` parsers."""
+    import commissioning as comm
+
+    body: dict = {"needs_commissioning": comm.needs_commissioning()}
+    latest = _latest()
+    if isinstance(latest, dict) and "error" not in latest:
+        for k, v in latest.items():
+            if k not in body and k != "error":
+                body[k] = v
+    return jsonify(body)
+
+
+@app.route("/commissioning/start", methods=["POST"])
+def commissioning_http_start():
+    """Technician app POST — acknowledges request; full on-coil sequence remains ``iccp commission`` on device."""
+    return (
+        jsonify(
+            {
+                "accepted": True,
+                "detail": "LAN start acknowledged; run `iccp commission` on the Pi for the full sequence.",
+            }
+        ),
+        202,
+    )
 
 
 def _package_version() -> str | None:

@@ -423,6 +423,15 @@ def run_iccp_forever(args: Namespace) -> int:
     except Exception:
         pass
 
+    # Self-heal a missing devices row (server-side delete, fresh DB, etc.).
+    # Best-effort: telemetry inserts still surface the error if this fails.
+    try:
+        import devices_self_upsert
+
+        devices_self_upsert.upsert_self_safe()
+    except Exception:
+        pass
+
     if args.verbose:
         _n = float(getattr(cfg, "OUTER_LOOP_POTENTIAL_MIN_S", 5.0) or 0.0)
         nudge_s = (

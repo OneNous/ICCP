@@ -39,6 +39,7 @@ iccp-cloud-register = "pi_edge.cloud_register:main"
 iccp-commission-mqtt = "pi_edge.commission_mqtt_bridge:main"
 iccp-telemetry-mqtt = "pi_edge.telemetry_mqtt_sidecar:main"
 iccp-edge-doctor = "pi_edge.edge_doctor:main"
+iccp-commands-poll = "commands_poller_shim:main"
 
 [tool.setuptools.package-dir]
 "" = "src"
@@ -76,4 +77,5 @@ py-modules = [
     "cloud_sync",
     "cloud_worker",
     "tech_api",
+    "commands_poller_shim",
 ]

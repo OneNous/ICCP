@@ -1,0 +1,9 @@
+{
+  "shift_mV": 72.4,
+  "total_mA": 1.85,
+  "channels": [
+    {"idx": 0, "ma": 0.42, "duty_pct": 12.0, "z_ohms": 2100, "state": "REGULATE"},
+    {"idx": 1, "ma": 0.41, "duty_pct": 11.5, "z_ohms": 2080, "state": "REGULATE"}
+  ],
+  "fw": "0.1.0"
+}
