@@ -27,6 +27,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_COUNT", 1)
     monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S", 0.0)
     monkeypatch.setattr(commissioning, "RAMP_SETTLE_S", 0.0)
+    monkeypatch.setattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_MODE", "streak")
     monkeypatch.setattr(commissioning, "CONFIRM_TICKS", 1)
     monkeypatch.setattr(commissioning, "TARGET_RAMP_STEP_MA", 0.05)
     monkeypatch.setattr(cfg, "COMMISSIONING_OC_REPEAT_CUTS", 1)
@@ -168,6 +169,7 @@ def test_commissioning_field_mode_single_capture_no_galvanic_keys(
     monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_COUNT", 1)
     monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_SAMPLE_INTERVAL_S", 0.0)
     monkeypatch.setattr(commissioning, "RAMP_SETTLE_S", 0.0)
+    monkeypatch.setattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_MODE", "streak")
     monkeypatch.setattr(commissioning, "CONFIRM_TICKS", 1)
     monkeypatch.setattr(commissioning, "TARGET_RAMP_STEP_MA", 0.05)
     monkeypatch.setattr(cfg, "COMMISSIONING_OC_REPEAT_CUTS", 1)
@@ -225,6 +227,58 @@ def test_commissioning_field_mode_single_capture_no_galvanic_keys(
     assert data.get("galvanic_offset_mv") is None
     assert data.get("final_shift_mv") == 100.0
     assert data.get("commissioning_complete") is True
+
+
+def test_phase2_linear_ramp_average_confirms_ring_around_band(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Noisy per-tick shifts whose mean is in-band finish without requiring a flat streak."""
+    monkeypatch.setattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_MODE", "average")
+    monkeypatch.setattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_SAMPLES", 3)
+    monkeypatch.setattr(commissioning, "RAMP_SETTLE_S", 0.0)
+    monkeypatch.setattr(commissioning, "_pump_control", lambda *a, **k: None)
+    monkeypatch.setattr(
+        commissioning,
+        "_commission_shift_band_mv",
+        lambda _ref: (-105.0, -95.0),
+    )
+    seq = [-102.0, -98.0, -100.0]
+    n = {"i": 0}
+
+    def _io(*a, **k):
+        i = min(n["i"], len(seq) - 1)
+        v = seq[n["i"]]
+        n["i"] += 1
+        return (1.0, v, 0.0)
+
+    monkeypatch.setattr(commissioning, "_instant_off_ref_mv_and_restore", _io)
+    ref = ReferenceElectrode()
+    ctrl = SimpleNamespace(
+        all_outputs_off=lambda: None,
+        output_duty_pct=lambda _ch: 0.0,
+        set_output_duty_pct=lambda *_a, **_k: None,
+        set_pwm_carrier_hz=lambda _hz: None,
+        enter_static_gate_off=lambda: None,
+        leave_static_gate_off=lambda: None,
+        update=lambda readings: None,
+        duties=lambda: {i: 0.0 for i in range(cfg.NUM_CHANNELS)},
+        channel_statuses=lambda: {i: "OPEN" for i in range(cfg.NUM_CHANNELS)},
+        set_thermal_pause=lambda _active: None,
+        advance_shift_fsm=lambda *a, **k: None,
+    )
+    out, hist = commissioning._phase2_linear_ramp_mA(
+        ref,
+        ctrl,
+        sensors.SimSensorState(),
+        lambda _m: None,
+        False,
+        None,
+        "test-oc",
+        start_ma=0.5,
+    )
+    assert out == 0.5
+    assert len(hist) == 3
+    assert n["i"] == 3
 
 
 def test_delivered_ma_report_formats_ina_channels() -> None:

@@ -14,6 +14,14 @@ Per [`claude.md`](../claude.md): log **architectural** choices here with date, a
 **Consequences:** …
 ```
 
+### 2026-05-02 — Phase 2 commissioning shift: rolling mean vs consecutive “flat” streak
+
+**Decision:** Default **Phase 2 linear** shift completion to a **rolling mean** of the last `COMMISSIONING_SHIFT_CONFIRM_SAMPLES` instant-off shift readings at the current target mA (`COMMISSIONING_SHIFT_CONFIRM_MODE="average"`), with the same mV band as before. Keep legacy **`"streak"`** mode (N consecutive single-sample in-band ticks via `commissioning.CONFIRM_TICKS`) for tests and conservative benches.
+
+**Context:** Noisy condensate / reference noise made “completely stable” shift traces impractical; operators still need the mean shift to sit in the protection band before lock-in.
+
+**Consequences:** Tune `COMMISSIONING_SHIFT_CONFIRM_SAMPLES` (default 5) vs settle time; set mode to `streak` only when reproducing older behavior or very quiet rigs.
+
 ### 2026-04-30 — Close remaining `claude.md` gaps (cloud queue, tech API shell, logging policy)
 
 **Decision:** (1) Add a **sidecar** SQLite queue `LOG_DIR/cloud_queue.db` with a background **Supabase flush worker** (default **off** via `COILSHIELD_CLOUD_SYNC=0`), enqueueing JSON snapshots after each successful `latest.json` write—never blocking the control loop. (2) Register a Flask **Blueprint** [`src/tech_api.py`](../src/tech_api.py) under `/tech` when `COILSHIELD_TECH_API=1`, with unauthenticated `GET /tech/info` and HMAC-gated `GET /tech/status` using `COILSHIELD_TECH_BOND_KEY` (hex) until BLE bond storage exists. (3) Document **stdout vs structured logger** policy; route JSONL thermal notices through `cli_events.emit` where trivial. (4) Add `codegen/gen_types.py` + optional CI drift check.

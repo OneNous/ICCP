@@ -589,6 +589,14 @@ COMMISSIONING_PHASE3_LOCK_SETTLE_S = 30.0
 # Phase 2: shift confirm hysteresis — within this fraction of TARGET_SHIFT_MV counts as “still
 # good”; below that band decays confirm_count instead of hard reset (noisy tap water).
 COMMISSIONING_SHIFT_CONFIRM_TOLERANCE = 0.9
+# Phase 2 linear ramp: how ``shift`` must sit in the mV band before commissioning succeeds.
+# ``average`` (default) — rolling mean of the last ``COMMISSIONING_SHIFT_CONFIRM_SAMPLES`` non-null
+# instant-off shifts at the *current* target mA (buffer cleared whenever mA is stepped) must fall
+# in-band; tolerates noise vs requiring a flat trace.
+# ``streak`` — legacy: shift in band for ``commissioning.CONFIRM_TICKS`` consecutive cycles
+# (monkeypatched in tests).
+COMMISSIONING_SHIFT_CONFIRM_MODE: str = "average"
+COMMISSIONING_SHIFT_CONFIRM_SAMPLES: int = 5
 # Phase 2: ``"linear"`` = step :data:`COMMISSIONING_RAMP_STEP_MA` until shift confirms;
 # ``"binary"`` = bisect mA between :data:`COMMISSIONING_BINARY_MA_LO` and ``MAX_MA``;
 # ``"hybrid"`` = binary search then linear ramp/confirm (Algorithm D) — v1 default.

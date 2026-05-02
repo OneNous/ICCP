@@ -10,6 +10,7 @@ import json
 import os
 import select
 import statistics
+from collections import deque
 import sys
 import time
 from contextlib import contextmanager
@@ -464,7 +465,7 @@ def _native_capture_fail_hint(cap_reason: str) -> str:
 COMMISSIONING_SETTLE_S: int = getattr(cfg, "COMMISSIONING_SETTLE_S", 60)
 TARGET_RAMP_STEP_MA: float = float(getattr(cfg, "COMMISSIONING_RAMP_STEP_MA", 0.15))
 RAMP_SETTLE_S: float = float(getattr(cfg, "COMMISSIONING_RAMP_SETTLE_S", 60.0))
-CONFIRM_TICKS: int = 5
+CONFIRM_TICKS: int = 5  # Used when ``COMMISSIONING_SHIFT_CONFIRM_MODE`` is ``"streak"``; tests patch this.
 # Legacy single dwell (s) when COMMISSIONING_OC_CURVE_ENABLED is False.
 INSTANT_OFF_WINDOW_S: float = float(getattr(cfg, "COMMISSIONING_INSTANT_OFF_S", 2.0))
 # Shorter pre-burst dwell when the OC **curve** is enabled (``COMMISSIONING_OC_INFLECTION_SKIP_RATES`` handles
@@ -1628,7 +1629,12 @@ def _phase2_linear_ramp_mA(
     *,
     start_ma: float | None = None,
 ) -> tuple[float, list[dict[str, Any]]]:
-    """Step mA until shift confirms (or MAX_MA). If *start_mA* is None, start from 0.1×TARGET / 0.05 mA."""
+    """Step mA until shift confirms (or MAX_MA). If *start_mA* is None, start from 0.1×TARGET / 0.05 mA.
+
+    Success uses ``COMMISSIONING_SHIFT_CONFIRM_MODE``: ``average`` (rolling mean of the last
+    ``COMMISSIONING_SHIFT_CONFIRM_SAMPLES`` instant-off shifts at the current mA) or ``streak``
+    (legacy: that many consecutive single-sample in-band ticks).
+    """
     history: list[dict[str, Any]] = []
     thr_lo, thr_hi = _commission_shift_band_mv(reference)
     ma_floor = float(
@@ -1642,6 +1648,9 @@ def _phase2_linear_ramp_mA(
     ramp_fine = float(getattr(cfg, "COMMISSIONING_RAMP_FINE_STEP_MA", 0.05))
     near_frac = float(getattr(cfg, "COMMISSIONING_RAMP_FINE_NEAR_SHIFT_FRAC", 0.5))
     tol = float(getattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_TOLERANCE", 0.9))
+    shift_mode = str(getattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_MODE", "average")).strip().lower()
+    n_avg = max(1, int(getattr(cfg, "COMMISSIONING_SHIFT_CONFIRM_SAMPLES", CONFIRM_TICKS)))
+    confirm_samples: deque[float] = deque(maxlen=n_avg)
     if start_ma is None:
         current_target_ma = max(cfg.TARGET_MA * 0.1, 0.05)
     else:
@@ -1700,7 +1709,56 @@ def _phase2_linear_ramp_mA(
                     f"shift (ref@off−native) {shift_str}  (window {band})"
                 )
 
-        if _shift_in_commission_window(shift, thr_lo, thr_hi):
+        if shift_mode == "average":
+            if shift is None:
+                confirm_samples.clear()
+            elif shift is not None:
+                confirm_samples.append(float(shift))
+                if len(confirm_samples) >= n_avg:
+                    mean_shift = sum(confirm_samples) / float(len(confirm_samples))
+                    if verbose:
+                        log(
+                            f"Shift rolling mean {mean_shift:.1f} mV (n={len(confirm_samples)}) "
+                            f"— band {thr_lo:.1f}…{thr_hi:.1f} mV"
+                        )
+                    if _shift_in_commission_window(mean_shift, thr_lo, thr_hi):
+                        if verbose:
+                            log(
+                                "Commission shift OK — mean in band over "
+                                f"{len(confirm_samples)} instant-off sample(s)"
+                            )
+                        break
+            if shift is not None and float(shift) > thr_hi:
+                confirm_samples.clear()
+                excess = float(shift) - thr_hi
+                step_down = ramp_fine if excess < 20.0 else ramp_coarse
+                if current_target_ma <= ma_floor + 1e-9:
+                    if verbose:
+                        log(
+                            "WARNING: shift exceeds window ceiling but setpoint is already at "
+                            f"minimum ({ma_floor:g} mA) — cannot reduce further; stopping Phase 2 ramp."
+                        )
+                    break
+                current_target_ma = round(max(ma_floor, current_target_ma - step_down), 3)
+                if verbose:
+                    log(
+                        f"Shift {float(shift):.1f} mV above ceiling {thr_hi:.1f} mV — "
+                        f"reducing setpoint to {current_target_ma:.3f} mA"
+                    )
+            elif shift is not None and thr_lo * tol <= float(shift) < thr_lo:
+                pass
+            elif shift is not None and _shift_in_commission_window(shift, thr_lo, thr_hi):
+                # In band but still collecting samples (or mean not in band yet); hold mA.
+                pass
+            elif shift is not None:
+                confirm_samples.clear()
+                step = (
+                    ramp_fine
+                    if float(shift) > thr_lo * near_frac
+                    else ramp_coarse
+                )
+                current_target_ma = round(current_target_ma + step, 3)
+        elif _shift_in_commission_window(shift, thr_lo, thr_hi):
             confirm_count += 1
             if verbose:
                 log(f"Shift in window — streak {confirm_count}/{CONFIRM_TICKS}")
