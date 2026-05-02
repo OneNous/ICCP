@@ -204,9 +204,12 @@ def run_iccp_forever(args: Namespace) -> int:
                 )
             bls = f"{bl:.1f}" if bl is not None else "—"
             if ref.native_oc_anodes_in_mv is not None:
-                nat_line = f"true_native(1a)={ref.native_mv:.1f} mV"
+                nat_line = (
+                    f"native_mv={ref.native_mv:.1f} mV  "
+                    f"(legacy OCP in-bath={ref.native_oc_anodes_in_mv:.1f} mV)"
+                )
             else:
-                nat_line = f"native_mv={ref.native_mv:.1f} mV (single baseline)"
+                nat_line = f"native_mv={ref.native_mv:.1f} mV (OCP baseline)"
             if output_mode() == "jsonl":
                 emit(
                     {

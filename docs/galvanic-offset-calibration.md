@@ -1,6 +1,8 @@
 # Two-phase open-circuit calibration (true native + galvanic offset)
 
-CoilShield can commission a **true** metal/electrolyte baseline with anodes **out** of the bath (Phase 1a), then a second open-circuit capture with anodes **in** the bath, MOSFETs **off** (Phase 1b), using the same relax window and stability rules as Phase 1a (`T_RELAX`, `NATIVE_STABILITY_*`).
+> **Firmware note (2026-05):** Current commissioning performs **one** Phase 1 open-circuit capture only; it no longer runs separate “1a / 1b” steps or writes `native_oc_anodes_in_mv` from commissioning. This page remains accurate for **interpreting legacy** `commissioning.json` / telemetry that still contain those keys, and for optional manual analysis.
+
+CoilShield **previously** could commission a **true** metal/electrolyte baseline with anodes **out** of the bath (Phase 1a), then a second open-circuit capture with anodes **in** the bath, MOSFETs **off** (Phase 1b), using the same relax window and stability rules as Phase 1a (`T_RELAX`, `NATIVE_STABILITY_*`).
 
 ## Stored fields (`commissioning.json`)
 
@@ -24,8 +26,6 @@ CoilShield can commission a **true** metal/electrolyte baseline with anodes **ou
 2. **Install anodes** (prompt), Enter.  
 3. **Phase 1b** — Same capture primitive, 0% duty → `native_oc_anodes_in_mv`, `galvanic_offset_mv` computed.  
 4. **Phase 2+** — Current ramp and lock as today.
-
-**Skip 1b (legacy / bench):** `ICCP_SKIP_GALVANIC_1B=1` or `COMMISSIONING_GALVANIC_1B_ENABLED = False` in `config/settings.py`.
 
 **Service threshold:** `GALVANIC_OFFSET_SERVICE_FRACTION` (default 0.2) — re-commissioning compares the new `galvanic_offset_mv` to the first-install `galvanic_offset_baseline_mv`; a large fall flags `galvanic_offset_service_recommended` and stderr guidance (trending toward bare titanium / passive behavior is a **model**, not a guaranteed failure mode — validate on your MMO anode and electrolyte program).
 

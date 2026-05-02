@@ -22,11 +22,9 @@ MMO anodes go to the fin side through a **non-conductive** wicking path (e.g. sp
 
 - **Signal:** shielded or twisted run to the ADS1115; tie shield to GND at the controller. Commissioning uses **instant-off** to strip IR from the *off-transient* measurement; see [config/settings.py](../config/settings.py) `COMMISSIONING_OC_*`.
 
-## Commissioning — Phase 1 (native) and galvanic
+## Commissioning — Phase 1 (native)
 
-**Bench (two-phase):** With MMO or graphite in **bulk electrolyte**, appreciable **galvanic** current can flow even with MOSFETs off, corrupting a “true” open-circuit native. The default flow captures Phase 1a with anodes **out**, then Phase 1b with anodes **in** to document offset — see [galvanic-offset-calibration.md](galvanic-offset-calibration.md).
-
-**Field (mounted anodes):** Set `COMMISSIONING_FIELD_MODE = True` (or `ICCP_COMMISSION_FIELD_MODE=1`) so commissioning uses **one** OCP native with anodes already installed; no Enter pauses and no Phase 1b split. The resting galvanic couple is baked into that baseline; the ramp still targets `TARGET_SHIFT_MV` of **additional** cathodic polarization vs that baseline.
+Firmware runs **one** open-circuit native capture (MOSFETs off, `T_RELAX` median) with anodes installed; that value is `native_mv` and the shift baseline. Any resting galvanic couple is baked into that baseline. The Phase 2 ramp still targets `TARGET_SHIFT_MV` of **additional** cathodic polarization vs that baseline. Optional **Enter** pause before capture is skipped with `COMMISSIONING_FIELD_MODE` / `ICCP_COMMISSION_FIELD_MODE=1` or the no-prompt flags — see [iccp-cli-reference.md](iccp-cli-reference.md). Legacy JSON with a second in-bath OCP and `galvanic_offset_mv` is described in [galvanic-offset-calibration.md](galvanic-offset-calibration.md).
 
 ## Operator CLI (canonical)
 

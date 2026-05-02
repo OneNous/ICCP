@@ -14,6 +14,14 @@ Per [`claude.md`](../claude.md): log **architectural** choices here with date, a
 **Consequences:** …
 ```
 
+### 2026-05-02 — Remove two-step Phase 1 commissioning (1a / 1b)
+
+**Decision:** Commissioning always runs **one** open-circuit ``capture_native`` (``T_RELAX`` median) with MOSFETs off; result is ``native_mv`` and the shift baseline. **Removed** the bench sequence “anodes out → capture (1a) → install → second capture (1b)” and related Enter pause for 1b. ``COMMISSIONING_FIELD_MODE`` now only means **skip the single optional Phase 1 anode Enter pause** (headless / automation). ``COMMISSIONING_GALVANIC_1B_ENABLED`` / ``ICCP_SKIP_GALVANIC_1B`` are **removed** from settings and code paths. ``reference`` still **loads** ``native_oc_anodes_in_mv`` / ``galvanic_offset_mv`` from older ``commissioning.json`` for runtime math and service hints; ``save_native`` continues to clear those keys on re-baseline.
+
+**Context:** Operators wanted a simpler flow aligned with field installs (anodes stay mounted).
+
+**Consequences:** Docs that described the two-phase bench procedure (e.g. ``docs/galvanic-offset-calibration.md``) are historical for old JSON; no second capture from current firmware.
+
 ### 2026-05-02 — Phase 1 native capture: commissioning slope gate vs median
 
 **Decision:** Add **`COMMISSIONING_NATIVE_CAPTURE_SLOPE_MV_PER_MIN`** (`float | None`). **`None`** → use **`NATIVE_SLOPE_MV_PER_MIN`** (spec drift gate). **`0`** → **skip** the first-third vs last-third slope check in **`reference.capture_native()`**; still require peak-to-peak ≤ **`COMMISSIONING_NATIVE_CAPTURE_STABILITY_MV`** (or global stability when unset) and return the **median** of all samples over **`T_RELAX`**. Default **`0.0`** so Phase 1 does not loop forever on slow OCP / thermal drift that exceeds **2 mV/min** but does not invalidate the window median. Log **`[reference] capture_native: discard relax window (reason)`** on stderr when a window is discarded (p2p or slope).

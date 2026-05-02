@@ -638,7 +638,7 @@ class DataLogger:
         ref_valid_reason: str | None = None,
         t_to_system_protected_s: float | None = None,
         polarization_state: str | None = None,
-        # Phase 1a/1b galvanic calibration (docs/galvanic-offset-calibration.md)
+        # Optional legacy galvanic fields (docs/galvanic-offset-calibration.md)
         native_true_anodes_out_mv: float | None = None,
         native_oc_anodes_in_mv: float | None = None,
         galvanic_offset_mv: float | None = None,

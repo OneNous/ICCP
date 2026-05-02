@@ -832,10 +832,10 @@ class ReferenceElectrode:
 
     def __init__(self) -> None:
         self.native_mv: float | None = None
-        # Phase 1b: OCP with anodes in electrolyte, MOSFETs off (same T_RELAX as 1a).
+        # Legacy commissioning: second OCP with anodes in bath (optional in commissioning.json).
         self.native_oc_anodes_in_mv: float | None = None
         self.native_oc_anodes_measured_at: str | None = None
-        # native_mv (1a) − native_oc_anodes_in_mv (1b); positive = "depression" vs true metal.
+        # Legacy: true_native − anodes_in_ocp; positive = "depression" vs true metal.
         self.galvanic_offset_mv: float | None = None
         # First-install offset for health trending (not overwritten on later commissions).
         self.galvanic_offset_baseline_mv: float | None = None
@@ -952,7 +952,7 @@ class ReferenceElectrode:
         self, mv: float, *, native_temp_f: float | None = None
     ) -> None:
         self.native_mv = mv
-        # New 1a invalidates previous Phase 1b — clear until 1b is re-run.
+        # New native capture supersedes any legacy second-baseline fields.
         self.native_oc_anodes_in_mv = None
         self.native_oc_anodes_measured_at = None
         self.galvanic_offset_mv = None
@@ -991,9 +991,8 @@ class ReferenceElectrode:
         true_native_mv: float,
     ) -> None:
         """
-        Phase 1b: OCP with anodes in bath, MOSFETs off. Persists offset vs Phase 1a
-        (``true_native_mv``) and sets service flag if offset vs first-install baseline
-        falls below GALVANIC_OFFSET_SERVICE_FRACTION.
+        Legacy: second OCP with anodes in bath vs ``true_native_mv``. Persists offset and
+        optional service flag vs first-install baseline (``GALVANIC_OFFSET_SERVICE_FRACTION``).
         """
         now = time.time()
         ts = (
@@ -1016,7 +1015,7 @@ class ReferenceElectrode:
         if not isinstance(existing, dict):
             existing = {}
         if existing.get("galvanic_offset_baseline_mv") is None and off > 0:
-            # First time we have a full 1a+1b pair — anchor health trending.
+            # First full two-baseline pair — anchor health trending.
             self.galvanic_offset_baseline_mv = off
         else:
             try:
@@ -1053,8 +1052,8 @@ class ReferenceElectrode:
     def baseline_mv_for_shift(self) -> float | None:
         """
         Open-circuit baseline mV (instant-off) for **shift = raw − this** (industry: ref
-        to DVM +, structure/return to DVM −). When 1b was run, use in-situ OCP with
-        anodes installed; else Phase 1a true native only.
+        to DVM +, structure/return to DVM −). Prefers ``native_oc_anodes_in_mv`` when present
+        (legacy JSON); else ``native_mv`` from Phase 1.
         """
         if self.native_oc_anodes_in_mv is not None:
             return float(self.native_oc_anodes_in_mv)
@@ -1062,12 +1061,11 @@ class ReferenceElectrode:
 
     def effective_shift_target_mv(self) -> float:
         """
-        Additional mV of shift (from :meth:`baseline_mv_for_shift`) needed so that
-        **total** polarization from Phase 1a (true native) reaches ``TARGET_SHIFT_MV``.
+        Additional mV of shift (from :meth:`baseline_mv_for_shift`) toward ``TARGET_SHIFT_MV``.
 
-        If galvanic OCP (1a−1b) already moved the reading by ``galvanic_offset_mv``,
-        only ``TARGET_SHIFT_MV − offset`` mV more is required from the 1b baseline.
-        When 1b was not commissioned, offset is unknown → use full ``TARGET_SHIFT_MV``.
+        When ``galvanic_offset_mv`` is set (legacy two-baseline JSON), only
+        ``TARGET_SHIFT_MV − offset`` mV more is required from the in-bath baseline.
+        Otherwise the full ``TARGET_SHIFT_MV`` applies vs ``native_mv``.
         """
         t = float(getattr(cfg, "TARGET_SHIFT_MV", 100.0))
         if self.galvanic_offset_mv is None:
@@ -1076,8 +1074,8 @@ class ReferenceElectrode:
 
     def effective_max_shift_mv(self) -> float:
         """
-        Max **additional** shift from the 1b baseline (when present) that keeps
-        total polarization from 1a at or below ``MAX_SHIFT_MV``:
+        Max **additional** shift from the shift baseline that keeps total polarization
+        within ``MAX_SHIFT_MV`` when ``galvanic_offset_mv`` is known:
         ``max(0, MAX_SHIFT_MV - galvanic_offset_mv)``.
         """
         m = float(getattr(cfg, "MAX_SHIFT_MV", 200.0))

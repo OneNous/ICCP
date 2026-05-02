@@ -36,13 +36,9 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(time, "sleep", lambda _s: None)
 
     ref = ReferenceElectrode()
-    _cap_n = 0
 
     def _cap_native(*a, **k) -> tuple[float, str]:
-        nonlocal _cap_n
-        _cap_n += 1
-        # Phase 1a: 210 mV; Phase 1b: 200 mV → +10 mV galvanic offset (1a−1b)
-        return (210.0, "ok") if _cap_n == 1 else (200.0, "ok")
+        return (200.0, "ok")
 
     monkeypatch.setattr(ReferenceElectrode, "capture_native", _cap_native)
     monkeypatch.setattr(
@@ -53,7 +49,7 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         commissioning,
         "_instant_off_ref_mv_and_restore",
-        lambda *a, **k: (100.0, -100.0, 0.0),  # shift = raw − bl = 100 − 200 (1b OCP)
+        lambda *a, **k: (100.0, -100.0, 0.0),  # shift = raw − native baseline = 100 − 200
     )
 
     ctrl = SimpleNamespace(
@@ -87,10 +83,10 @@ def test_commissioning_run_writes_json(tmp_path, monkeypatch: pytest.MonkeyPatch
         getattr(cfg, "COMMISSIONING_JSON_SCHEMA_VERSION", 2)
     )
     assert isinstance(data["native_mv"], (int, float))
-    assert data["native_mv"] == 210.0
-    assert data.get("native_oc_anodes_in_mv") == 200.0
-    assert data.get("galvanic_offset_mv") == 10.0
-    assert data.get("galvanic_offset_baseline_mv") == 10.0
+    assert data["native_mv"] == 200.0
+    assert data.get("native_oc_anodes_in_mv") is None
+    assert data.get("galvanic_offset_mv") is None
+    assert data.get("galvanic_offset_baseline_mv") is None
     assert data.get("final_shift_mv") == -100.0
     assert data.get("commissioning_complete") is True
 
@@ -152,10 +148,10 @@ def test_needs_commissioning_legacy_file_warns_once(
     assert capsys.readouterr().err == ""
 
 
-def test_commissioning_field_mode_single_capture_no_galvanic_keys(
+def test_commissioning_field_mode_skips_anode_pause_only(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Field mode: one native, no 1b, no native_oc / galvanic_offset in commissioning.json."""
+    """Field mode skips the Phase 1 Enter pause; commissioning still does a single native capture."""
     root = tmp_path
     comm_path = root / "commissioning.json"
     monkeypatch.setattr(cfg, "PROJECT_ROOT", root)

@@ -537,16 +537,13 @@ def latest_feed_stale_threshold_s() -> float:
 # Set False to skip reference ADC init until hardware is wired.
 REF_ENABLED = True
 # Polarization shift = instant-off mV − baseline_mv_for_shift (same sign as a DMM: ref +,
-# structure −; **positive** when protected); baseline
-# is open-circuit with anodes in bath (Phase 1b) when commissioned, else Phase 1a true native.
-# Default 100 mV
-# matches a common field picture: native ~100–130 mV at the AIN after Phase 1, ramp succeeds
-# when OC inflection sits ~20–40 mV (order ~100 mV below native). Tune if chemistry differs.
-# With two-phase 1a+1b commissioning, this is **total** polarization from true native(1a);
-# software subtracts ``galvanic_offset_mv`` for the additional shift from the 1b baseline.
+# structure −; **positive** when protected). Baseline is the Phase 1 open-circuit native
+# (``native_mv``), or ``native_oc_anodes_in_mv`` when present in legacy commissioning.json.
+# Default 100 mV matches a common field picture: native ~100–130 mV at the AIN after Phase 1,
+# ramp succeeds when OC inflection sits ~20–40 mV (order ~100 mV below native).
+# When ``galvanic_offset_mv`` exists (legacy two-phase JSON), ``effective_*_shift_mv`` subtracts it.
 TARGET_SHIFT_MV = 100
-# Upper band for the same “total from 1a” story: effective max additional shift from 1b
-# is ``MAX_SHIFT_MV − galvanic_offset_mv`` when offset is known.
+# Upper band for additional shift vs baseline; same galvanic adjustment as TARGET when offset known.
 MAX_SHIFT_MV = 200
 # mA: outer-loop nudge (``update_potential_target``). Match fine resolution with inner duty steps.
 TARGET_MA_STEP = 0.01
@@ -620,25 +617,13 @@ COMMISSIONING_PHASE1_OFF_VERIFY = True
 # Phase 1: stop soft-PWM and hold each gate pin at static LOW (same idea as PWMBank.cleanup).
 # Improves “true off” vs ChangeDutyCycle(0) alone; set False only if your hardware misbehaves.
 COMMISSIONING_PHASE1_STATIC_GATE_LOW = True
-# Pauses: confirm anodes **removed** before open-circuit native (Phase 1a), then **installed**
-# for Phase 1b (OCP, MOSFETs off, same T_RELAX as 1a), then Phase 2 ramp. Gated in code: off in
-# `COILSHIELD_SIM=1`, when stdin is not a TTY, when ``COMMISSIONING_FIELD_MODE`` is True, or
-# `iccp commission --no-anode-prompts` / env `ICCP_COMMISSION_NO_ANODE_PROMPTS=1`.
-# The ``after_phase1`` pause (install anodes before 1b) only runs when Phase 1b is enabled; see
-# ``commissioning._galvanic_1b_wanted()``.
+# Optional Enter pause before Phase 1 open-circuit native (``T_RELAX`` median capture). Off in
+# ``COILSHIELD_SIM=1``, non-TTY stdin, when ``COMMISSIONING_FIELD_MODE`` is True, or
+# ``iccp commission --no-anode-prompts`` / ``ICCP_COMMISSION_NO_ANODE_PROMPTS=1``.
 COMMISSIONING_ANODE_PLACEMENT_PROMPTS: bool = True
-# Field / production coil: anodes stay mounted on fins — no bench “remove for 1a” step.
-# When True: no anode placement Enter pauses, no Phase 1b second capture; one OCP native
-# (MOSFETs off, same settle + ``capture_native``) is both stored ``native_mv`` and the shift
-# baseline (galvanic couple at rest is baked in). Ramp still targets TARGET_SHIFT_MV additional
-# polarization vs that baseline. Read by ``commissioning._commissioning_field_mode()``; optional
-# env override: ``ICCP_COMMISSION_FIELD_MODE=1|0``.
+# When True: skip the Phase 1 anode placement Enter pause (automation / headless / coil with
+# fixed anodes). Optional env: ``ICCP_COMMISSION_FIELD_MODE=1|0``.
 COMMISSIONING_FIELD_MODE: bool = False
-# After Phase 1a, run Phase 1b: second ``capture_native`` with anodes in the bath, gates off.
-# Shift / instant-off use the 1b scalar as baseline when present (see ``baseline_mv_for_shift``).
-# Set False or `ICCP_SKIP_GALVANIC_1B=1` for legacy single-baseline installs. Implied False when
-# ``COMMISSIONING_FIELD_MODE`` is True (single native only).
-COMMISSIONING_GALVANIC_1B_ENABLED: bool = True
 # Re-commission: if new ``galvanic_offset_mv`` < this fraction of ``galvanic_offset_baseline_mv``
 # (first install), persist ``galvanic_offset_service_recommended`` and print a warning.
 GALVANIC_OFFSET_SERVICE_FRACTION: float = 0.2

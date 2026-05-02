@@ -271,7 +271,7 @@ def _readline_wait_enter_for_anode_prompt(
                     print(f"[main] status line (anode wait): {e}", file=sys.stderr)
             if time.monotonic() - last_skip_announce >= float(_TTY_ANODE_SKIP_HINT_S):
                 print(
-                    "[main] To skip anode pauses: COMMISSIONING_FIELD_MODE / "
+                    "[main] To skip the Phase 1 anode pause: COMMISSIONING_FIELD_MODE / "
                     "ICCP_COMMISSION_FIELD_MODE=1, or ICCP_COMMISSION_NO_ANODE_PROMPTS=1, or "
                     "iccp commission --no-anode-prompts",
                     file=sys.stderr,
@@ -287,7 +287,7 @@ def _readline_wait_enter_for_anode_prompt(
 
 
 def _commissioning_field_mode() -> bool:
-    """Permanent anodes / no bench 1a+1b split — see ``COMMISSIONING_FIELD_MODE``."""
+    """True → skip Phase 1 anode placement Enter pause (see ``COMMISSIONING_FIELD_MODE``)."""
     raw = (os.environ.get("ICCP_COMMISSION_FIELD_MODE", "") or "").strip().lower()
     if raw in ("1", "true", "yes", "on"):
         return True
@@ -323,19 +323,6 @@ def _anode_placement_should_interact(
     return bool(sys.stdin.isatty())
 
 
-def _galvanic_1b_wanted() -> bool:
-    """Second OCP capture (anodes in bath, gates off) after Phase 1a, same T_RELAX."""
-    if _commissioning_field_mode():
-        return False
-    if (os.environ.get("ICCP_SKIP_GALVANIC_1B", "") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    ):
-        return False
-    return bool(getattr(cfg, "COMMISSIONING_GALVANIC_1B_ENABLED", True))
-
-
 def _anode_placement_pause(
     step: str,
     *,
@@ -348,20 +335,13 @@ def _anode_placement_pause(
         return
     t_relax = float(getattr(cfg, "T_RELAX", 30.0))
     next_on_enter = {
-        "before_phase1": "native Ecorr / baseline (Phase 1, open-circuit)",
-        "after_phase1": "current ramp toward target shift (Phase 2)",
+        "before_phase1": "native Ecorr baseline (Phase 1, open-circuit)",
     }.get(step, "next commissioning step")
     if step == "before_phase1":
         print_commission_section("Anode placement — before native Ecorr (Phase 1)")
         print(
-            "[main] Remove anode assemblies from the bath (open-circuit), "
-            "then press Enter."
-        )
-    elif step == "after_phase1":
-        print_commission_section("Anode placement — Phase 1b then ramp (Phases 2–3)")
-        print(
-            "[main] Install anodes in the bath, then press Enter for the second open-circuit "
-            "reference (Phase 1b, MOSFETs off), then commissioning continues to the current ramp."
+            "[main] Confirm anodes are installed and wetted in the bath (MOSFETs stay off for "
+            "the reference window), then press Enter."
         )
     else:  # pragma: no cover
         print_commission_section(f"Anode placement (internal: {step!r})")
@@ -1354,22 +1334,14 @@ def run(
     controller.all_outputs_off()
 
     if verbose and _commissioning_field_mode():
-        log(
-            "Field mode: anodes stay on the coil; no remove/install prompts. "
-            "Single OCP baseline only."
-        )
+        log("Field mode: skip Phase 1 anode placement Enter pause.")
 
     if verbose:
         if output_mode() != "jsonl":
             print()
-        if _commissioning_field_mode():
-            print_commission_section(
-                "Phase 1 — native Ecorr (field: anodes installed, MOSFETs off)"
-            )
-        else:
-            print_commission_section(
-                "Phase 1 — native Ecorr (open-circuit, spec capture)"
-            )
+        print_commission_section(
+            "Phase 1 — native Ecorr (open-circuit, MOSFETs off)"
+        )
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
         _anode_placement_pause(
@@ -1402,56 +1374,13 @@ def run(
         )
     pan_tf = temp_mod.read_fahrenheit()
     reference.save_native(native_mv, native_temp_f=pan_tf)
-    if _commissioning_field_mode():
-        if pan_tf is not None:
-            log(
-                f"Phase 1 — field native (single OCP baseline): {native_mv:.1f} mV "
-                f"(pan {pan_tf:.1f} °F)"
-            )
-        else:
-            log(
-                f"Phase 1 — field native (single OCP baseline): {native_mv:.1f} mV"
-            )
-    elif pan_tf is not None:
+    if pan_tf is not None:
         log(
-            f"Phase 1a — true native (anodes out): {native_mv:.1f} mV (pan {pan_tf:.1f} °F)"
+            f"Phase 1 — OCP native baseline: {native_mv:.1f} mV (pan {pan_tf:.1f} °F)"
         )
     else:
-        log(f"Phase 1a — true native (anodes out): {native_mv:.1f} mV")
+        log(f"Phase 1 — OCP native baseline: {native_mv:.1f} mV")
 
-    if _galvanic_1b_wanted():
-        with _phase1_static_gate_context(controller):
-            _anode_placement_pause(
-                "after_phase1",
-                anode_placement_prompts=anode_placement_prompts,
-                controller=controller,
-                reference=reference,
-                sim_state=sim_state,
-            )
-        if verbose:
-            if output_mode() != "jsonl":
-                print()
-            print_commission_section("Phase 1b — OCP with anodes in bath (MOSFETs off)")
-        native_in, cap2 = _phase1_spec_native_capture(
-            reference,
-            controller,
-            sim_state,
-            on_relax_progress=on_relax_progress,
-        )
-        if native_in is None:
-            raise RuntimeError(
-                f"Phase 1b (anodes in, open-circuit) failed: {cap2}. "
-                f"{_native_capture_fail_hint(cap2)}  "
-                f"To skip: ICCP_SKIP_GALVANIC_1B=1 or set COMMISSIONING_GALVANIC_1B_ENABLED=False."
-            )
-        assert reference.native_mv is not None
-        reference.save_native_oc_anodes_in(native_in, true_native_mv=float(reference.native_mv))
-        off = reference.galvanic_offset_mv
-        if verbose and off is not None:
-            log(
-                f"Phase 1b: OCP with anodes in: {native_in:.1f} mV;  "
-                f"galvanic offset (1a−1b) = {off:.1f} mV"
-            )
     bl0 = reference.baseline_mv_for_shift()
     if bl0 is not None and verbose:
         eff = reference.effective_shift_target_mv()
@@ -1460,10 +1389,10 @@ def run(
         n1a = reference.native_mv
         if off is not None and n1a is not None:
             log(
-                f"Shift baseline: {bl0:.1f} mV (1b OCP). Total goal from true native(1a) = "
-                f"{ttot:.0f} mV; galvanic(1a−1b) = {off:.1f} mV → target additional shift from "
-                f"1b = {eff:.1f} mV; instant-off ref under CP ≈ {bl0 - eff:.1f} mV "
-                f"(≈ {n1a - ttot:.1f} mV vs 1a)"
+                f"Shift baseline: {bl0:.1f} mV (legacy in-bath OCP). Total polarization goal = "
+                f"{ttot:.0f} mV; stored galvanic offset = {off:.1f} mV → effective additional shift = "
+                f"{eff:.1f} mV; instant-off ref under CP ≈ {bl0 - eff:.1f} mV "
+                f"(stored true_native − goal ≈ {n1a - ttot:.1f} mV)"
             )
         else:
             log(
@@ -1503,7 +1432,7 @@ def run(
 
 
 def _commission_shift_band_mv(reference: ReferenceElectrode) -> tuple[float, float]:
-    """Additional shift (mV) window vs 1b baseline: same as runtime ``protection_status`` OK band."""
+    """Additional shift (mV) window vs shift baseline: same as runtime ``protection_status`` OK band."""
     thr_lo = float(reference.effective_shift_target_mv())
     thr_hi = float(reference.effective_max_shift_mv())
     if thr_hi < thr_lo:
@@ -1591,8 +1520,8 @@ def _phase2_binary_search_mA(
             if reference.galvanic_offset_mv is not None:
                 log(
                     f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
-                    f"shift (ref@off−1b baseline) {shift_str}  (window {band}, "
-                    f"{ttot:.0f} mV total from 1a)  [binary]"
+                    f"shift (ref@off−in-bath baseline) {shift_str}  (window {band}, "
+                    f"{ttot:.0f} mV goal incl. legacy galvanic)  [binary]"
                 )
             else:
                 log(
@@ -1700,8 +1629,8 @@ def _phase2_linear_ramp_mA(
             if reference.galvanic_offset_mv is not None:
                 log(
                     f"Instant-off ({oc_desc})  →  ref@off {raw:.1f} mV, "
-                    f"shift (ref@off−1b baseline) {shift_str}  (window {band}, "
-                    f"{ttot:.0f} mV total from 1a)"
+                    f"shift (ref@off−in-bath baseline) {shift_str}  (window {band}, "
+                    f"{ttot:.0f} mV goal incl. legacy galvanic)"
                 )
             else:
                 log(
@@ -2007,13 +1936,10 @@ def run_native_only(
     verbose: bool = True,
     anode_placement_prompts: bool | None = None,
 ) -> tuple[float | None, str]:
-    """Phase 1 only: re-capture baselines without ramp/lock phases.
+    """Phase 1 only: re-capture open-circuit native baseline without ramp/lock phases.
 
-    Runs one ``capture_native`` (Phase 1a on bench, or the single field baseline when
-    :func:`_commissioning_field_mode` is True) and, when :func:`_galvanic_1b_wanted` is
-    True, Phase 1b (second OCP, anodes in bath). Persists ``native_mv``, optional
-    ``native_oc_anodes_in_mv`` / ``galvanic_offset_mv`` / ``galvanic_offset_baseline_mv``.
-    Returns ``(native_mv, reason)``; reason is ``"ok"`` when the selected phases succeed.
+    Runs ``reference.capture_native`` once, then :meth:`ReferenceElectrode.save_native`.
+    Returns ``(native_mv, reason)`` with reason from capture (``"ok"`` on success).
     """
 
     def log(msg: str) -> None:
@@ -2025,12 +1951,7 @@ def run_native_only(
     if verbose:
         if output_mode() != "jsonl":
             print()
-        if _commissioning_field_mode():
-            print_commission_section(
-                "Phase 1 — native only (field: single OCP baseline)"
-            )
-        else:
-            print_commission_section("Phase 1 — native only (re-capture baseline)")
+        print_commission_section("Phase 1 — native only (re-capture baseline)")
     with _phase1_static_gate_context(controller):
         _verify_phase1_drive_off(controller, sim_state, log=log if verbose else None)
         _anode_placement_pause(
@@ -2063,39 +1984,6 @@ def run_native_only(
 
     pan_tf = temp_mod.read_fahrenheit()
     reference.save_native(native_mv, native_temp_f=pan_tf)
-    if _commissioning_field_mode():
-        log(f"Phase 1 field native_mv = {native_mv:.2f} mV (reason={reason})")
-    else:
-        log(f"Phase 1a native_mv = {native_mv:.2f} mV (reason={reason})")
+    log(f"Phase 1 native_mv = {native_mv:.2f} mV (reason={reason})")
 
-    if _galvanic_1b_wanted():
-        with _phase1_static_gate_context(controller):
-            _anode_placement_pause(
-                "after_phase1",
-                anode_placement_prompts=anode_placement_prompts,
-                controller=controller,
-                reference=reference,
-                sim_state=sim_state,
-            )
-        if verbose:
-            if output_mode() != "jsonl":
-                print()
-            print_commission_section("Phase 1b — OCP with anodes in bath (MOSFETs off)")
-        native_in, r2 = _phase1_spec_native_capture(
-            reference, controller, sim_state, on_relax_progress=on_relax_progress
-        )
-        if native_in is None:
-            return None, f"phase1b failed: {r2}"
-        assert reference.native_mv is not None
-        reference.save_native_oc_anodes_in(
-            native_in, true_native_mv=float(reference.native_mv)
-        )
-        if verbose and reference.galvanic_offset_mv is not None:
-            log(
-                f"Phase 1b: {native_in:.2f} mV; galvanic offset = {reference.galvanic_offset_mv:.2f} mV"
-            )
-    if not _galvanic_1b_wanted():
-        return native_mv, reason
-    if reference.native_oc_anodes_in_mv is None:  # pragma: no cover
-        return None, "phase1b_not_saved"
-    return native_mv, "ok"
+    return native_mv, reason

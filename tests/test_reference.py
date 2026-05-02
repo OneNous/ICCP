@@ -96,7 +96,7 @@ def test_baseline_mv_for_shift_prefers_anodes_in_ocp(monkeypatch: pytest.MonkeyP
     assert ref.shift_mv() == -75.0  # 200 - 275 (raw − baseline)
     monkeypatch.setattr(cfg, "TARGET_SHIFT_MV", 100)
     monkeypatch.setattr(cfg, "MAX_SHIFT_MV", 200)
-    # Total from 1a = 100 mV → only 100−33 = 67 mV more needed from 1b baseline
+    # Total polarization goal 100 mV with 33 mV legacy offset → 67 mV effective additional shift
     assert ref.effective_shift_target_mv() == 67.0
     assert ref.effective_max_shift_mv() == 167.0
 

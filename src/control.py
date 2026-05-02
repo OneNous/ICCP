@@ -1106,9 +1106,9 @@ class Controller:
         in-band range when ``shift > center + OUTER_LOOP_SHIFT_TRIM_TOL_MV`` (e.g. toward center).
 
         ``shift_target_mv`` / ``shift_max_mv`` default to :obj:`config.settings.TARGET_SHIFT_MV` /
-        ``MAX_SHIFT_MV``. When Phase 1b (galvanic) is commissioned, the reference layer should pass
-        the **additional** target from the 1b baseline so total polarization from true native(1a)
-        still matches ``TARGET_SHIFT_MV``.
+        ``MAX_SHIFT_MV``. When legacy commissioning.json includes ``galvanic_offset_mv``, use
+        ``reference.effective_shift_target_mv()`` / ``effective_max_shift_mv()`` so totals stay
+        consistent with that offset.
         """
         if shift_mv is None:
             return
