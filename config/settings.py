@@ -695,6 +695,10 @@ NATIVE_STABILITY_MV: float = 30.0           # peak-to-peak ceiling during native
 # ``T_RELAX`` while the median is still useful; without a looser ceiling, ``unstable_p2p`` retries
 # forever (log shows “0 sample(s) so far” each retry).
 COMMISSIONING_NATIVE_CAPTURE_STABILITY_MV: float | None = 100.0
+# ``None`` → use ``NATIVE_SLOPE_MV_PER_MIN`` on first vs last third drift. **0** → skip slope check
+# (Phase 1 still uses full ``T_RELAX`` median). Slow OCP / thermal drift often exceeds 2 mV/min
+# without invalidating the median — that gate was causing endless retries after a “full” window.
+COMMISSIONING_NATIVE_CAPTURE_SLOPE_MV_PER_MIN: float | None = 0.0
 W_REF: float = 10.0                        # s — stability window (spec §3.2)
 NATIVE_SLOPE_MV_PER_MIN: float = 2.0
 NATIVE_RECAPTURE_S: float = 24 * 3600.0     # daily scheduled re-capture (§3.4)

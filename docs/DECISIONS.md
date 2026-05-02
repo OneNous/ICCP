@@ -14,6 +14,14 @@ Per [`claude.md`](../claude.md): log **architectural** choices here with date, a
 **Consequences:** …
 ```
 
+### 2026-05-02 — Phase 1 native capture: commissioning slope gate vs median
+
+**Decision:** Add **`COMMISSIONING_NATIVE_CAPTURE_SLOPE_MV_PER_MIN`** (`float | None`). **`None`** → use **`NATIVE_SLOPE_MV_PER_MIN`** (spec drift gate). **`0`** → **skip** the first-third vs last-third slope check in **`reference.capture_native()`**; still require peak-to-peak ≤ **`COMMISSIONING_NATIVE_CAPTURE_STABILITY_MV`** (or global stability when unset) and return the **median** of all samples over **`T_RELAX`**. Default **`0.0`** so Phase 1 does not loop forever on slow OCP / thermal drift that exceeds **2 mV/min** but does not invalidate the window median. Log **`[reference] capture_native: discard relax window (reason)`** on stderr when a window is discarded (p2p or slope).
+
+**Context:** After loosening peak-to-peak for commissioning, traces still filled **~60 s** then reset to **0 samples** because the **slope** gate (~20 mV drift over ~1 min → tens of mV/min) failed every attempt.
+
+**Consequences:** Stricter benches can set **`None`** to inherit **`NATIVE_SLOPE_MV_PER_MIN`**, or a positive cap (e.g. **15**) instead of full skip.
+
 ### 2026-05-02 — Phase 2 commissioning shift: rolling mean vs consecutive “flat” streak
 
 **Decision:** Default **Phase 2 linear** shift completion to a **rolling mean** of the last `COMMISSIONING_SHIFT_CONFIRM_SAMPLES` instant-off shift readings at the current target mA (`COMMISSIONING_SHIFT_CONFIRM_MODE="average"`), with the same mV band as before. Keep legacy **`"streak"`** mode (N consecutive single-sample in-band ticks via `commissioning.CONFIRM_TICKS`) for tests and conservative benches.

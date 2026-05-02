@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 import time
 from pathlib import Path
 
@@ -170,3 +171,53 @@ def test_read_holds_last_good_after_i2c_failure(monkeypatch: pytest.MonkeyPatch)
     raw, shift = ref.read_raw_and_shift()
     assert raw == pytest.approx(310.0)
     assert shift == pytest.approx(10.0)
+
+
+def test_capture_native_commissioning_slope_gate_skippable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large drift over T_RELAX fails NATIVE_SLOPE unless commissioning slope is 0 (skip)."""
+    monkeypatch.setattr(ref_mod, "SIM_MODE", True)
+    # Wall-clock: ~11 samples (one per ramp step) then stop — median must match ``seq``.
+    monkeypatch.setattr(cfg, "T_RELAX", 1.55)
+    monkeypatch.setattr(cfg, "NATIVE_SAMPLE_INTERVAL_S", 0.14)
+    monkeypatch.setattr(cfg, "NATIVE_CAPTURE_RETRIES", 0)
+    monkeypatch.setattr(cfg, "T_REST_CONFIRM", 0.05)
+    monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_CAPTURE_STABILITY_MV", 100.0)
+    monkeypatch.setattr(cfg, "NATIVE_SLOPE_MV_PER_MIN", 2.0)
+    seq = [
+        700.0,
+        705.0,
+        710.0,
+        715.0,
+        720.0,
+        725.0,
+        730.0,
+        735.0,
+        740.0,
+        745.0,
+        750.0,
+    ]
+    ref = ReferenceElectrode()
+    idx: list[int] = [0]
+
+    def _read(self: ReferenceElectrode, **kwargs: object) -> float:
+        i = min(idx[0], len(seq) - 1)
+        idx[0] += 1
+        return seq[i]
+
+    monkeypatch.setattr(ReferenceElectrode, "read", _read)
+
+    monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_CAPTURE_SLOPE_MV_PER_MIN", None)
+    idx[0] = 0
+    med_none, reason_none = ref.capture_native(rest_current_ok=lambda: True)
+    assert med_none is None
+    assert "slope" in reason_none
+
+    monkeypatch.setattr(cfg, "COMMISSIONING_NATIVE_CAPTURE_SLOPE_MV_PER_MIN", 0.0)
+    idx[0] = 0
+    med_ok, reason_ok = ref.capture_native(rest_current_ok=lambda: True)
+    assert reason_ok == "ok"
+    assert med_ok is not None
+    assert min(seq) <= float(med_ok) <= max(seq)
+    assert float(med_ok) == pytest.approx(statistics.median(seq), abs=8.0)

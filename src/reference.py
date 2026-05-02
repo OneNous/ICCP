@@ -1168,7 +1168,11 @@ class ReferenceElectrode:
             stab = max(0.1, float(_stab_ov))
         else:
             stab = max(0.1, float(getattr(cfg, "NATIVE_STABILITY_MV", 5.0)))
-        slope_limit = max(0.0, float(getattr(cfg, "NATIVE_SLOPE_MV_PER_MIN", 2.0)))
+        _slope_comm = getattr(cfg, "COMMISSIONING_NATIVE_CAPTURE_SLOPE_MV_PER_MIN", None)
+        if _slope_comm is None:
+            slope_limit = max(0.0, float(getattr(cfg, "NATIVE_SLOPE_MV_PER_MIN", 2.0)))
+        else:
+            slope_limit = max(0.0, float(_slope_comm))
         rest_confirm_s = max(0.0, float(getattr(cfg, "T_REST_CONFIRM", 3.0)))
         if static_gate_low is not None:
             try:
@@ -1219,6 +1223,12 @@ class ReferenceElectrode:
                     pp = max(vals) - min(vals)
                     if pp > stab:
                         last_reason = f"unstable_p2p_{pp:.1f}>{stab:.1f}"
+                        print(
+                            f"[reference] capture_native: discard relax window ({last_reason}) "
+                            f"— retry {attempt + 1}/{retries + 1}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                         continue
                     first = statistics.fmean(vals[: max(2, len(vals) // 3)])
                     last = statistics.fmean(vals[-max(2, len(vals) // 3):])
@@ -1226,6 +1236,12 @@ class ReferenceElectrode:
                     slope = (last - first) / span_min
                     if slope_limit > 0 and abs(slope) > slope_limit:
                         last_reason = f"slope_{slope:.2f}>{slope_limit:.2f}mv_per_min"
+                        print(
+                            f"[reference] capture_native: discard relax window ({last_reason}) "
+                            f"— retry {attempt + 1}/{retries + 1}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                         continue
                     median_mv = float(statistics.median(vals))
                     return median_mv, "ok"
