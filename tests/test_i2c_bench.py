@@ -9,8 +9,10 @@ from i2c_bench import (
     INA219_DEFAULT_CONFIG_WORD,
     _ads1115_config_word,
     _ads1115_dr_conversion_s,
+    _ads1115_mux_bits_differential,
     ads1115_behind_i2c_mux,
     ads1115_read_config_word,
+    ads1115_start_single_shot_differential,
     ads1115_wait_os_ready,
     ina219_diag_snapshot,
     word_out,
@@ -117,3 +119,27 @@ def test_ads1115_wait_os_ready_false_on_timeout() -> None:
     assert ads1115_wait_os_ready(bus, 0x48, deadline_s=0.02, poll_interval_s=0.005) is False
     assert time.monotonic() - t0 < 0.15
     assert bus._cfg_reads >= 2
+
+
+def test_ads1115_differential_mux_pairs_ti_table() -> None:
+    assert _ads1115_mux_bits_differential(0, 1) == 0
+    assert _ads1115_mux_bits_differential(0, 3) == 1
+    assert _ads1115_mux_bits_differential(1, 3) == 2
+    assert _ads1115_mux_bits_differential(2, 3) == 3
+
+
+def test_ads1115_start_single_shot_differential_sets_mux_ain1_ain3() -> None:
+    """TI mux 010: AIN1 − AIN3 (reference on AIN3 wiring pattern)."""
+
+    class _CapturingBus:
+        def __init__(self) -> None:
+            self.writes: list[tuple[int, int, list[int]]] = []
+
+        def write_i2c_block_data(self, addr: int, reg: int, data: list[int]) -> None:
+            self.writes.append((addr, reg, list(data)))
+
+    bus = _CapturingBus()
+    cfg = ads1115_start_single_shot_differential(bus, 0x48, 1, 3, 2.048, dr=5)
+    assert bus.writes == [(0x48, 0x01, [(cfg >> 8) & 0xFF, cfg & 0xFF])]
+    mux_nibble = (cfg >> 12) & 7
+    assert mux_nibble == 2

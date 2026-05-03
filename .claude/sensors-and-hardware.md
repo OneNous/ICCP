@@ -24,9 +24,9 @@ This is what's physically on the device. Pin assignments live in `config/setting
 
 - **ADS1115** 16-bit single-ended/differential ADC.
 - I2C address: 0x48.
-- Differential mode (A0-A1) for the Ag/AgCl reading.
-- PGA = 1 (±4.096V range).
-- 8 SPS sample rate (slow but stable; we average over 1 second).
+- Default: single-ended AIN0 vs GND. Optional **differential** (e.g. AIN1−AIN3 with reference on AIN3) via `ADS1115_DIFFERENTIAL` and `ADS1115_DIFF_*` in `config/settings.py`; ALRT single-shot path uses the same mux as polled reads (`reference.py` + `i2c_bench.py`).
+- PGA / FSR: `ADS1115_FSR_V` (often ±2.048 V).
+- Routine DR: `REF_ADS1115_DR` in settings; commissioning OC burst uses `COMMISSIONING_ADS1115_DR`.
 
 ### MOSFETs
 

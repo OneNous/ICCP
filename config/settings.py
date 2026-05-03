@@ -58,13 +58,15 @@ ADS1115_ADDRESS = 0x48
 ADS1115_BUS = 1
 ADS1115_CHANNEL = 0
 # If True, read the ADS1115 as a **differential** measurement (AIN+ − AIN−) instead of
-# single-ended AINn vs GND. Use only when AIN− is **actually** tied to the intended sense
-# node; a floating AIN1 picks up stray V and makes (AIN0−AIN1) meaningless.
-# **Default False:** Ag/AgCl on AIN0, ADS1115 GND on the controller GND rail (plier / bath
-# return on that same rail). Do not connect a second “plier” lead to AIN1 unless you are
-# deliberately using differential mode with correct wiring.
+# single-ended AINn vs GND. Valid pairs (TI): (0,1), (0,3), (1,3), (2,3) — see
+# ``i2c_bench._ads1115_mux_bits_differential``. AIN− must be the real reference node (not
+# floating).
+# **Default False:** reference on AIN0 single-ended vs GND (legacy divider to AIN0).
+# **Recommended bench/field (reference on AIN3):** set ``ADS1115_DIFFERENTIAL = True``,
+# ``ADS1115_DIFF_POS_CHANNEL = 1`` (coil sense), ``ADS1115_DIFF_NEG_CHANNEL = 3`` (reference).
+# Second coil tap vs same ref: mux (2, 3) — not used by the main ``ReferenceElectrode`` scalar;
+# use ``iccp probe`` / extra tooling if you need AIN2−AIN3 logged separately.
 ADS1115_DIFFERENTIAL = False
-# Differential pair only supports certain ADS1115 mux combos; (0,1) is the common one.
 ADS1115_DIFF_POS_CHANNEL = 0
 ADS1115_DIFF_NEG_CHANNEL = 1
 # TI PGA full-scale — must match the programmed range or every mV is scaled wrong vs a DMM.

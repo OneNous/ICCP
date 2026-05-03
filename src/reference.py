@@ -13,8 +13,9 @@ on +** and **structure/return on −**: CP makes the reading **increase** vs OCP
 **positive** when protected.
 
 Hardware backends (see config.settings):
-  • **ads1115** (default): ADS1115 @ `ADS1115_ADDRESS` on `ADS1115_BUS`, single-ended
-    channel `ADS1115_CHANNEL`; raw scalar = volts × 1000 × effective scale (mV-like).
+  • **ads1115** (default): ADS1115 @ `ADS1115_ADDRESS` on `ADS1115_BUS`; single-ended
+    `ADS1115_CHANNEL` **or** differential ``ADS1115_DIFF_POS_CHANNEL`` − ``ADS1115_DIFF_NEG_CHANNEL``
+    when ``ADS1115_DIFFERENTIAL`` is True (TI-limited mux pairs). Raw scalar = volts × 1000 × scale.
     Scale is `REF_ADS_SCALE` (and env `COILSHIELD_REF_ADS_SCALE`), optionally overridden by
     numeric ``ref_ads_scale`` in `commissioning.json` after `load_native` / commissioning updates.
   • **ina219**: legacy dedicated INA219 on `REF_I2C_BUS` / `REF_INA219_ADDRESS`.
@@ -141,7 +142,7 @@ def _ads1115_alrt_diag_lines(
     *,
     pin: int,
     addr: int,
-    ch: int,
+    sense_label: str,
     dr: int,
     timeout_ms: int,
     bus: Any,
@@ -155,7 +156,7 @@ def _ads1115_alrt_diag_lines(
         "[reference] DIAG: ADS1115 ALRT / wait_for_edge",
         f"  sys.executable={sys.executable}",
         f"  kernel={platform.release()}  RPi.GPIO={_ads_gpio_module_hint()}",
-        f"  ALRT_BCM={pin}  ADS1115_addr={hex(addr)}  channel=AIN{ch}  DR={dr}  timeout_ms={timeout_ms}",
+        f"  ALRT_BCM={pin}  ADS1115_addr={hex(addr)}  sense={sense_label}  DR={dr}  timeout_ms={timeout_ms}",
     ]
     if gpio_input_before is not None:
         lines.append(
@@ -261,7 +262,11 @@ def _init_ref_ads1115() -> None:
         try:
             import smbus2
 
-            from i2c_bench import ads1115_read_single_ended, mux_select_on_bus
+            from i2c_bench import (
+                ads1115_read_differential,
+                ads1115_read_single_ended,
+                mux_select_on_bus,
+            )
 
             busnum = int(getattr(cfg, "ADS1115_BUS", cfg.I2C_BUS))
             addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
@@ -271,7 +276,13 @@ def _init_ref_ads1115() -> None:
             mux_select_on_bus(sm, mux_addr, mux_ch)
             ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
             fsr = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
-            ads1115_read_single_ended(sm, addr, ch, fsr)
+            use_diff = bool(getattr(cfg, "ADS1115_DIFFERENTIAL", False))
+            diff_p = int(getattr(cfg, "ADS1115_DIFF_POS_CHANNEL", 0))
+            diff_n = int(getattr(cfg, "ADS1115_DIFF_NEG_CHANNEL", 1))
+            if use_diff:
+                ads1115_read_differential(sm, addr, diff_p, diff_n, fsr)
+            else:
+                ads1115_read_single_ended(sm, addr, ch, fsr)
             try:
                 sm.write_i2c_block_data(addr, 0x02, [0x7F, 0xFF])  # Lo_thresh
                 sm.write_i2c_block_data(addr, 0x03, [0x80, 0x00])  # Hi_thresh
@@ -289,8 +300,9 @@ def _init_ref_ads1115() -> None:
             _REF_INIT_ERROR = None
             kind = getattr(cfg, "REF_ELECTRODE_KIND", "unknown")
             tag = f" (attempt {attempt} of {max_a})" if attempt > 1 else ""
+            sense = ref_ads_sense_label() if use_diff else f"SE AIN{ch}"
             print(
-                f"[reference] ADS1115 OK ch AIN{ch} @ {hex(addr)} i2c-{busnum} "
+                f"[reference] ADS1115 OK {sense} @ {hex(addr)} i2c-{busnum} "
                 f"(±{fsr} V, electrode={kind!r}){tag}"
             )
             return
@@ -431,6 +443,7 @@ def ref_ux_hint(*, baseline_set: bool, hw_ok: bool, skip_commission: bool) -> st
 def _read_raw_mv_hw() -> float:
     global _REF_LAST_READ_FAILED, _REF_ADS_LAZY_REINIT_RAN
     from i2c_bench import (
+        ads1115_read_differential,
         ads1115_read_single_ended,
         i2c_bus_lock,
         ina219_diag_snapshot,
@@ -494,6 +507,9 @@ def _read_raw_mv_hw() -> float:
     mux_ch = getattr(cfg, "I2C_MUX_CHANNEL_ADS1115", None)
     addr = int(getattr(cfg, "ADS1115_ADDRESS", 0x48))
     ch = int(getattr(cfg, "ADS1115_CHANNEL", 0))
+    use_diff = bool(getattr(cfg, "ADS1115_DIFFERENTIAL", False))
+    diff_p = int(getattr(cfg, "ADS1115_DIFF_POS_CHANNEL", 0))
+    diff_n = int(getattr(cfg, "ADS1115_DIFF_NEG_CHANNEL", 1))
     fsr = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
     scale = _effective_ref_ads_scale()
     n = max(
@@ -512,15 +528,33 @@ def _read_raw_mv_hw() -> float:
             with i2c_bus_lock(busnum):
                 mux_select_on_bus(_ref_smbus, mux_addr, mux_ch)
                 if n == 1:
-                    v = ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr)
+                    if use_diff:
+                        v = float(
+                            ads1115_read_differential(
+                                _ref_smbus, addr, diff_p, diff_n, fsr, dr=dr
+                            )
+                        )
+                    else:
+                        v = float(
+                            ads1115_read_single_ended(
+                                _ref_smbus, addr, ch, fsr, dr=dr
+                            )
+                        )
                     _REF_LAST_READ_FAILED = False
                     return v * 1000.0 * scale
-                samples = [
-                    ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr)
-                    * 1000.0
-                    * scale
-                    for _ in range(n)
-                ]
+
+                def _one_raw_sample() -> float:
+                    if use_diff:
+                        return float(
+                            ads1115_read_differential(
+                                _ref_smbus, addr, diff_p, diff_n, fsr, dr=dr
+                            )
+                        )
+                    return float(
+                        ads1115_read_single_ended(_ref_smbus, addr, ch, fsr, dr=dr)
+                    )
+
+                samples = [_one_raw_sample() * 1000.0 * scale for _ in range(n)]
                 _REF_LAST_READ_FAILED = False
                 return float(statistics.median(samples))
         except OSError as e:
@@ -684,6 +718,7 @@ def _read_ads_mv_scaled_once(
         ads1115_read_differential,
         ads1115_read_single_ended,
         ads1115_start_single_shot,
+        ads1115_start_single_shot_differential,
         ads1115_wait_os_ready,
         i2c_bus_lock,
         mux_select_on_bus,
@@ -703,6 +738,7 @@ def _read_ads_mv_scaled_once(
     fsr = float(getattr(cfg, "ADS1115_FSR_V", 2.048))
     scale = _effective_ref_ads_scale()
     pin = _ensure_ads_alrt_gpio() if use_alrt else None
+    sense_for_alrt = ref_ads_sense_label() if use_diff else f"SE AIN{ch}"
 
     def _one_volt() -> float:
         if pin is not None and use_alrt:
@@ -710,7 +746,12 @@ def _read_ads_mv_scaled_once(
 
             global _ADS_ALRT_WAIT_EDGE_BROKEN, _OS_WAIT_FAIL_LOGGED
 
-            ads1115_start_single_shot(_ref_smbus, addr, ch, fsr, dr=dr)
+            if use_diff:
+                ads1115_start_single_shot_differential(
+                    _ref_smbus, addr, diff_p, diff_n, fsr, dr=dr
+                )
+            else:
+                ads1115_start_single_shot(_ref_smbus, addr, ch, fsr, dr=dr)
             t_wait = _ads1115_dr_conversion_s(dr) * 2.0 + 0.005
             # RPi.GPIO wait_for_edge timeout is integer milliseconds, not seconds.
             timeout_ms = max(1, int(math.ceil(t_wait * 1000.0)))
@@ -747,7 +788,7 @@ def _read_ads_mv_scaled_once(
                         _ads1115_alrt_diag_lines(
                             pin=pin,
                             addr=addr,
-                            ch=ch,
+                            sense_label=sense_for_alrt,
                             dr=dr,
                             timeout_ms=timeout_ms,
                             bus=_ref_smbus,
@@ -772,7 +813,7 @@ def _read_ads_mv_scaled_once(
                             _ads1115_alrt_diag_lines(
                                 pin=pin,
                                 addr=addr,
-                                ch=ch,
+                                sense_label=sense_for_alrt,
                                 dr=dr,
                                 timeout_ms=timeout_ms,
                                 bus=_ref_smbus,
@@ -794,7 +835,7 @@ def _read_ads_mv_scaled_once(
                     cq = _ads1115_config_comp_que_bits(_ref_smbus, addr)
                     print(
                         "[reference] WARNING: ads1115_wait_os_ready timed out "
-                        f"(addr={hex(addr)} ch={ch} dr={dr} deadline_s={deadline_s:.4f} "
+                        f"(addr={hex(addr)} sense={sense_for_alrt} dr={dr} deadline_s={deadline_s:.4f} "
                         f"COMP_QUE_read={cq!s}) — brief sleep fallback"
                     )
                 time.sleep(max(0.0, t_conv * 1.25 + 5e-4))

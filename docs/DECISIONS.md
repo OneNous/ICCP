@@ -14,6 +14,14 @@ Per [`claude.md`](../claude.md): log **architectural** choices here with date, a
 **Consequences:** …
 ```
 
+### 2026-05-02 — ADS1115 differential + ALRT single-shot mux
+
+**Decision:** When ``ADS1115_DIFFERENTIAL`` is True, the ALRT/conversion-ready path in ``reference._read_ads_mv_scaled_once`` must start conversions with the **same differential MUX** as the polled read (``ads1115_start_single_shot_differential`` in ``i2c_bench``). Previously the edge path always called ``ads1115_start_single_shot`` (single-ended ``ADS1115_CHANNEL``), which mis-triggered differential rigs. Init probe uses differential read when the flag is set. Document **AIN1−AIN3** (reference on AIN3) in ``config/settings.py`` comments.
+
+**Context:** TI ADS1115 only supports four differential pairings; “coil − reference” with ref on AIN3 uses mux (1,3) or (2,3).
+
+**Consequences:** Operators rewire per settings; second differential pair is not yet a second telemetry field in ``ReferenceElectrode.read``. Follow-up: ``_read_raw_mv_hw`` (normal ``read()`` path) now honors ``ADS1115_DIFFERENTIAL`` — it previously only single-ended read despite the flag.
+
 ### 2026-05-02 — Remove two-step Phase 1 commissioning (1a / 1b)
 
 **Decision:** Commissioning always runs **one** open-circuit ``capture_native`` (``T_RELAX`` median) with MOSFETs off; result is ``native_mv`` and the shift baseline. **Removed** the bench sequence “anodes out → capture (1a) → install → second capture (1b)” and related Enter pause for 1b. ``COMMISSIONING_FIELD_MODE`` now only means **skip the single optional Phase 1 anode Enter pause** (headless / automation). ``COMMISSIONING_GALVANIC_1B_ENABLED`` / ``ICCP_SKIP_GALVANIC_1B`` are **removed** from settings and code paths. ``reference`` still **loads** ``native_oc_anodes_in_mv`` / ``galvanic_offset_mv`` from older ``commissioning.json`` for runtime math and service hints; ``save_native`` continues to clear those keys on re-baseline.

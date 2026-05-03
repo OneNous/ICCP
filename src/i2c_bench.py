@@ -518,6 +518,21 @@ def ads1115_start_single_shot(
     return int(cfg)
 
 
+def ads1115_start_single_shot_differential(
+    bus: Any,
+    addr: int,
+    pos_channel: int,
+    neg_channel: int,
+    fsr_v: float,
+    dr: int = 5,
+) -> int:
+    """Start single-shot **differential** conversion (AIN+ − AIN−); returns config word."""
+    mux_bits = _ads1115_mux_bits_differential(pos_channel, neg_channel)
+    cfg = _ads1115_config_word(0, fsr_v, dr=dr, mux_bits=mux_bits)
+    bus.write_i2c_block_data(addr, 0x01, [(cfg >> 8) & 0xFF, cfg & 0xFF])
+    return int(cfg)
+
+
 def ads1115_config_os_ready(bus: Any, addr: int) -> bool:
     """True if ADS1115 config bit 15 (OS) indicates conversion complete / not busy."""
     hi, lo = bus.read_i2c_block_data(addr, 0x01, 2)
