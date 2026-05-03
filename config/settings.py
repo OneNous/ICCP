@@ -253,11 +253,43 @@ INA219_SHUNT_OHMS: float = 1.0
 _sohm = (os.environ.get("COILSHIELD_INA219_SHUNT_OHMS") or "").strip()
 if _sohm:
     INA219_SHUNT_OHMS = max(1e-6, float(_sohm))
+# When anodes mix shunt values (e.g. A1 already 1 Ω, A2–A4 still R100), set comma-separated Ω
+# matching ``INA219_ADDRESSES`` order (idx 0 = Anode 1). Example: ``1,0.1,0.1,0.1``.
+# Env: ``COILSHIELD_INA219_SHUNT_OHMS_PER_CHANNEL``. If unset, every channel uses ``INA219_SHUNT_OHMS``.
+INA219_SHUNT_OHMS_PER_CHANNEL: tuple[float, ...] | None = None
+_pch_env = (os.environ.get("COILSHIELD_INA219_SHUNT_OHMS_PER_CHANNEL") or "").strip()
+if _pch_env:
+    _parts: list[float] = []
+    for _x in _pch_env.split(","):
+        _x = _x.strip()
+        if _x:
+            _parts.append(max(1e-6, float(_x)))
+    _nexp = len(INA219_ADDRESSES)
+    if len(_parts) != _nexp:
+        raise ValueError(
+            "COILSHIELD_INA219_SHUNT_OHMS_PER_CHANNEL must have "
+            f"{_nexp} comma-separated Ω values (one per INA219_ADDRESSES entry), "
+            f"got {len(_parts)} from {_pch_env!r}"
+        )
+    INA219_SHUNT_OHMS_PER_CHANNEL = tuple(_parts)
+
+
+def ina219_shunt_ohms_for_channel(ch: int) -> float:
+    """Physical shunt resistance (Ω) for ICCP index ``ch`` (0 = first ``INA219_ADDRESSES`` / Anode 1)."""
+    pc = INA219_SHUNT_OHMS_PER_CHANNEL
+    if pc is not None and 0 <= int(ch) < len(pc):
+        return max(1e-9, float(pc[int(ch)]))
+    return max(1e-9, float(INA219_SHUNT_OHMS))
+
+
 # TI INA219 shunt-voltage register LSB in volts (±40 mV full scale, PGA ÷1 → 10 µV/LSB).
 INA219_SHUNT_LSB_V: float = 1e-5
-# Nominal shunt-current LSB (mA) — mirrors ``ina219_nominal_current_lsb_ma()``; re-tune if you
-# change only shunt value at runtime.
-INA219_CURRENT_LSB_MA: float = (INA219_SHUNT_LSB_V / max(INA219_SHUNT_OHMS, 1e-9)) * 1000.0
+# Worst (largest) mA per LSB across channels — used for commissioning binary floor and
+# ``ina219_nominal_current_lsb_ma()`` when per-channel shunts match the global default.
+INA219_CURRENT_LSB_MA: float = max(
+    (INA219_SHUNT_LSB_V / ina219_shunt_ohms_for_channel(i)) * 1000.0
+    for i in range(len(INA219_ADDRESSES))
+)
 
 # Practical measurement floor (mA): below this magnitude, the INA219 reading is typically dominated
 # by offset/noise/pickup on real wiring and should not be treated as "accurate current".

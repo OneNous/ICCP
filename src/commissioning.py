@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import config.settings as cfg
 import polarization_safety as pol_safe
 import temp as temp_mod
-from iccp_electrolyte import cell_impedance_ohm
+from iccp_electrolyte import cell_impedance_ohm, ina219_nominal_current_lsb_ma
 from channel_labels import anode_hw_label
 from console_ui import (
     commission_ina_compact,
@@ -1464,7 +1464,7 @@ def _phase2_binary_search_mA(
         getattr(
             cfg,
             "COMMISSIONING_BINARY_MA_LO",
-            max(1e-4, float(cfg.INA219_CURRENT_LSB_MA)),
+            max(1e-4, float(ina219_nominal_current_lsb_ma())),
         )
     )
     hi = float(min(float(cfg.MAX_MA), float(getattr(cfg, "MAX_MA", 5.0))))
@@ -1570,7 +1570,7 @@ def _phase2_linear_ramp_mA(
         getattr(
             cfg,
             "COMMISSIONING_BINARY_MA_LO",
-            max(1e-4, float(cfg.INA219_CURRENT_LSB_MA)),
+            max(1e-4, float(ina219_nominal_current_lsb_ma())),
         )
     )
     ramp_coarse = float(getattr(cfg, "COMMISSIONING_RAMP_STEP_MA", 0.15))

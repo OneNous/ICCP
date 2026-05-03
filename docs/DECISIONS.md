@@ -14,6 +14,14 @@ Per [`claude.md`](../claude.md): log **architectural** choices here with date, a
 **Consequences:** …
 ```
 
+### 2026-05-02 — Per-anode INA219 shunt Ω (mixed R100 vs 1 Ω)
+
+**Decision:** Support optional **per-channel** shunt resistance aligned with ``INA219_ADDRESSES``: env ``COILSHIELD_INA219_SHUNT_OHMS_PER_CHANNEL`` as comma-separated Ω (same length as the address list). ``ina219_shunt_ohms_for_channel(ch)`` drives each ``INA219(...)`` construction in ``sensors``, diag snapshots, and sim shunt mV. ``INA219_CURRENT_LSB_MA`` / ``ina219_nominal_current_lsb_ma()`` use the **maximum** mA-per-LSB across channels (coarsest = smallest physical R) for commissioning binary floors and target LSB semantics.
+
+**Context:** Bench units may upgrade anodes one at a time (e.g. A1 already 1 Ω while A2–A4 still use R100 0.1 Ω). A single global ``INA219_SHUNT_OHMS`` mis-calibrates pi-ina219 and can yield ``DeviceRangeError`` or wrong mA on the mismatched rows.
+
+**Consequences:** Operators set either the global shunt env (all rows match) or the per-channel list. After changing shunts on hardware, restart the process so INA objects re-init with the new Ω.
+
 ### 2026-05-02 — ADS1115 differential + ALRT single-shot mux
 
 **Decision:** When ``ADS1115_DIFFERENTIAL`` is True, the ALRT/conversion-ready path in ``reference._read_ads_mv_scaled_once`` must start conversions with the **same differential MUX** as the polled read (``ads1115_start_single_shot_differential`` in ``i2c_bench``). Previously the edge path always called ``ads1115_start_single_shot`` (single-ended ``ADS1115_CHANNEL``), which mis-triggered differential rigs. Init probe uses differential read when the flag is set. Document **AIN1−AIN3** (reference on AIN3) in ``config/settings.py`` comments.

@@ -21,6 +21,7 @@ def test_cell_impedance_ohm() -> None:
 
 
 def test_ina219_lsb_scales_with_shunt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "INA219_SHUNT_OHMS_PER_CHANNEL", None, raising=False)
     monkeypatch.setattr(cfg, "INA219_SHUNT_OHMS", 0.1, raising=False)
     monkeypatch.setattr(cfg, "INA219_SHUNT_LSB_V", 1e-5, raising=False)
     a = ina219_nominal_current_lsb_ma()
@@ -30,11 +31,21 @@ def test_ina219_lsb_scales_with_shunt(monkeypatch: pytest.MonkeyPatch) -> None:
     assert b == pytest.approx(0.01, rel=1e-6)
 
 
+def test_ina219_lsb_mixed_shunt_per_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "INA219_SHUNT_LSB_V", 1e-5, raising=False)
+    monkeypatch.setattr(cfg, "INA219_SHUNT_OHMS", 1.0, raising=False)
+    monkeypatch.setattr(cfg, "INA219_SHUNT_OHMS_PER_CHANNEL", (0.1, 1.0, 1.0, 1.0), raising=False)
+    assert ina219_nominal_current_lsb_ma() == pytest.approx(0.1, rel=1e-6)
+    monkeypatch.setattr(cfg, "INA219_SHUNT_OHMS_PER_CHANNEL", (1.0, 1.0, 1.0, 1.0), raising=False)
+    assert ina219_nominal_current_lsb_ma() == pytest.approx(0.01, rel=1e-6)
+
+
 def test_effective_target_floor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cfg, "INA219_ENFORCE_CURRENT_LSB_FLOOR", True, raising=False
     )
     monkeypatch.setattr(cfg, "TARGET_MA_FLOOR", 0.0, raising=False)
+    monkeypatch.setattr(cfg, "INA219_SHUNT_OHMS_PER_CHANNEL", None, raising=False)
     monkeypatch.setattr(cfg, "INA219_SHUNT_OHMS", 0.1, raising=False)
     assert effective_target_ma_floor() >= ina219_nominal_current_lsb_ma()
     monkeypatch.setattr(cfg, "TARGET_MA_FLOOR", 0.05, raising=False)

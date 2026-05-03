@@ -26,12 +26,21 @@ def cell_impedance_ohm(
 
 def ina219_nominal_current_lsb_ma() -> float:
     """
-    Nominal shunt-current ADC step in mA: (shunt LSB in V) / R_shunt * 1000.
+    Largest shunt-current ADC step in mA across anode channels: (shunt LSB in V) / R * 1000.
 
-    INA219 shunt voltage LSB is PGA-dependent; default 10 µV (±40 mV, gain ÷1).
+    With mixed shunt Ω per channel, the coarsest channel (smallest R) sets the floor used
+    for target quantization. Matches :data:`config.settings.INA219_CURRENT_LSB_MA` at import;
+    this function re-reads ``cfg`` so tests can monkeypatch shunts.
     """
-    r = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
     lsb_v = float(getattr(cfg, "INA219_SHUNT_LSB_V", 1e-5) or 1e-5)
+    addrs = getattr(cfg, "INA219_ADDRESSES", None) or ()
+    n = len(addrs)
+    fn = getattr(cfg, "ina219_shunt_ohms_for_channel", None)
+    if n > 0 and callable(fn):
+        return max(
+            (lsb_v / max(float(fn(i)), 1e-9)) * 1000.0 for i in range(n)
+        )
+    r = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
     return (lsb_v / max(r, 1e-9)) * 1000.0
 
 

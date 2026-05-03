@@ -320,7 +320,8 @@ def _print_help() -> None:
                              Default: Enter pauses on a TTY. Use --no-prompts for unattended/CI.
                              Phase-2 mA search: ``COMMISSIONING_RAMP_MODE`` in config — ``hybrid`` (v1: binary
                              + linear confirm), ``binary``, or ``linear``. Shunt: ``INA219_SHUNT_OHMS`` or
-                             env ``COILSHIELD_INA219_SHUNT_OHMS`` (v1 = 1.0 Ω); see README.
+                             env ``COILSHIELD_INA219_SHUNT_OHMS`` (v1 = 1.0 Ω) or per-row
+                             ``COILSHIELD_INA219_SHUNT_OHMS_PER_CHANNEL`` (comma Ω, same order as addresses).
                              If Enter is ignored, pass --no-anode-prompts (reads are from /dev/tty first).
                              With --anode / --anodes / --channels, INA status lines list only those anodes.
                              While waiting for Enter, a read-only INA line every few seconds (outputs off);

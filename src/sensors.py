@@ -150,7 +150,7 @@ def _init_ina219_sensor_list_for_import() -> list[Any]:
 
     from i2c_bench import mux_select_on_bus
 
-    SHUNT_OHMS = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
+    _shunt_fn = getattr(cfg, "ina219_shunt_ohms_for_channel", None)
     max_a = max(1, int(getattr(cfg, "INA219_INIT_MAX_ATTEMPTS", 8)))
     delay0 = max(0.0, float(getattr(cfg, "INA219_INIT_RETRY_DELAY_S", 0.1)))
     first_delay = max(0.0, float(getattr(cfg, "I2C_INA_IMPORT_FIRST_DELAY_S", 0.0)))
@@ -186,7 +186,12 @@ def _init_ina219_sensor_list_for_import() -> list[Any]:
                             mux_select_on_bus(mux_bus, int(mux_addr), int(per_mux[idx]))
                         elif leg_mux is not None:
                             mux_select_on_bus(mux_bus, int(mux_addr), int(leg_mux))
-                    sensor = INA219(SHUNT_OHMS, address=addr, busnum=cfg.I2C_BUS)
+                    shunt_ohm = (
+                        float(_shunt_fn(idx))
+                        if callable(_shunt_fn)
+                        else float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
+                    )
+                    sensor = INA219(shunt_ohm, address=addr, busnum=cfg.I2C_BUS)
                     sensor.configure(
                         voltage_range=INA219.RANGE_16V,
                         gain=INA219.GAIN_AUTO,
@@ -309,7 +314,12 @@ def _ina219_one_off_diag(iccp_ch: int, addr: int) -> dict[str, Any] | None:
         return None
     from i2c_bench import ina219_diag_snapshot, mux_select_on_bus
 
-    shunt = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
+    _fn = getattr(cfg, "ina219_shunt_ohms_for_channel", None)
+    shunt = (
+        float(_fn(iccp_ch))
+        if callable(_fn)
+        else float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
+    )
     try:
         import smbus2
 
@@ -623,7 +633,12 @@ def read_all_sim(state: SimSensorState) -> dict[int, ChannelReading]:
         if cfg.SIM_INJECT_FAULT_CH is not None and ch == cfg.SIM_INJECT_FAULT_CH:
             current = cfg.SIM_INJECT_OVERCURRENT_MA
 
-        r_shunt = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
+        _sf = getattr(cfg, "ina219_shunt_ohms_for_channel", None)
+        r_shunt = (
+            float(_sf(ch))
+            if callable(_sf)
+            else float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
+        )
         q = _ina219_quantize(bus_v, current * r_shunt)
         results[ch] = {
             **q,
