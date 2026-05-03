@@ -352,6 +352,39 @@ if _tmae:
 CHANNEL_TARGET_MA: dict = {}
 CHANNEL_MAX_MA: dict = {}
 
+# pi-ina219 second constructor argument (amps): bounds calibration / current register scaling.
+# ``None`` = derive from ``max(MAX_MA, CHANNEL_MAX_MA[ch]) × INA219_MAX_EXPECTED_AMPS_HEADROOM / 1000``.
+# Override with :envvar:`COILSHIELD_INA219_MAX_EXPECTED_AMPS` (same value every anode INA219).
+INA219_MAX_EXPECTED_AMPS_HEADROOM: float = 1.25
+INA219_MAX_EXPECTED_AMPS: float | None = None
+_mxea = (os.environ.get("COILSHIELD_INA219_MAX_EXPECTED_AMPS") or "").strip()
+if _mxea:
+    INA219_MAX_EXPECTED_AMPS = max(1e-9, float(_mxea))
+
+
+def ina219_max_expected_amps_for_channel(ch: int) -> float:
+    """Maximum expected shunt current (A) for pi-ina219 ``INA219`` ctor on anode index ``ch``."""
+    if INA219_MAX_EXPECTED_AMPS is not None:
+        return max(float(INA219_MAX_EXPECTED_AMPS), 1e-9)
+    cap_ma = float(MAX_MA)
+    cm = CHANNEL_MAX_MA
+    if isinstance(cm, dict):
+        v = cm.get(int(ch))
+        if v is not None:
+            try:
+                cap_ma = max(cap_ma, float(v))
+            except (TypeError, ValueError):
+                pass
+    hr = float(INA219_MAX_EXPECTED_AMPS_HEADROOM)
+    return max(1e-9, (cap_ma * hr) / 1000.0)
+
+
+# Reference-leg INA219 (``REF_ADC_BACKEND == "ina219"``): expect microamps to low mA only.
+REF_INA219_MAX_EXPECTED_AMPS: float = 0.01
+_rima = (os.environ.get("COILSHIELD_REF_INA219_MAX_EXPECTED_AMPS") or "").strip()
+if _rima:
+    REF_INA219_MAX_EXPECTED_AMPS = max(1e-9, float(_rima))
+
 # Dry-phase magnitude in read_all_sim (wet vs dry noise ceiling); not used by OPEN/REGULATE FSM.
 CHANNEL_WET_THRESHOLD_MA = 0.15
 

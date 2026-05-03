@@ -22,6 +22,14 @@ Per [`claude.md`](../claude.md): log **architectural** choices here with date, a
 
 **Consequences:** Operators set either the global shunt env (all rows match) or the per-channel list. After changing shunts on hardware, restart the process so INA objects re-init with the new Ω.
 
+### 2026-05-02 — INA219 `max_expected_amps` + Phase 1 diag + probe shunt decode
+
+**Decision:** Pass **`max_expected_amps`** into `pi-ina219` `INA219(...)` for anodes (per-channel from **`ina219_max_expected_amps_for_channel`**, derived from **`MAX_MA` / `CHANNEL_MAX_MA`** × headroom unless **`COILSHIELD_INA219_MAX_EXPECTED_AMPS`** is set) and for the optional ref INA path (**`REF_INA219_MAX_EXPECTED_AMPS`**, env **`COILSHIELD_REF_INA219_MAX_EXPECTED_AMPS`**). On Phase 1 off-check failure, log compact **INA219 diag** lines from the existing `read_all_real` **`diag`** snapshot. **`iccp probe`** STEP 2 / continuous / PWM ladder: decode shunt with **`ina219_shunt_ohms_for_channel`** per row when **`--shunt`** matches global `INA219_SHUNT_OHMS` (else uniform **`--shunt`** override). Document triage in **`docs/ina219-i2c-bringup.md`** §6 and link from **`docs/HARDWARE.md`**.
+
+**Context:** Bench `DeviceRangeError` / overflow triage and operator checklist (1 Ω calibration, DMM, harness, optional Vin− bias).
+
+**Consequences:** Operators set env and **restart** after shunt changes; probe matches runtime Ω selection; commissioning transcripts carry register hints without a second `iccp probe` pass.
+
 ### 2026-05-02 — ADS1115 differential + ALRT single-shot mux
 
 **Decision:** When ``ADS1115_DIFFERENTIAL`` is True, the ALRT/conversion-ready path in ``reference._read_ads_mv_scaled_once`` must start conversions with the **same differential MUX** as the polled read (``ads1115_start_single_shot_differential`` in ``i2c_bench``). Previously the edge path always called ``ads1115_start_single_shot`` (single-ended ``ADS1115_CHANNEL``), which mis-triggered differential rigs. Init probe uses differential read when the flag is set. Document **AIN1−AIN3** (reference on AIN3) in ``config/settings.py`` comments.

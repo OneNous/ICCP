@@ -191,7 +191,25 @@ def _init_ina219_sensor_list_for_import() -> list[Any]:
                         if callable(_shunt_fn)
                         else float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
                     )
-                    sensor = INA219(shunt_ohm, address=addr, busnum=cfg.I2C_BUS)
+                    _max_fn = getattr(cfg, "ina219_max_expected_amps_for_channel", None)
+                    max_a = (
+                        float(_max_fn(idx))
+                        if callable(_max_fn)
+                        else max(
+                            1e-9,
+                            float(getattr(cfg, "MAX_MA", 5.0) or 5.0)
+                            * float(
+                                getattr(cfg, "INA219_MAX_EXPECTED_AMPS_HEADROOM", 1.25)
+                            )
+                            / 1000.0,
+                        )
+                    )
+                    sensor = INA219(
+                        shunt_ohm,
+                        max_a,
+                        busnum=int(cfg.I2C_BUS),
+                        address=int(addr),
+                    )
                     sensor.configure(
                         voltage_range=INA219.RANGE_16V,
                         gain=INA219.GAIN_AUTO,

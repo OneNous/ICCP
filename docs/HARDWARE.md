@@ -15,4 +15,4 @@ Canonical **hardware** entrypoint named in [`claude.md`](../claude.md).
 
 ## Legacy / bring-up notes
 
-- INA219 I2C bring-up: [ina219-i2c-bringup.md](ina219-i2c-bringup.md)
+- INA219 I2C bring-up: [ina219-i2c-bringup.md](ina219-i2c-bringup.md) — includes **shunt Ω env**, **`DeviceRangeError` / Phase 1 overflow** triage (`iccp probe` STEP 2, DMM, harness vs A1, optional Vin− bias).

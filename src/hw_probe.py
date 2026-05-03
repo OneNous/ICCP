@@ -86,6 +86,29 @@ else:
 NOMINAL_ANODE_RAIL_V = 5.0
 GPIO_HIGH_V = 3.3  # BCM logic high; gate drive is 0..3.3 V, not the 5 V anode supply
 
+
+def _probe_effective_shunt_ohm(ch_index: int, cli_shunt: float) -> float:
+    """
+    Ω used to decode INA219 shunt registers in probe.
+
+    When ``--shunt`` matches :data:`INA219_SHUNT_OHMS`, use
+    :func:`config.settings.ina219_shunt_ohms_for_channel` per row. If ``--shunt`` differs,
+    treat it as a uniform override for this probe run (bench sweep).
+    """
+    if cfg is None:
+        return float(cli_shunt)
+    try:
+        base = float(getattr(cfg, "INA219_SHUNT_OHMS", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        base = 1.0
+    if abs(float(cli_shunt) - base) > 1e-6:
+        return float(cli_shunt)
+    fn = getattr(cfg, "ina219_shunt_ohms_for_channel", None)
+    if callable(fn):
+        return float(fn(int(ch_index)))
+    return float(cli_shunt)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -466,7 +489,8 @@ def _probe_jsonl(args: argparse.Namespace, *, ads_bus: int) -> int:
                     )
                     rc = max(rc, 1)
                     continue
-                r = ina219_read(sm, addr, shunt_ohms)
+                sh_eff = _probe_effective_shunt_ohm(ch, shunt_ohms)
+                r = ina219_read(sm, addr, sh_eff)
                 ok = bool(r.get("ok"))
                 emit(
                     {
@@ -478,6 +502,7 @@ def _probe_jsonl(args: argparse.Namespace, *, ads_bus: int) -> int:
                         "data": {
                             "channel": ch,
                             "addr": addr,
+                            "shunt_ohm": sh_eff,
                             "ok": ok,
                             "bus_v": r.get("bus_v"),
                             "shunt_mv": r.get("shunt_mv"),
@@ -821,10 +846,14 @@ def run_ina219_reads(
         section(f"STEP 2 — Raw INA219 reads (smbus2)  —  {al} only")
     else:
         section("STEP 2 — Raw INA219 reads (smbus2)")
+    shunt_bits = ", ".join(
+        f"A{i + 1}={_probe_effective_shunt_ohm(i, shunt_ohms):g}Ω" for i in idxs
+    )
     print(f"""
-  Shunt resistance: {shunt_ohms} Ω  (--shunt N to override)
+  Shunt decode (Ω per anode): {shunt_bits}
+  (--shunt N: uniform override when N ≠ config INA219_SHUNT_OHMS; else per-row from settings)
   bus_v    = voltage at IN− (load side of shunt)
-  mA       = shunt voltage ÷ {shunt_ohms} Ω
+  mA       = shunt voltage ÷ Ω (per row above)
 """)
 
     try:
@@ -867,7 +896,9 @@ def run_ina219_reads(
                     "error": "TCA9548A mux select failed (EIO) — one process on I2C? try: systemctl stop iccp",
                 }
             else:
-                readings[addr] = ina219_read(sm, addr, shunt_ohms)
+                readings[addr] = ina219_read(
+                    sm, addr, _probe_effective_shunt_ohm(ch, shunt_ohms)
+                )
     finally:
         sm.close()
 
@@ -987,7 +1018,9 @@ def run_continuous(
                         f"mux EIO (stop `iccp`?)"
                     )
                     continue
-                r = ina219_read(sm, addr, shunt_ohms)
+                r = ina219_read(
+                    sm, addr, _probe_effective_shunt_ohm(ch, shunt_ohms)
+                )
                 if r.get("ok"):
                     print(
                         f"  {label:<14} {r['bus_v']:>9.4f} "
@@ -1263,7 +1296,11 @@ def run_pwm_test(
                         for _ in range(3):
                             if not _mux_select_anode_for_probe(sm, ch_idx):
                                 break
-                            r = ina219_read(sm, ina_addr, shunt_ohms)
+                            r = ina219_read(
+                                sm,
+                                ina_addr,
+                                _probe_effective_shunt_ohm(ch_idx, shunt_ohms),
+                            )
                             if r.get("ok"):
                                 samples_ma.append(float(r["current_ma"]))
                                 samples_bv.append(float(r["bus_v"]))

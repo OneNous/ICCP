@@ -213,10 +213,14 @@ def _init_ref_ina219() -> None:
     try:
         from ina219 import INA219  # type: ignore[import-untyped]
 
+        _ref_max_a = float(
+            getattr(cfg, "REF_INA219_MAX_EXPECTED_AMPS", 0.01) or 0.01
+        )
         _ref_ina = INA219(
-            cfg.REF_INA219_SHUNT_OHMS,
-            address=cfg.REF_INA219_ADDRESS,
-            busnum=_REF_I2C_BUS,
+            float(cfg.REF_INA219_SHUNT_OHMS),
+            max(1e-9, _ref_max_a),
+            busnum=int(_REF_I2C_BUS),
+            address=int(cfg.REF_INA219_ADDRESS),
         )
         # Same CONFIG tuple as sensors.py; matches i2c_bench.INA219_DEFAULT_CONFIG_WORD.
         _ref_ina.configure(

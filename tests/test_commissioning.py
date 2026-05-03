@@ -361,3 +361,28 @@ def test_load_commissioned_target_warns_without_schema_version(
 def test_commissioning_binary_ma_lo_uses_lsb_default() -> None:
     assert float(cfg.COMMISSIONING_BINARY_MA_LO) >= float(cfg.INA219_CURRENT_LSB_MA) * 0.99
     assert float(cfg.COMMISSIONING_BINARY_MA_LO) >= 1e-4
+
+
+def test_ina219_diag_digest_lines_skips_ok() -> None:
+    readings = {
+        0: {"ok": True, "current": 0.03},
+        1: {
+            "ok": False,
+            "error": "DeviceRangeError: overflow",
+            "diag": {
+                "config_hex": "0x199f",
+                "shunt_raw": 32760,
+                "bus_raw": 65535,
+                "pga_bits": 3,
+                "ovf": True,
+                "cnvr": True,
+                "bus_v": 4.9,
+                "current_ma": 0.0,
+            },
+        },
+    }
+    lines = commissioning._ina219_diag_digest_lines(readings)
+    assert len(lines) == 1
+    assert "INA219 diag" in lines[0]
+    assert "shunt_raw=32760" in lines[0]
+    assert "ovf=True" in lines[0]

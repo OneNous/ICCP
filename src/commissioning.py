@@ -809,6 +809,59 @@ def _channels_shunt_below(
     return (len(issues) == 0, issues)
 
 
+def _ina219_diag_digest_lines(readings: dict[int, dict]) -> list[str]:
+    """One log line per non-ok channel that has a smbus ``diag`` blob from :func:`sensors.read_all_real`."""
+    lines: list[str] = []
+    n_ch = int(getattr(cfg, "NUM_CHANNELS", 4))
+    for ch in range(n_ch):
+        r = readings.get(ch) or {}
+        if r.get("ok"):
+            continue
+        d = r.get("diag")
+        if not isinstance(d, dict):
+            continue
+        label = anode_hw_label(ch)
+        parts: list[str] = []
+        for key in ("config_hex", "shunt_raw", "bus_raw", "pga_bits", "ovf", "cnvr"):
+            if key in d and d[key] is not None:
+                parts.append(f"{key}={d[key]!r}")
+        bv = d.get("bus_v")
+        if bv is not None:
+            try:
+                parts.append(f"bus_v={float(bv):.4f}")
+            except (TypeError, ValueError):
+                parts.append(f"bus_v={bv!r}")
+        cm = d.get("current_ma")
+        if cm is not None:
+            try:
+                parts.append(f"current_ma={float(cm):.6f}")
+            except (TypeError, ValueError):
+                parts.append(f"current_ma={cm!r}")
+        if d.get("error"):
+            parts.append(f"smbus_err={d['error']!r}")
+        if parts:
+            lines.append(f"INA219 diag {label}: " + " ".join(parts))
+    return lines
+
+
+def _log_phase1_ina219_diag_snap(
+    log: Callable[[str], None] | None,
+) -> None:
+    try:
+        import sensors as _sens
+
+        if getattr(_sens, "SIM_MODE", False):
+            return
+        snap = _sens.read_all_real()
+        for ln in _ina219_diag_digest_lines(snap):
+            if log is not None:
+                log(ln)
+            else:
+                commission_log_main(ln)
+    except Exception:
+        return
+
+
 def _phase1_off_check_scope_phrase() -> str:
     """
     Log wording: full install vs. commission anode subset (off-check still scans all hardware).
@@ -899,6 +952,7 @@ def _verify_phase1_drive_off(
             + f"; {tail}"
         )
         if post_long_settle:
+            _log_phase1_ina219_diag_snap(log)
             raise RuntimeError(
                 "Native measurement aborted — channels not at rest. "
                 "Check for leakage current before measuring baseline. "
@@ -913,6 +967,7 @@ def _verify_phase1_drive_off(
             log(msg)
         else:
             commission_log_main(msg)
+        _log_phase1_ina219_diag_snap(log)
     else:
         scope = _phase1_off_check_scope_phrase()
         if post_long_settle:

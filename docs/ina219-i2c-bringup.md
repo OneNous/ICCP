@@ -75,6 +75,33 @@
 - Commissioning / TUI / `latest.json` use **0..NUM_CHANNELS−1** only. Labels **“Anode 1”** in the UI are **firmware** channel 0 (first address in the list), not necessarily “harness anode 1” if you removed a cell from the front of the list.
 - For a **minimal** bring-up, you can set **`NUM_CHANNELS = 1`** and a **single** address to validate the rest of the stack, then add channels as you repair hardware.
 
+## 6) Shunt Ω, `DeviceRangeError`, and Phase 1 overflow (e.g. A1 OK, A2–A4 fail)
+
+### Firmware / env (must match every physical sense resistor)
+
+- **Default** in [`config/settings.py`](../config/settings.py) is **1.0 Ω** per anode (`INA219_SHUNT_OHMS`). Override with **`COILSHIELD_INA219_SHUNT_OHMS=1`** on the Pi if you want to be explicit.
+- **Mixed** R100 vs 1 Ω rows: **`COILSHIELD_INA219_SHUNT_OHMS_PER_CHANNEL`** — comma-separated Ω in **`INA219_ADDRESSES`** order (idx 0 = Anode 1). Example: `1,0.1,0.1,0.1`.
+- After any shunt or env change: **`git pull`**, then **restart** the `iccp` process so `pi-ina219` `INA219` objects are recreated at import (stale process keeps old calibration).
+- **`COILSHIELD_INA219_MAX_EXPECTED_AMPS`** (optional): passed to `pi-ina219` as the second constructor argument (amps) for calibration headroom; if unset, firmware derives from **`max(MAX_MA, CHANNEL_MAX_MA[ch]) × INA219_MAX_EXPECTED_AMPS_HEADROOM / 1000`**. Reference-only INA path: **`COILSHIELD_REF_INA219_MAX_EXPECTED_AMPS`** (default **0.01** A).
+
+### Bench: `iccp probe` + DMM (same order of magnitude on every shunt)
+
+1. `sudo systemctl stop iccp` (or ensure a single I²C client).
+2. **`iccp probe`** — **STEP 2** raw INA219 reads (`smbus2`, not `pi-ina219`). Use **`--init`** so CONFIG is written. Compare **shunt mV** / **mA** on **A1 vs A2–A4** with gates off; STEP 2 prints **per-anode Ω** used for decode (from settings unless **`--shunt`** differs from `INA219_SHUNT_OHMS`, then uniform override).
+3. **DMM:** measure voltage **directly across each physical shunt** (the same two nodes **IN+** and **IN−** must Kelvin-tap). At idle with outputs off, every leg should be similar **mV-scale** (not volts). **Volts-scale** on A2–A4 only → fix harness / shunt placement before trusting current telemetry.
+
+### Harness (align failing legs to a known-good leg)
+
+- Treat **A1** as the wiring reference: match **INA219 IN+ / IN−** topology and return path on **A2–A4** to A1. Wrong nodes (e.g. measuring rail instead of shunt only) produce **`DeviceRangeError`** / overflow even at **widest PGA** (“gain 0.32V” in `pi-ina219` logs).
+
+### Optional hardware note (floating Vin−)
+
+- If, after correct Kelvin sense, **Vin−** still floats high-impedance, an EE-reviewed **high-value** resistor (e.g. **1 MΩ**) from **Vin−** to the **agreed** structure/cathode reference can define DC potential. This does **not** replace correct shunt sense wiring; wrong reference choice adds leakage or common-mode error.
+
+### Commissioning logs
+
+- When Phase 1’s off-check fails, firmware may print extra **`INA219 diag Anode N:`** lines (register snapshot) to shorten support round-trips.
+
 ## Success criteria
 
 - `iccp start` logs successful INA init for **all** configured anode channels.

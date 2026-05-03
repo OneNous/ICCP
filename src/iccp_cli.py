@@ -322,6 +322,9 @@ def _print_help() -> None:
                              + linear confirm), ``binary``, or ``linear``. Shunt: ``INA219_SHUNT_OHMS`` or
                              env ``COILSHIELD_INA219_SHUNT_OHMS`` (v1 = 1.0 Ω) or per-row
                              ``COILSHIELD_INA219_SHUNT_OHMS_PER_CHANNEL`` (comma Ω, same order as addresses).
+                             Optional: ``COILSHIELD_INA219_MAX_EXPECTED_AMPS``,
+                             ``COILSHIELD_REF_INA219_MAX_EXPECTED_AMPS`` (pi-ina219 calibration); see
+                             docs/ina219-i2c-bringup.md §6.
                              If Enter is ignored, pass --no-anode-prompts (reads are from /dev/tty first).
                              With --anode / --anodes / --channels, INA status lines list only those anodes.
                              While waiting for Enter, a read-only INA line every few seconds (outputs off);
