@@ -22,6 +22,14 @@ Per [`claude.md`](../claude.md): log **architectural** choices here with date, a
 
 **Consequences:** Operators set either the global shunt env (all rows match) or the per-channel list. After changing shunts on hardware, restart the process so INA objects re-init with the new Ω.
 
+### 2026-05-02 — `COILSHIELD_ADS1115_CHANNEL` (reference not on AIN0)
+
+**Decision:** Optional env **`COILSHIELD_ADS1115_CHANNEL=0..3`** overrides **`ADS1115_CHANNEL`** at import when the Ag/AgCl divider is wired to **AIN1–AIN3** instead of default **AIN0** (single-ended mode only). Documented in **`docs/ina219-i2c-bringup.md`** with restart reminder.
+
+**Context:** Bench message “no AIN0 on the ADS1115” — default firmware was still sampling AIN0 vs GND.
+
+**Consequences:** Differential rigs continue to use **`ADS1115_DIFFERENTIAL`** + mux pair settings; invalid env values fail fast at import.
+
 ### 2026-05-02 — INA219 `max_expected_amps` + Phase 1 diag + probe shunt decode
 
 **Decision:** Pass **`max_expected_amps`** into `pi-ina219` `INA219(...)` for anodes (per-channel from **`ina219_max_expected_amps_for_channel`**, derived from **`MAX_MA` / `CHANNEL_MAX_MA`** × headroom unless **`COILSHIELD_INA219_MAX_EXPECTED_AMPS`** is set) and for the optional ref INA path (**`REF_INA219_MAX_EXPECTED_AMPS`**, env **`COILSHIELD_REF_INA219_MAX_EXPECTED_AMPS`**). On Phase 1 off-check failure, log compact **INA219 diag** lines from the existing `read_all_real` **`diag`** snapshot. **`iccp probe`** STEP 2 / continuous / PWM ladder: decode shunt with **`ina219_shunt_ohms_for_channel`** per row when **`--shunt`** matches global `INA219_SHUNT_OHMS` (else uniform **`--shunt`** override). Document triage in **`docs/ina219-i2c-bringup.md`** §6 and link from **`docs/HARDWARE.md`**.

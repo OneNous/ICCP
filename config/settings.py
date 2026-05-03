@@ -57,6 +57,17 @@ NUM_CHANNELS = 4
 ADS1115_ADDRESS = 0x48
 ADS1115_BUS = 1
 ADS1115_CHANNEL = 0
+# If the reference divider is **not** on AIN0, set ``ADS1115_CHANNEL`` to 0..3 (AIN0..AIN3) or
+# env ``COILSHIELD_ADS1115_CHANNEL`` on the Pi. Ignored when ``ADS1115_DIFFERENTIAL`` is True.
+_ads_ch_env = (os.environ.get("COILSHIELD_ADS1115_CHANNEL") or "").strip()
+if _ads_ch_env:
+    _aci = int(_ads_ch_env)
+    if _aci < 0 or _aci > 3:
+        raise ValueError(
+            "COILSHIELD_ADS1115_CHANNEL must be 0..3 (AIN0..AIN3 single-ended), "
+            f"got {_ads_ch_env!r}"
+        )
+    ADS1115_CHANNEL = _aci
 # If True, read the ADS1115 as a **differential** measurement (AIN+ − AIN−) instead of
 # single-ended AINn vs GND. Valid pairs (TI): (0,1), (0,3), (1,3), (2,3) — see
 # ``i2c_bench._ads1115_mux_bits_differential``. AIN− must be the real reference node (not

@@ -310,7 +310,8 @@ def _print_help() -> None:
                              Requires SHARED_RETURN_PWM = False. Same flags on tui, dashboard,
                              commission, probe. Or env COILSHIELD_ACTIVE_CHANNELS=0,2.
                              Field tunables: COILSHIELD_TARGET_MA, COILSHIELD_REF_ADS_SCALE,
-                             COILSHIELD_ADS1115_FSR_V, optional COILSHIELD_MUX_ADDRESS for TCA rigs, …
+                             COILSHIELD_ADS1115_FSR_V, COILSHIELD_ADS1115_CHANNEL (0..3 if ref not on AIN0),
+                             optional COILSHIELD_MUX_ADDRESS for TCA rigs, …
 
   iccp commission [--sim] [--force] [--native-only] [--no-prompts]
                              Self-commission (writes commissioning.json).

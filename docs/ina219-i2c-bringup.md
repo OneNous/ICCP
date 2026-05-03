@@ -102,6 +102,10 @@
 
 - When Phase 1’s off-check fails, firmware may print extra **`INA219 diag Anode N:`** lines (register snapshot) to shorten support round-trips.
 
+### ADS1115: reference not on AIN0
+
+- Default single-ended input is **AIN0** (`ADS1115_CHANNEL = 0` in [`config/settings.py`](../config/settings.py)). If nothing is wired to AIN0, set **`COILSHIELD_ADS1115_CHANNEL=1`** (or `2` / `3`) to match the pin your divider uses, **or** use differential mode (`ADS1115_DIFFERENTIAL` + valid TI AIN pairs — see settings comments). Restart `iccp` after changes.
+
 ## Success criteria
 
 - `iccp start` logs successful INA init for **all** configured anode channels.
